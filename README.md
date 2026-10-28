@@ -140,6 +140,20 @@ RELION wall time = start note → last model file, so approximate)**
 | elongated glycoprotein ectodomain | 284,771 | 25 | 33.2 min | 1 min 13 s (27×) | RELION: 43 % in carbon-edge classes; Celeris2D: many distinct stalk/head views |
 | glycoprotein complex | 404,314 | 50 | stopped at it 120 | 1 min 36 s | RELION job incomplete |
 
+**cryoSPARC Class2D jobs on in-house data (K=50, Celeris2D defaults: circular mask only, adaptive full passes;
+4× RTX A4500; cryoSPARC times from its job record, same machine class)**
+
+| dataset | particles | cryoSPARC | Celeris2D | notes |
+|---|---|---|---|---|
+| negative stain, 64 px @ 6.4 Å | 314,050 | 5.0 min | 39 s | singles / pairs / triples separated as in cryoSPARC |
+| cryo, 64 px @ 5.28 Å | 546,979 | 36 min (50 online + 5 full it) | 2 min 12 s | ice/carbon edges split off; compact particle views |
+| cryo, 64 px @ 6.39 Å | 1,234,805 | 73 min (50 online + 10 full it) | 6 min 26 s | ~1/3 of picks are structureless: Celeris2D gathers them in 3 honeycomb-textured classes, cryoSPARC spreads them over ~30 faint classes |
+| cryo, 320 px @ 1.32 Å (pre-cleaned) | 72,275 | — | 3 min 39 s | clean trimer views, 7.5 Å |
+
+Lessons from these runs: shape-adaptive solvent flattening (formerly the default) grew honeycomb classes on
+small particles, so it is now opt-in; on 0.5M+ particles two full passes left 30-40 % of particles still
+changing class, so full passes now continue until < 10 % change (max 6).
+
 Known weakness: small, round, low-information particles still form noise-attractor classes (starburst
 texture at ~20 Å) — junk-like classes that do not always look like junk; use per-class confidence / seeds.
 
