@@ -255,8 +255,15 @@ def main(argv=None):
     ap.add_argument("--batch-per-class", type=int, default=500, help="online-EM subset per class (0 = full passes)")
     ap.add_argument("--full-iter", type=int, default=-1, help="final iterations over all particles (-1 = auto)")
     ap.add_argument("--anneal", type=float, default=1.0, help="initial likelihood temperature")
-    ap.add_argument("--no-solvent-flatten", action="store_true",
-                    help="keep only the circular class mask (default: shape-adaptive solvent flattening)")
+    sf = ap.add_mutually_exclusive_group()
+    sf.add_argument("--solvent-flatten", dest="solvent_flatten", action="store_true",
+                    help="mask each class by a soft envelope of its own density (flat solvent; can help clean, "
+                         "well-separated views, harmful on small/low-SNR particles)")
+    sf.add_argument("--no-solvent-flatten", dest="solvent_flatten", action="store_false",
+                    help="only the circular class mask (default, as cryoSPARC)")
+    ap.add_argument("--gold-standard", action="store_true",
+                    help="experimental: align each half-set only to its own half-set classes (unbiased FRC; "
+                         "over-smooths classes with few particles)")
     ap.add_argument("--polish", action="store_true",
                     help="final pass aligns out to the reconstruction limit with classes locked: sharper on "
                          "high-SNR data, harmful on low-SNR / heavily binned data")
@@ -330,7 +337,7 @@ def main(argv=None):
     prm = Params(**preset, n_classes=a.K, n_iter=a.iter, diameter_a=a.diameter, max_res_a=a.max_res, init_res_a=a.init_res,
                  max_shift_a=a.max_shift, max_offset_a=a.max_offset, psi_step_min=a.psi_step, tau2_fudge=a.tau2_fudge,
                  batch_per_class=a.batch_per_class, n_full_iter=a.full_iter, anneal_t0=a.anneal,
-                 center_classes=not a.no_center, seed=a.seed, init_classes=a.init_classes, frc_reg=not a.no_frc_reg, march_margin=a.march_margin, noise_model=a.noise_model, notch_thresh=a.notch, polish=a.polish, solvent_flatten=not a.no_solvent_flatten, sigma_init_factor=a.sigma_init_factor, hard_pose=a.hard_pose, class_prior=a.class_prior,
+                 center_classes=not a.no_center, seed=a.seed, init_classes=a.init_classes, frc_reg=not a.no_frc_reg, march_margin=a.march_margin, noise_model=a.noise_model, notch_thresh=a.notch, polish=a.polish, solvent_flatten=a.solvent_flatten, gold_standard=a.gold_standard, sigma_init_factor=a.sigma_init_factor, hard_pose=a.hard_pose, class_prior=a.class_prior,
                  polarity=-1 if a.invert else (1 if a.no_invert else 0))
     clf = Classifier2D(src, prm, devices=devices)
     if a.optimize > 0:

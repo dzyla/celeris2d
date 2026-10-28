@@ -167,14 +167,16 @@ class Params:
     normalize: bool = True          # per-particle background mean/std normalisation
     mstep_fp16: bool = True         # fp16 tensor-core M-step GEMMs
     frc_reg: bool = True            # Wiener filter from odd/even half-set FRC (not from a class's own power)
-    gold_standard: bool = True      # each half-set is aligned only to classes built from its own half, so the
+    gold_standard: bool = False     # each half-set is aligned only to classes built from its own half, so the
                                     # half-set FRC (Wiener filter) cannot mistake a shared noise pattern for signal
     sigma_init_factor: float = 1.0  # >1: noise inflated at the start, annealed to 1 (cryoSPARC-style); off: hurt LoG separation
     sigma_anneal_start: int = 2
     sigma_anneal_iters: int = 15
     sigma_decay: float = 0.7        # online EM: running noise estimate = decay * old + (1 - decay) * batch
     recenter_thresh: float = 0.2    # re-centre on the centre of mass of density above this fraction of max
-    solvent_flatten: bool = True    # mask each class by a soft envelope of its own density (flat solvent)
+    solvent_flatten: bool = False   # mask each class by a soft envelope of its own density (flat solvent). Off by
+                                    # default: on weak/small particles the envelope takes in the surrounding noise
+                                    # and grows a honeycomb (J461/J2473); helps clean, well-separated views
     solvent_thresh: float = 0.08    # envelope core: 20 A low-passed density above this fraction of max
     solvent_dilate_a: float = 20.0  # envelope extends this far beyond the core (A)
     notch_thresh: float = 2.5       # zero Fourier pixels whose mean power is > this x their shell mean

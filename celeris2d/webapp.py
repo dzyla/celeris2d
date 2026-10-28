@@ -24,7 +24,7 @@ from .engine import Params
 LOAD_KEYS = ("diameter_a", "max_res_a", "init_res_a", "psi_step_min", "psi_factor", "trans_div", "max_shift_a",
              "notch_thresh", "noise_model", "seed")
 RUN_KEYS = ("n_iter", "n_full_iter", "batch_per_class", "march_margin", "recon_margin", "frc_reg", "tau2_fudge",
-            "sigma_init_factor", "solvent_flatten", "solvent_thresh", "solvent_dilate_a", "center_classes",
+            "sigma_init_factor", "solvent_flatten", "gold_standard", "solvent_thresh", "solvent_dilate_a", "center_classes",
             "recenter_thresh", "hard_pose", "class_prior", "polish", "reseed_frac", "max_offset_a")
 
 

@@ -18,7 +18,7 @@ from .isac import soft_stability
 # what is worth tuning (each entry: Params field -> candidate values)
 DEFAULT_GRID = {
     "march_margin": [0.0, 4.0],
-    "solvent_thresh": [0.05, 0.12],
+    "solvent_flatten": [False, True],
 }
 # hard vs soft pose is NOT tuned: on 5k-20k subsets the stability score is too noisy for it (it picked hard pose,
 # which lost 0.05-0.08 F1 against curated ground truth); the size rule (hard >= 100k particles) decides instead.

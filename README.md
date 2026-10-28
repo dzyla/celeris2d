@@ -56,8 +56,9 @@ cryoSPARC pose/shift by rebuilding J43's class averages (correlation 0.82 vs ≤
     further (+10 shells) — alignment and reconstruction limits are separate, as in cryoSPARC;
   * class averages are Wiener-filtered with an **odd/even half-set FRC** (not their own power), SSNR forced
     to fall with resolution;
-  * **shape-adaptive solvent flattening**: each class is masked by a soft envelope of its own density, so
-    noise cannot build patterns around compact views (the former "honeycomb" classes);
+  * optional **shape-adaptive solvent flattening** (`--solvent-flatten`): each class is masked by a soft
+    envelope of its own density. Off by default (as in cryoSPARC): on small or weak particles the envelope
+    takes in surrounding noise and grows a honeycomb; it helps clean, well-separated views;
   * fixed-frame artefact pixels (detector stripes) are found from the mean power spectrum and notched;
   * re-centring on density > 20 % of the class maximum.
 * **Speed**: shifts are separable, so the pose search for a batch is two batched complex GEMMs, the
@@ -89,7 +90,7 @@ review it). **Re-run selected / unselected** classifies just those particles (se
 result is kept (chips at the top) and saved in the work directory.
 
 ## Settings optimizer (`--optimize N`, dashboard button, MCP `optimize_settings`)
-Tries the alignment margin (0 / 4 shells) × solvent-mask threshold (0.05 / 0.12) on N random particles,
+Tries the alignment margin (0 / 4 shells) × solvent flattening (off / on) on N random particles,
 each from two independent starts (15 iterations), and keeps the most **reproducible** setting (highest soft
 agreement between the starts). ~30 s on 5k particles. Validation against curated ground truth (LoG picks,
 12-setting grid): stability correlates with separation quality (Spearman 0.50 with F1, 0.62 with AP) and the
