@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Celeris2D</title>
+<style>
+  :root {
+    --bg: #0e0f13; --panel: #16181f; --panel2: #1d2029; --line: #2a2e3a; --ink: #f0efec; --ink2: #a0a3ad;
+    --accent: #3987e5; --good: #1baf7a; --bad: #e34948; --warn: #eda100;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
+  header h1 span { color: var(--accent); }
+  #ds { color: var(--ink2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wrap { display: grid; grid-template-columns: 310px 1fr; height: calc(100vh - 47px); }
+  aside { overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); padding: 10px 12px 40px; }
+  main { display: grid; grid-template-rows: auto 1fr 190px; min-width: 0; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--ink2); margin: 16px 0 8px; }
+  label { display: grid; grid-template-columns: 1fr 120px; align-items: center; gap: 8px; margin: 5px 0; color: var(--ink2); }
+  label.wide { grid-template-columns: 1fr; }
+  input, select { width: 100%; background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; font: inherit; }
+  input[type=checkbox] { width: auto; justify-self: start; }
+  button { background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px 11px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  details { margin-top: 6px; } summary { cursor: pointer; color: var(--ink2); margin: 6px 0; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+  .chip { padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel2); cursor: pointer; font-size: 12px; }
+  .chip.on { border-color: var(--accent); color: #fff; background: #1c3350; }
+  .muted { color: var(--ink2); }
+  #gallery { overflow-y: auto; padding: 12px 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; align-content: start; }
+  .tile { position: relative; border-radius: 10px; overflow: hidden; background: #000; cursor: pointer; outline: 3px solid transparent; transition: outline-color .1s, opacity .1s; }
+  .tile img { display: block; width: 100%; aspect-ratio: 1; }
+  .tile.good { outline-color: var(--good); }
+  .tile.bad { opacity: .45; }
+  .tile .k { position: absolute; top: 6px; left: 6px; background: rgba(14,15,19,.8); padding: 1px 7px; border-radius: 6px; font-weight: 700; font-size: 12px; }
+  .tile .c { position: absolute; top: 6px; right: 6px; background: rgba(14,15,19,.8); padding: 1px 6px; border-radius: 6px; font-size: 11px; color: var(--ink2); }
+  .tile .f { position: absolute; left: 0; right: 0; bottom: 0; padding: 14px 8px 6px; background: linear-gradient(transparent, rgba(14,15,19,.92)); display: flex; justify-content: space-between; font-size: 12px; }
+  .tile .f b { color: var(--ink); } .tile .f span { color: var(--ink2); }
+  .tile .conf { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent); }
+  #bottom { border-top: 1px solid var(--line); display: grid; grid-template-columns: 1fr 330px; min-height: 0; }
+  #log { margin: 0; padding: 8px 14px; overflow-y: auto; font: 11.5px/1.45 ui-monospace, Menlo, Consolas, monospace; color: #c7c9d1; white-space: pre-wrap; }
+  #jobpanel { border-left: 1px solid var(--line); padding: 10px 12px; overflow-y: auto; }
+  .prog { height: 6px; border-radius: 3px; background: var(--panel2); overflow: hidden; margin: 6px 0; }
+  .prog > div { height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+  table { border-collapse: collapse; width: 100%; font-size: 11.5px; }
+  td, th { padding: 2px 4px; border-bottom: 1px solid var(--line); text-align: left; }
+  tr.best td { color: var(--good); }
+  .err { color: var(--bad); }
+  .empty { color: var(--ink2); padding: 40px; text-align: center; grid-column: 1/-1; }
+</style>
+</head>
+<body>
+<header>
+  <h1><span>Celeris</span>2D</h1>
+  <div id="ds">no dataset loaded</div>
+</header>
+<div class="wrap">
+<aside>
+  <h2>Dataset</h2>
+  <label class="wide">particles (.star / .cs / .csg / .mrcs)<input id="path" placeholder="/path/to/particles.star"></label>
+  <label class="wide">project dir (optional)<input id="project_dir" placeholder="auto"></label>
+  <label>mask diameter (Å)<input id="diameter_a" type="number" value="200"></label>
+  <label>max resolution (Å)<input id="max_res_a" type="number" value="6"></label>
+  <label>GPUs<input id="gpus" value="auto" title="auto or nvidia-smi indices, e.g. 0,2,3"></label>
+  <label>random subset (0 = all)<input id="subset" type="number" value="0"></label>
+  <label>speed preset<select id="speed"><option value="balanced">balanced</option><option value="fast">fast</option><option value="accurate">accurate</option></select></label>
+  <details><summary>more dataset settings</summary><div id="loadAdv"></div></details>
+  <div class="row" style="margin-top:8px"><button class="primary" id="btnLoad">Load</button></div>
+
+  <h2>Classification</h2>
+  <label>name<input id="name" placeholder="auto"></label>
+  <label>classes (K)<input id="K" type="number" value="50"></label>
+  <label>seeds<input id="seeds" type="number" value="1" title="independent starts; >1 gives per-particle P(good)"></label>
+  <label>particles<select id="on"><option value="all">all</option></select></label>
+  <details><summary>advanced settings</summary><div id="runAdv"></div></details>
+  <div class="row" style="margin-top:8px"><button class="primary" id="btnRun">Run</button></div>
+
+  <h2>Settings optimizer</h2>
+  <div class="muted" style="margin-bottom:6px">Tries a small grid on a subset; keeps the most reproducible settings (two independent starts agree most).</div>
+  <label>subset size<input id="optSubset" type="number" value="20000"></label>
+  <div class="row"><button id="btnOpt">Optimize &amp; apply</button></div>
+  <div id="opt"></div>
+</aside>
+<main>
+  <div>
+    <div class="bar" id="results"><span class="muted">results appear here</span></div>
+    <div class="bar" id="toolbar" style="display:none">
+      <button id="selAll">All</button><button id="selNone">None</button><button id="selInv">Invert</button>
+      <button id="selSuggest" title="automatic 2-cluster proposal on confidence/resolution - it always splits, so review it (on clean data every class may be good)">Suggest</button>
+      <span class="muted" id="selInfo"></span>
+      <span style="flex:1"></span>
+      <button id="rerunGood">Re-run selected</button><button id="rerunBad">Re-run unselected</button>
+      <input id="outdir" placeholder="export folder" style="width:220px">
+      <label style="display:inline-flex;gap:4px;margin:0;grid-template-columns:none">P(good) ≥<input id="minp" type="number" step="0.05" value="0.5" style="width:60px"></label>
+      <button class="primary" id="btnExport">Export</button>
+    </div>
+  </div>
+  <div id="gallery"><div class="empty">Load a dataset and run a classification.</div></div>
+  <div id="bottom">
+    <pre id="log"></pre>
+    <div id="jobpanel"><div class="muted">idle</div></div>
+  </div>
+</main>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const api = async (path, body) => {
+  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.detail || r.statusText);
+  return j;
+};
+const toast = (msg, bad) => { const l = $("log"); l.textContent += (bad ? "!! " : "") + msg + "\n"; l.scrollTop = l.scrollHeight; };
+let defaults = null, current = null, sel = new Set(), lastJob = null, resultsSeen = new Set();
+const PRESETS = {fast: {psi_factor: 1.5, trans_div: 2.5}, balanced: {psi_factor: 1.0, trans_div: 3.0}, accurate: {psi_factor: 1.0, trans_div: 4.0}};
+const HIDE = new Set(["diameter_a", "max_res_a", "psi_factor", "trans_div"]);
+const TRI = new Set(["hard_pose", "class_prior"]);
+
+function field(k, v) {
+  const id = "p_" + k;
+  if (TRI.has(k)) return `<label>${k}<select id="${id}"><option value="auto">auto</option><option value="true">on</option><option value="false">off</option></select></label>`;
+  if (typeof v === "boolean") return `<label>${k}<input id="${id}" type="checkbox" ${v ? "checked" : ""}></label>`;
+  if (typeof v === "number") return `<label>${k}<input id="${id}" type="number" step="any" value="${v}"></label>`;
+  return `<label>${k}<input id="${id}" value="${v ?? ""}"></label>`;
+}
+function read(keys) {
+  const o = {};
+  for (const k of keys) {
+    const e = $("p_" + k); if (!e) continue;
+    if (TRI.has(k)) o[k] = e.value === "auto" ? "auto" : e.value === "true";
+    else if (e.type === "checkbox") o[k] = e.checked;
+    else if (e.type === "number") { if (e.value !== "") o[k] = Number(e.value); }
+    else o[k] = e.value;
+  }
+  return o;
+}
+async function init() {
+  defaults = await api("/api/defaults");
+  $("loadAdv").innerHTML = Object.entries(defaults.load).filter(([k]) => !HIDE.has(k)).map(([k, v]) => field(k, v)).join("");
+  $("runAdv").innerHTML = Object.entries(defaults.run).map(([k, v]) => field(k, v)).join("");
+  poll(); setInterval(poll, 1500);
+}
+$("btnLoad").onclick = async () => {
+  const body = {path: $("path").value.trim(), project_dir: $("project_dir").value.trim(), gpus: $("gpus").value.trim(),
+                subset: Number($("subset").value), diameter_a: Number($("diameter_a").value), max_res_a: Number($("max_res_a").value),
+                ...PRESETS[$("speed").value], ...read(Object.keys(defaults.load))};
+  try { await api("/api/load", body); resultsSeen.clear(); current = null; } catch (e) { toast(e.message, true); }
+};
+$("btnRun").onclick = () => runClassify($("on").value);
+async function runClassify(on, name) {
+  const body = {name: name || $("name").value.trim(), K: Number($("K").value), seeds: Number($("seeds").value), on,
+                ...read(Object.keys(defaults.run))};
+  try { const r = await api("/api/classify", body); toast(`started ${r.name} on ${on}`); $("name").value = ""; } catch (e) { toast(e.message, true); }
+}
+$("btnOpt").onclick = async () => {
+  try { await api("/api/optimize", {K: Number($("K").value), subset: Number($("optSubset").value), apply: true}); } catch (e) { toast(e.message, true); }
+};
+
+async function poll() {
+  let s; try { s = await api("/api/status"); } catch { return; }
+  $("ds").textContent = s.loaded ? `${s.path} · ${s.particles.toLocaleString()} particles (${s.loaded_particles.toLocaleString()} loaded) · ${s.box}px @ ${s.apix} Å · ${s.gpus.join(", ")}` : "no dataset loaded";
+  $("log").textContent = s.log.join("\n"); $("log").scrollTop = $("log").scrollHeight;
+  // job panel
+  const j = s.job;
+  if (j) {
+    const pct = s.progress ? Math.round(100 * s.progress.it / s.progress.n_iter) : (j.done ? 100 : 5);
+    $("jobpanel").innerHTML = `<b>${j.kind}</b> · ${j.name}<div class="prog"><div style="width:${pct}%"></div></div>` +
+      (j.done ? (j.error ? `<div class="err">${j.error}</div>` : `<div class="muted">done in ${j.seconds}s</div>`)
+              : (s.progress ? `<div class="muted">iteration ${s.progress.it}/${s.progress.n_iter} · align ${s.progress.res} Å · est ${s.progress.est_res} Å</div>` : `<div class="muted">running…</div>`)) +
+      (s.optimizer ? optTable(s.optimizer) : "");
+    if (j.done && lastJob !== j.started + ":done") { lastJob = j.started + ":done"; }
+  }
+  ["btnLoad", "btnRun", "btnOpt", "rerunGood", "rerunBad", "btnExport"].forEach(id => $(id).disabled = j && !j.done);
+  if (!s.loaded) return;
+  // results chips + particle-set choices
+  const res = s.results || [];
+  $("results").innerHTML = res.length ? res.map(r => `<span class="chip ${current === r.name ? "on" : ""}" data-n="${r.name}">${r.name} · ${r.classes} cl · ${r.particles.toLocaleString()}${r.selected != null ? " · " + r.selected + " good" : ""}</span>`).join("") : `<span class="muted">no results yet</span>`;
+  document.querySelectorAll(".chip").forEach(c => c.onclick = () => open(c.dataset.n));
+  const opts = ["all", ...res.flatMap(r => r.selected != null ? [`${r.name}:good`, `${r.name}:bad`, `${r.name}:ambiguous`] : [])];
+  const o = $("on"), keep = o.value;
+  if (o.options.length !== opts.length) { o.innerHTML = opts.map(v => `<option>${v}</option>`).join(""); o.value = opts.includes(keep) ? keep : "all"; }
+  const fresh = res.find(r => !resultsSeen.has(r.name));
+  res.forEach(r => resultsSeen.add(r.name));
+  if (fresh && (!j || j.done)) open(fresh.name);
+}
+function optTable(o) {
+  const keys = Object.keys(o.best);
+  return `<div style="margin-top:8px" class="muted">optimizer (K=${o.K}, ${o.subset.toLocaleString()} particles)</div><table><tr>${keys.map(k => `<th>${k.replace("_", " ")}</th>`).join("")}<th>stab.</th><th>s</th></tr>` +
+    o.trials.map(t => `<tr class="${keys.every(k => t[k] === o.best[k]) ? "best" : ""}">${keys.map(k => `<td>${t[k]}</td>`).join("")}<td>${t.stability}</td><td>${t.seconds}</td></tr>`).join("") + "</table>";
+}
+async function open(name) {
+  current = name;
+  const r = await api(`/api/result/${encodeURIComponent(name)}`);
+  sel = new Set(r.table.filter(t => t.good).map(t => t.cls));
+  const byCls = Object.fromEntries(r.table.map(t => [t.cls, t]));
+  const tot = r.table.reduce((a, t) => a + t.particles, 0);
+  $("toolbar").style.display = "flex";
+  $("gallery").innerHTML = r.order.map(k => {
+    const t = byCls[k];
+    return `<div class="tile ${r.table.some(x => x.good != null) ? (sel.has(k) ? "good" : "bad") : ""}" data-k="${k}">
+      <img loading="lazy" src="/api/result/${encodeURIComponent(name)}/tile/${k}.png?v=${r.version.split("-")[0]}">
+      <div class="k">${k}</div><div class="c">${t.conf.toFixed(2)}${t.res_A ? " · " + t.res_A + "Å" : ""}</div>
+      <div class="f"><b>${t.particles.toLocaleString()}</b><span>${(100 * t.particles / tot).toFixed(1)}%</span></div>
+      <div class="conf" style="width:${Math.round(100 * t.conf)}%"></div></div>`;
+  }).join("");
+  document.querySelectorAll(".tile").forEach(el => el.onclick = () => { const k = +el.dataset.k; sel.has(k) ? sel.delete(k) : sel.add(k); paint(); save(); });
+  paint();
+  document.querySelectorAll(".chip").forEach(c => c.classList.toggle("on", c.dataset.n === name));
+}
+function paint() {
+  document.querySelectorAll(".tile").forEach(el => { const g = sel.has(+el.dataset.k); el.classList.toggle("good", g); el.classList.toggle("bad", !g); });
+  $("selInfo").textContent = `${sel.size} classes selected`;
+}
+let saveTimer = null;
+function save() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    try { await api("/api/select", {name: current, good: [...sel]}); const c = await api(`/api/sets/${encodeURIComponent(current)}?min_p=${$("minp").value}`);
+          $("selInfo").textContent = `${sel.size} classes · good ${c.good.toLocaleString()} · ambiguous ${c.ambiguous.toLocaleString()} · bad ${c.bad.toLocaleString()} particles`; }
+    catch (e) { toast(e.message, true); }
+  }, 250);
+}
+const allK = () => [...document.querySelectorAll(".tile")].map(e => +e.dataset.k);
+$("selAll").onclick = () => { sel = new Set(allK()); paint(); save(); };
+$("selNone").onclick = () => { sel = new Set(); paint(); save(); };
+$("selInv").onclick = () => { sel = new Set(allK().filter(k => !sel.has(k))); paint(); save(); };
+$("selSuggest").onclick = async () => { const r = await api(`/api/suggest/${encodeURIComponent(current)}`); sel = new Set(r.suggested); paint(); save(); toast("suggestion applied — review it"); };
+$("minp").onchange = save;
+$("rerunGood").onclick = () => runClassify(`${current}:good`, `${current}_good`);
+$("rerunBad").onclick = () => runClassify(`${current}:bad`, `${current}_bad`);
+$("btnExport").onclick = async () => {
+  const outdir = $("outdir").value.trim(); if (!outdir) return toast("set an export folder", true);
+  try { const r = await api("/api/export", {name: current, outdir, min_p: Number($("minp").value)}); toast(`exported ${JSON.stringify(r.written)} to ${r.outdir}`); } catch (e) { toast(e.message, true); }
+};
+init();
+</script>
+</body>
+</html>

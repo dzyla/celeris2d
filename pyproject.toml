@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "celeris2d"
+version = "0.2.0"
+description = "Fast GPU maximum-likelihood 2D classification of cryo-EM particles (RELION / cryoSPARC / mrcs)"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.4", "numpy", "scipy", "mrcfile", "pandas", "matplotlib", "pyyaml", "pillow", "mcp>=2", "fastapi", "uvicorn"]
+
+[project.scripts]
+celeris2d = "celeris2d.cli:main"
+celeris2d-mcp = "celeris2d.mcp_server:main"
+celeris2d-web = "celeris2d.webapp:main"
+
+[tool.setuptools]
+packages = ["celeris2d"]
+
+[tool.setuptools.package-data]
+celeris2d = ["web/*.html"]

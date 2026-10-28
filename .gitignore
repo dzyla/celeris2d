@@ -1,0 +1,12 @@
+__pycache__/
+*.egg-info/
+build/
+dist/
+runs/
+celeris2d_web/
+*.mrc
+*.mrcs
+*.cs
+*.csg
+*.star
+*.npz
