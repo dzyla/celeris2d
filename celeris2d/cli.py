@@ -177,7 +177,9 @@ def _write_cs_classes(outdir, clf, imgs, apix_out):
                {"blob": "class_averages.cs"}, K)
 
 
-def pick_devices(spec: str, n_particles: int) -> list[str]:
+def pick_devices(spec: str, n_particles: int, box: int = 64, apix: float = 0.0, max_res: float = 0.0) -> list[str]:
+    """auto: one GPU for small jobs, all GPUs once the work is worth splitting. Work ~ particles x working
+    box^2 (the box after binning to max_res), so 72k particles at 320 px count like ~370k at 64 px."""
     import torch
     n = torch.cuda.device_count()
     if n == 0:
@@ -185,7 +187,8 @@ def pick_devices(spec: str, n_particles: int) -> list[str]:
     mem = {i: torch.cuda.get_device_properties(i).total_memory for i in range(n)}
     if spec == "auto":
         ids = sorted(range(n), key=lambda i: -mem[i])
-        ids = ids[:1] if n_particles < 100_000 else ids
+        wbox = min(box, 2 * box * apix / max_res) if apix > 0 and max_res > 0 else min(box, 64)
+        ids = ids[:1] if n_particles * (wbox / 64.0) ** 2 < 100_000 else ids
     else:
         ids = sorted((int(x) for x in spec.split(",")), key=lambda i: -mem[i])
     names = ", ".join(f"{i}:{torch.cuda.get_device_name(i)}" for i in ids)
@@ -319,7 +322,7 @@ def main(argv=None):
     if 0 < a.subset < src.N:
         src.subset(np.sort(np.random.default_rng(a.seed).choice(src.N, a.subset, replace=False)))
         print(f"[input] random subset of {src.N} particles")
-    devices = pick_devices(a.gpus, src.N)
+    devices = pick_devices(a.gpus, src.N, src.box, src.apix, a.max_res)
     preset = dict(fast=dict(psi_factor=1.5, trans_div=2.5), balanced=dict(psi_factor=1.0, trans_div=3.0),
                   accurate=dict(psi_factor=1.0, trans_div=4.0))[a.speed]
     if a.speed == "fast" and a.full_iter < 0 and src.N > 500_000:

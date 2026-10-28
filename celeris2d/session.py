@@ -67,7 +67,7 @@ class Session:
             src.subset(np.sort(np.random.default_rng(seed).choice(src.N, subset, replace=False)))
         prm = Params(diameter_a=diameter, max_res_a=max_res, seed=seed, **params)
         self.src, self.path = src, path
-        self.clf = Classifier2D(src, prm, devices=pick_devices(gpus, src.N), log=self.log)
+        self.clf = Classifier2D(src, prm, devices=pick_devices(gpus, src.N, src.box, src.apix, max_res), log=self.log)
         self.results.clear()
         restored = self._restore()
         return dict(restored_results=restored, particles=src.N, box=src.box, apix=src.apix, source=src.kind, ctf=not src.optics.no_ctf,

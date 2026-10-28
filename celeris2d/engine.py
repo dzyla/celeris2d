@@ -146,6 +146,7 @@ class Params:
     trans_div: float = 4.0          # translation step = res / trans_div
     psi_step_max: float = 15.0
     max_shift_a: float = 16.0       # local translation search radius around previous offset
+    max_trans_half: int = 4         # cap on translation grid half-width (4 -> 9 x 9 positions)
     max_offset_a: float = -1.0      # cap on accumulated offset (-1 = diameter / 4)
     tau2_fudge: float = 2.0
     batch_per_class: int = 500      # online-EM subset size per class for the early iterations (cryoSPARC-like)
@@ -474,7 +475,9 @@ class Classifier2D:
         step = float(np.clip(p.psi_factor * math.degrees(res / p.diameter_a), p.psi_step_min, p.psi_step_max))
         n_rot = int(math.ceil(360.0 / step))
         tstep = res / p.trans_div
-        nt = int(math.floor(p.max_shift_a / tstep))
+        # local search around the previous offset, at most 9 x 9 positions: at high resolution the step is fine and
+        # +-max_shift would mean 11 x 11 or more (cost ~ nt^2); larger offsets still accumulate over iterations
+        nt = min(int(math.floor(p.max_shift_a / tstep)), p.max_trans_half)
         temp = 1.0 + (p.anneal_t0 - 1.0) * max(0.0, 1.0 - it / max(1, n_march))
         full = it >= p.n_iter - p.n_full_iter or p.batch_per_class <= 0
         if full and it > p.n_iter - p.n_full_iter and it > 0:
