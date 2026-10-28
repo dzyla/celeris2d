@@ -167,6 +167,8 @@ class Params:
     normalize: bool = True          # per-particle background mean/std normalisation
     mstep_fp16: bool = True         # fp16 tensor-core M-step GEMMs
     frc_reg: bool = True            # Wiener filter from odd/even half-set FRC (not from a class's own power)
+    gold_standard: bool = True      # each half-set is aligned only to classes built from its own half, so the
+                                    # half-set FRC (Wiener filter) cannot mistake a shared noise pattern for signal
     sigma_init_factor: float = 1.0  # >1: noise inflated at the start, annealed to 1 (cryoSPARC-style); off: hurt LoG separation
     sigma_anneal_start: int = 2
     sigma_anneal_iters: int = 15
@@ -254,6 +256,9 @@ class Classifier2D:
         self.offsets[self.active] = 0
         self.seen[self.active] = False
         self.S_num = self.S_den = self.S_pop = None  # running (online-EM) sufficient statistics, class frame
+        self.S_numh = self.S_denh = None              # the same per half-set (gold-standard alignment)
+        self.classes_h = None                         # (2, K, bm, bh) half-set classes (gold-standard)
+        self._last_enc = float('nan')
         self.prior = torch.full((p.n_classes,), 1.0 / p.n_classes, device=self.dev)
         self.class_res = torch.full((p.n_classes,), float(p.init_res_a))
         # per-particle class posterior (marginal over poses) of the last pass that saw the particle
@@ -533,12 +538,15 @@ class Classifier2D:
             ft[: len(ft_ref)] = ft_ref * (scale.sqrt() if rescale else 1.0)
             self.log(f"[init] {len(ft_ref)} of {K} starting classes from templates")
         self.classes = self._postprocess(ft, bm, center=False)[0]
+        # both half-sets start from the same (low-resolution) classes and then evolve independently
+        self.classes_h = self.classes[None].repeat(2, 1, 1, 1) if self.p.gold_standard else None
+        self.S_numh = self.S_denh = None
 
     # --------------------------------------------------------- references
-    def _make_refs(self, b: int, psi: torch.Tensor, klim: float) -> torch.Tensor:
+    def _make_refs(self, b: int, psi: torch.Tensor, klim: float, classes=None) -> torch.Tensor:
         """Rotated class spectra, layout (b, M, bh) with m = k * R + r."""
         K, R = self.p.n_classes, len(psi)
-        up = upsample2(ft_resize(self.classes, b), b)  # (K, 2b, 2b)
+        up = upsample2(ft_resize(self.classes if classes is None else classes, b), b)  # (K, 2b, 2b)
         grid = rot_grid(psi, b, 2 * b)
         out = torch.empty((R, K, b, b), device=self.dev)
         for r0 in range(0, R, 64):
@@ -577,12 +585,15 @@ class Classifier2D:
             noise = self.sigma2_emp[shell_a]
         w8 = fmask_a * hw[None, :] / (noise * self._sigma_factor(it)).clamp_min(1e-30)  # (b_al, bh_a)
 
-        refs = self._make_refs(b_al, s["psi"], klim)                    # (b_al, M, bh_a) complex
+        if self.classes_h is not None:  # one reference set per half-set
+            refs_h = torch.stack([self._make_refs(b_al, s["psi"], klim, self.classes_h[h]) for h in (0, 1)])
+        else:
+            refs_h = self._make_refs(b_al, s["psi"], klim)[None]        # (H, b_al, M, bh_a) complex
         tg = s["tgrid"]
         T1 = len(tg)
         ph = TWO_PI / self.box_a
         ang = ph * fy[:, None] * tg[None, :]
-        ctx = dict(refs=refs, r2w=(refs.abs() ** 2).permute(1, 0, 2).reshape(M, -1), w8=w8, tg=tg, psi=s["psi"],
+        ctx = dict(refs=refs_h, r2w=(refs_h.abs() ** 2).permute(0, 2, 1, 3).reshape(len(refs_h), M, -1), w8=w8, tg=tg, psi=s["psi"],
                    Ex=torch.exp(-1j * ph * fx_a[:, None] * tg[None, :]).to(torch.complex64),   # (bh_a, T1)
                    EyT=torch.exp(-1j * ph * tg[:, None] * fy_a[None, :]).to(torch.complex64),  # (T1, b_al)
                    Exr=torch.exp(-1j * ph * fx[:, None] * tg[None, :]).to(torch.complex64),    # (bh, T1) M-step
@@ -606,14 +617,15 @@ class Classifier2D:
         seen_before = self.seen[idx_all].clone()
 
         halves, sumx2, pop = self._run_pass(idx_all, ctx, bn)
-        numer = halves[0][0] + halves[1][0]
-        dm2 = halves[0][1] + halves[1][1]
 
         # ---- noise model (exact expected residual power per frequency)
-        dm1 = ft_resize(dm2.view(M, 2 * b, b + 1)[:, ::2, ::2], b_al)                 # (M, b_al, bh_a)
-        refs_m = refs.permute(1, 0, 2)
-        cross = (refs_m * torch.conj(ft_resize(numer.permute(1, 0, 2), b_al))).real.sum(0)
-        res2 = (sumx2 + (refs_m.abs() ** 2 * dm1).sum(0) - 2 * cross) / n_sub
+        res2 = sumx2.clone()
+        for h in (0, 1):  # each half-set against the references it was aligned to
+            refs_m = refs_h[min(h, len(refs_h) - 1)].permute(1, 0, 2)
+            dm1 = ft_resize(halves[h][1].view(M, 2 * b, b + 1)[:, ::2, ::2], b_al)     # (M, b_al, bh_a)
+            cross = (refs_m * torch.conj(ft_resize(halves[h][0].permute(1, 0, 2), b_al))).real.sum(0)
+            res2 += (refs_m.abs() ** 2 * dm1).sum(0) - 2 * cross
+        res2 /= n_sub
         sig_new = self._shell_mean(res2, shell_a, fmask_a)
         upd = torch.zeros(self.nsh, dtype=torch.bool, device=self.dev)
         upd[torch.unique(shell_a[fmask_a > 0])] = True
@@ -623,18 +635,22 @@ class Classifier2D:
         old = self.noise2d[rows_a][:, :bh_a]
         ok = (fmask_a > 0) & (res2 > 0)
         self.noise2d[rows_a, :bh_a] = torch.where(ok, lam_s * old + (1 - lam_s) * res2, old)
-        del refs, refs_m, ctx, cross, dm1
+        del refs_h, refs_m, ctx, cross, dm1
 
         # ---- reconstruction from (running) sufficient statistics in the class frame
         num0, den0 = self._rotate_back(halves[0][0], halves[0][1], s["psi"], b)
         num1, den1 = self._rotate_back(halves[1][0], halves[1][1], s["psi"], b)
         num_k, den_k = num0 + num1, den0 + den1
-        del numer, dm2, halves
+        del halves
         lam = 0.0 if (n_sub == self.Na or self.S_num is None) else p.online_decay
         bm = self.bmax
         self.S_num = ft_resize(num_k, bm) + (lam * self.S_num if lam else 0)
         self.S_den = ft_resize(den_k, bm) + (lam * self.S_den if lam else 0)
         self.S_pop = pop + (lam * self.S_pop if lam else 0)
+        if self.classes_h is not None:
+            nh, dh = torch.stack([ft_resize(num0, bm), ft_resize(num1, bm)]), torch.stack([ft_resize(den0, bm), ft_resize(den1, bm)])
+            self.S_numh = nh + (lam * self.S_numh if lam and self.S_numh is not None else 0)
+            self.S_denh = dh + (lam * self.S_denh if lam and self.S_denh is not None else 0)
         num_k, den_k, pop = ft_resize(self.S_num, b), ft_resize(self.S_den, b), self.S_pop.clone()
         sig = self.sigma2_emp[shell]  # reconstruction uses the empirical (un-annealed) noise
         sh_b = shell.flatten()
@@ -691,10 +707,21 @@ class Classifier2D:
             ft = torch.nan_to_num(ft, nan=0.0, posinf=0.0, neginf=0.0)
         classes, shifts = self._postprocess(ft, b, center=p.center_classes)
         self.classes = ft_resize(classes, self.bmax)
+        if self.classes_h is not None:
+            # half-set classes: own data, but the signal estimate (tau2) of the full set and the same centring
+            hs = []
+            for h in (0, 1):
+                nh, dh = ft_resize(self.S_numh[h], b), ft_resize(self.S_denh[h], b)
+                fth = torch.nan_to_num(nh * tau2f / (dh * tau2f + sig) * fmask * taper, nan=0.0, posinf=0.0, neginf=0.0)
+                hs.append(self._postprocess(fth, b, center=p.center_classes, shifts=shifts)[0])
+            self.classes_h = ft_resize(torch.stack(hs), self.bmax)
         if p.center_classes:  # keep running statistics and particles consistent with re-centred classes
             fyb, fxb = freqs(bm, self.dev)
-            self.S_num = self.S_num * torch.exp(1j * TWO_PI / self.box_a * (
+            ramp_c = torch.exp(1j * TWO_PI / self.box_a * (
                 fxb[None, None, :] * shifts[:, 0, None, None] + fyb[None, :, None] * shifts[:, 1, None, None]))
+            self.S_num = self.S_num * ramp_c
+            if self.S_numh is not None:
+                self.S_numh = self.S_numh * ramp_c[None]
             dxy = shifts.cpu()[self.cls[idx_all]]
             a = torch.deg2rad(self.psi[idx_all])
             ca, sa = torch.cos(a), torch.sin(a)
@@ -711,10 +738,10 @@ class Classifier2D:
         dt = time.time() - t_start
         info = dict(it=it + 1, res=s["res"], res_rec=s["res_rec"], box=b, n_rot=R, n_trans=T1 * T1, n=n_sub, time=dt,
                     est_res=self.est_res, maxprob=self.maxprob[idx_all].mean().item(), changed=changed,
-                    min_pop=int(pop.min().item()), max_pop=int(pop.max().item()), reseeded=reseeded)
+                    min_pop=int(pop.min().item()), max_pop=int(pop.max().item()), reseeded=reseeded, enc=self._last_enc)
         self.history.append(info)
         self.log(f"[it {it + 1:3d}] align {s['res']:5.1f}A rec {s['res_rec']:5.1f}A box {b_al:3d}/{b:3d} rot {R:3d} ({360 / R:4.1f}deg) "
-                 f"trans {T1}x{T1} n={n_sub:7d} | estRes {self.est_res:5.1f}A <Pmax> {info['maxprob']:.3f} "
+                 f"trans {T1}x{T1} n={n_sub:7d} | estRes {self.est_res:5.1f}A <Pmax> {info['maxprob']:.3f} ENC {self._last_enc:4.2f} "
                  f"changed {changed * 100:5.1f}% pop[{info['min_pop']},{info['max_pop']}]"
                  f"{' reseed ' + str(reseeded) if reseeded else ''} | {dt:6.2f}s")
 
@@ -723,7 +750,11 @@ class Classifier2D:
         """E-step + M-step accumulation over idx_all. Batches are pulled from a shared queue by one
         thread per GPU (dynamic load balancing across GPUs of different speed); accumulators are
         summed on the master device."""
-        batches = [idx_all[i:i + bn] for i in range(0, len(idx_all), bn)]
+        if ctx["refs"].shape[0] == 2:  # gold standard: every batch holds one half-set only
+            par = idx_all % 2
+            batches = [g[i:i + bn] for g in (idx_all[par == 0], idx_all[par == 1]) for i in range(0, len(g), bn)]
+        else:
+            batches = [idx_all[i:i + bn] for i in range(0, len(idx_all), bn)]
         lock = threading.Lock()
         queue = iter(batches)
 
@@ -736,7 +767,7 @@ class Classifier2D:
                            dm2_0=torch.zeros((M, 2 * b * (b + 1)), device=dev),
                            dm2_1=torch.zeros((M, 2 * b * (b + 1)), device=dev),
                            sumx2=torch.zeros((c["b_al"], c["b_al"] // 2 + 1), device=dev),
-                           pop=torch.zeros(self.p.n_classes, device=dev))
+                           pop=torch.zeros(self.p.n_classes, device=dev), enc=torch.zeros((), device=dev))
                 while True:
                     with lock:
                         idx = next(queue, None)
@@ -751,6 +782,7 @@ class Classifier2D:
             with ThreadPoolExecutor(len(self.devs)) as ex:
                 accs = list(ex.map(worker, self.devs))
         tot = {k: sum(a[k].to(self.dev) for a in accs) for k in accs[0]}
+        self._last_enc = float(tot["enc"]) / max(len(idx_all), 1)
         bh = ctx["b"] // 2 + 1
         halves = [(torch.complex(tot[f"numer{h}"][..., :bh], tot[f"numer{h}"][..., bh:]), tot[f"dm2_{h}"])
                   for h in (0, 1)]
@@ -760,7 +792,9 @@ class Classifier2D:
         p, K = self.p, self.p.n_classes
         b, b_al, R, M, T1, mc = c["b"], c["b_al"], c["R"], c["M"], c["T1"], c["mc"]
         bh, bh_a = b // 2 + 1, b_al // 2 + 1
-        refs, w8, tg, Ex, EyT, E2 = c["refs"], c["w8"], c["tg"], c["Ex"], c["EyT"], c["E2"]
+        hset = int(idx[0]) % 2 if c["refs"].shape[0] == 2 else 0       # half-pure batches under gold standard
+        refs, r2w = c["refs"][hset], c["r2w"][hset]
+        w8, tg, Ex, EyT, E2 = c["w8"], c["tg"], c["Ex"], c["EyT"], c["E2"]
         fy, fx = freqs(b, dev)
         fy_a, fx_a = freqs(b_al, dev)
         fy2, fx2 = freqs(2 * b, dev)
@@ -786,7 +820,7 @@ class Classifier2D:
             a = torch.matmul(refs[:, m0:m1], z)                                      # (b_al, mc, n*T1)
             ll[:, m0:m1] = torch.matmul(EyT, a.view(b_al, -1)).real.view(T1, m1 - m0, n, T1)
             del a
-        d = ((ctf_a * ctf_a) * w8).reshape(n, -1) @ c["r2w"].T                       # (n, M)
+        d = ((ctf_a * ctf_a) * w8).reshape(n, -1) @ r2w.T                       # (n, M)
         ll.mul_(2).sub_(d.T[None, :, :, None]).add_(c["logprior"][None, :, None, None])
         if c.get("lock_class"):  # polishing: refine poses inside each particle's converged class only
             cur = self.cls[idx].to(dev)
@@ -840,7 +874,9 @@ class Classifier2D:
         # Averaging only, so fp16 tensor cores with fp32 accumulation (rel. error ~5e-4 << noise).
         y = ctf * x * torch.conj(ramp0) * self.store_scale                                  # aligned to t0, O(1) scale
         wnm = wts.sum((0, 3))                                                         # (M, n)
-        self.cpost[idx] = wnm.view(K, R, n).sum(1).T.to(torch.float16).cpu()
+        cp = wnm.view(K, R, n).sum(1)                                                 # class posterior (K, n)
+        self.cpost[idx] = cp.T.to(torch.float16).cpu()
+        acc["enc"] += (1.0 / (cp * cp).sum(0).clamp_min(1e-12)).sum()                 # effective no. of classes
         c2all = ctf_2d(ctfp, self.optics, fy2, fx2, 2 * self.box_a) ** 2              # (n, 2b, b+1), 2x oversampled
         half = (idx % 2).to(dev)
         for hv in (0, 1):  # odd/even half-sets (fixed per particle) -> FRC regulariser
@@ -902,7 +938,7 @@ class Classifier2D:
         env[empty] = 1.0
         return env * circle
 
-    def _postprocess(self, ft, b, center: bool):
+    def _postprocess(self, ft, b, center: bool, shifts=None):
         """Mask classes in real space and (optionally) shift their centre of mass to the box centre.
         Returns (spectra, applied shifts d in A as (x, y): class_new = shift_{-d}(class_old))."""
         img = torch.fft.irfft2(ft, s=(b, b), norm="forward")
@@ -912,8 +948,10 @@ class Classifier2D:
         if self.p.solvent_flatten:
             img = img * self._shape_mask(ft, b, apix, mask)
         K = img.shape[0]
-        shifts = torch.zeros((K, 2), device=self.dev)
-        if center:
+        given = shifts is not None
+        if not given:
+            shifts = torch.zeros((K, 2), device=self.dev)
+        if center and not given:
             thr = self.p.recenter_thresh * img.amax((1, 2), keepdim=True)
             pos = torch.where(img > thr, img, torch.zeros_like(img))
             r = (torch.arange(b, device=self.dev, dtype=torch.float32) - b // 2) * apix
@@ -941,6 +979,10 @@ class Classifier2D:
             noise = torch.randn(self.classes[big].shape, device=self.dev, dtype=torch.complex64)
             amp = self.classes[big].abs().mean()
             self.classes[k] = self.classes[big] + 0.3 * amp * noise * (self.classes[big] != 0)
+            if self.classes_h is not None:  # same split in both half-sets keeps class k matched between them
+                self.classes_h[:, k] = self.classes_h[:, big] + 0.3 * amp * noise * (self.classes_h[:, big] != 0)
+                for S in (self.S_numh, self.S_denh):
+                    S[:, k] = S[:, big] = 0.5 * S[:, big]
             self.prior[k] = self.prior[big] = 0.5 * self.prior[big]
             pop[k] = pop[big] = 0.5 * pop[big]
             for S in (self.S_num, self.S_den, self.S_pop):
