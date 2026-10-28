@@ -150,7 +150,9 @@ class Params:
     max_offset_a: float = -1.0      # cap on accumulated offset (-1 = diameter / 4)
     tau2_fudge: float = 2.0
     batch_per_class: int = 500      # online-EM subset size per class for the early iterations (cryoSPARC-like)
-    n_full_iter: int = -1           # final iterations over all particles (-1 = auto from N)
+    n_full_iter: int = -1           # final iterations over all particles (-1 = auto from N, then extended)
+    full_converge: float = 0.10     # auto: add full passes while more than this fraction changes class
+    max_full_iter: int = 6          # auto: at most this many full passes in total
     online_decay: float = 0.0       # online EM: running-statistics decay (0 = fresh batch each iter; 0.8 hurt)
     anneal_t0: float = 1.0          # likelihood temperature at iter 1 (1 = no annealing)
     reseed_frac: float = 0.25       # reseed classes holding < frac * N/K particles (early iters)
@@ -1004,12 +1006,24 @@ class Classifier2D:
         self._set_active(active)
         t0 = time.time()
         self.init_classes()
-        for it in range(self.p.n_iter):
+        p = self.p
+        n_iter0, n_full0 = p.n_iter, p.n_full_iter
+        for it in range(p.n_iter):
             self.iterate(it)
+        # big data sets: one online-EM visit per particle is not enough, so keep doing full passes until the
+        # assignments settle (cryoSPARC users typically run 5-10 full iterations on 0.5-1M particles)
+        while (self._auto_full and p.batch_per_class > 0 and p.n_full_iter < p.max_full_iter
+               and self.history and self.history[-1]["changed"] > p.full_converge):
+            p.n_iter += 1
+            p.n_full_iter += 1
+            self.log(f"[converge] {self.history[-1]['changed'] * 100:.0f}% changed class -> full pass {p.n_full_iter}")
+            self.iterate(p.n_iter - 1)
+        n_done = p.n_iter
+        p.n_iter, p.n_full_iter = n_iter0, n_full0
         for d in self.devs:
             torch.cuda.synchronize(d)
         self.total_time = time.time() - t0
-        self.log(f"[done] {self.p.n_iter} iterations in {self.total_time:.1f}s")
+        self.log(f"[done] {n_done} iterations in {self.total_time:.1f}s")
 
     def average(self, idx, labels, n_groups, psi=None, offsets=None, wiener=0.1, batch=512) -> np.ndarray:
         """CTF-Wiener averages of particles `idx` grouped by `labels` (0..n_groups-1), using the given
