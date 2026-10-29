@@ -91,6 +91,8 @@ def _write_rest(outdir, clf, src, in_path, imgs, pops, cls, apix_out, K, particl
         os.path.join(outdir, "class_stats.csv"), index=False)
     if is_cs:
         write_cryosparc(outdir, clf, src, imgs, apix_out, particles)
+    if clf.p.null_class:  # per-particle P(no particle), input order
+        np.save(os.path.join(outdir, "p_null.npy"), clf.pnull.numpy().astype(np.float32))
 
 
 _A2D = [("alignments2D/split", "<u4"), ("alignments2D/shift", "<f4", (2,)), ("alignments2D/pose", "<f4"),
