@@ -18,6 +18,8 @@ tau2_fudge), masked, and re-centred on their centre of mass each iteration.
 from __future__ import annotations
 
 import math
+import os
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -106,6 +108,18 @@ class Optics:
         return 12.2643247 / math.sqrt(v * (1 + v * 0.978466e-6))
 
 
+def _host_available() -> float:
+    """Bytes of host RAM available for new allocations (Linux MemAvailable; unknown -> unlimited)."""
+    try:
+        with open("/proc/meminfo") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return float(line.split()[1]) * 1024
+    except OSError:
+        pass
+    return float("inf")
+
+
 def ctf_2d(p: torch.Tensor, optics: Optics, fy: torch.Tensor, fx: torch.Tensor, box_a: float,
            ang_offset_deg: torch.Tensor | None = None) -> torch.Tensor:
     """RELION-convention CTF on a half-plane grid.
@@ -177,6 +191,13 @@ class Params:
     particle_scale: bool = False    # E-step: fit a per-particle amplitude for every hypothesis (contrast varies
                                     # between particles, e.g. stain thickness); otherwise dim particles prefer dim classes.
                                     # NS J75 vs J83: single E-step recall 0.13 -> 0.28, but full runs worse (F1 0.457 -> 0.414)
+    null_class: bool = False        # extra "no particle" hypothesis (zero image, learned prior), compared with each
+                                    # class's likelihood averaged over poses (not its best pose, which noise always
+                                    # wins somewhere). Picks without evidence for any class go there and stay out of
+                                    # the class sums instead of averaging into noise-attractor (honeycomb) classes;
+                                    # P(null) per particle lowers its confidence (maxprob)
+    null_start: float = 0.3         # null hypothesis on after this fraction of the online iterations (classes need
+                                    # signal first, or everything is "noise" and the classes starve)
     gold_standard: bool = False     # each half-set is aligned only to classes built from its own half, so the
                                     # half-set FRC (Wiener filter) cannot mistake a shared noise pattern for signal
     sigma_init_factor: float = 1.0  # >1: noise inflated at the start, annealed to 1 (cryoSPARC-style); off: hurt LoG separation
@@ -194,6 +215,8 @@ class Params:
     noise_model: str = "coloured"   # "coloured": per-Fourier-pixel noise in the particle frame (down-weights
                                     # detector/extraction artefacts); "radial": one value per shell
     init_classes: str = ""          # optional .mrc/.mrcs of starting class images (reference-based start)
+    spill_dir: str = ""             # where spectra go when they fit neither on the GPU nor in host RAM (a disk-backed
+                                    # file read through the page cache; "" = $TMPDIR); a fast local SSD is best
     hard_pose: bool | None = None   # best pose per class, soft over classes (cryoSPARC 'force max'); None = auto
     class_prior: bool | None = None # class populations as prior (False = uniform); None = auto
     # auto: >= 100k particles -> hard pose + uniform prior (resists noise attractors on big low-SNR sets);
@@ -277,6 +300,8 @@ class Classifier2D:
         self.class_res = torch.full((p.n_classes,), float(p.init_res_a))
         # per-particle class posterior (marginal over poses) of the last pass that saw the particle
         self.cpost = torch.zeros((self.N, p.n_classes), dtype=torch.float16)
+        self.pnull = torch.zeros(self.N)  # P(no particle) of the last pass that saw the particle (null_class)
+        self.null_pi = 0.0                # prior of the null hypothesis (0 = not active yet)
         self.est_res = p.init_res_a
         self.align_cap = None
         self.history = []
@@ -299,15 +324,28 @@ class Classifier2D:
             self.half, where = True, torch.device("cpu")
         self.store_scale = float(B)  # forward-FFT coefficients ~ 1/B for unit-variance images: keeps fp16 O(1)
         shape = (self.N, bm, bh, 2) if self.half else (self.N, bm, bh)
-        self.data = torch.empty(shape, dtype=torch.float16 if self.half else torch.complex64, device=where,
-                                pin_memory=where.type == "cpu" and self.dev.type == "cuda")
+        self._spill = None
+        if where.type == "cpu" and c64 / 2 > 0.6 * _host_available():
+            # too big for RAM as well: a disk-backed array (the OS keeps what fits in its page cache)
+            d = self.p.spill_dir or tempfile.gettempdir()
+            fd, self._spill = tempfile.mkstemp(prefix="celeris2d_", suffix=".f16", dir=d)
+            os.close(fd)
+            arr = np.memmap(self._spill, dtype=np.float16, mode="w+", shape=shape)
+            os.unlink(self._spill)  # space is freed when the array is (the open mapping keeps the file alive)
+            self.data = torch.from_numpy(arr)
+            self._spill_arr = arr
+        else:
+            self.data = torch.empty(shape, dtype=torch.float16 if self.half else torch.complex64, device=where,
+                                    pin_memory=where.type == "cpu" and self.dev.type == "cuda")
         self.flip = False
         self._loaded = []                 # list of host index arrays, in load order
         self._n_loaded = 0
         self._load_lock = threading.Lock()
         self._load_err = None
         self._load_t0 = time.time()
-        kind = ("fp16 " if self.half else "") + ("on " + str(where) if where.type == "cuda" else "in pinned host RAM")
+        kind = ("fp16 " if self.half else "") + ("on " + str(where) if where.type == "cuda" else
+                                                 f"in a disk-backed file in {os.path.dirname(self._spill)} (larger "
+                                                 f"than RAM; slower passes)" if self._spill else "in pinned host RAM")
         self.log(f"[load] streaming {self.N} particles, box {B} -> working box {bm} ({self.apix_max:.3f} A/px), "
                  f"spectra {kind} ({c64 / (2e9 if self.half else 1e9):.1f} GB)")
         self._loader = threading.Thread(target=self._load_worker, args=(source,), daemon=True)
@@ -614,6 +652,12 @@ class Classifier2D:
                    E2=torch.cat([torch.cos(ang), torch.sin(ang)], 0).to(self._mdt),           # (2b, T1): conj(Ey)
                    logprior=torch.log(self.prior.clamp_min(1e-8)).repeat_interleave(R),       # (M,)
                    b=b, b_al=b_al, R=R, M=M, T1=T1, temp=s["temp"], lock_class=s["polish"])
+        null_on = p.null_class and it >= int(p.null_start * p.n_iter)
+        if null_on:
+            self.null_pi = self.null_pi or 0.05
+            # (log prior, log(1 - prior), log number of poses): the null image is 0, its log-likelihood relative
+            # to the classes' (2 CC - |CA|^2) is 0 for every pose
+            ctx["null"] = (math.log(self.null_pi), math.log1p(-self.null_pi), math.log(R * T1 * T1))
         if p.precenter_a > 0:  # rotationally averaged mean class, noise-weighted (no half-plane weights: irfft2)
             mc_ = ft_resize(self.classes, b_al).mean(0).real
             rad = torch.zeros(self.nsh, device=self.dev).index_add_(0, shell_a.flatten(), mc_.flatten())
@@ -747,6 +791,8 @@ class Classifier2D:
             rot = torch.stack([ca * dxy[:, 0] - sa * dxy[:, 1], sa * dxy[:, 0] + ca * dxy[:, 1]], 1)
             self.offsets[idx_all] = (self.offsets[idx_all] + rot).clamp_(-p.max_offset_a, p.max_offset_a)
 
+        if null_on:  # EM update of the null prior (fraction of particles explained by "no particle")
+            self.null_pi = float(np.clip(self._last_null, 0.01, 0.95))
         if p.class_prior:
             self.prior = (pop / pop.sum()).clamp_min(1e-4)
             self.prior /= self.prior.sum()
@@ -757,12 +803,14 @@ class Classifier2D:
         dt = time.time() - t_start
         info = dict(it=it + 1, res=s["res"], res_rec=s["res_rec"], box=b, n_rot=R, n_trans=T1 * T1, n=n_sub, time=dt,
                     est_res=self.est_res, maxprob=self.maxprob[idx_all].mean().item(), changed=changed,
-                    min_pop=int(pop.min().item()), max_pop=int(pop.max().item()), reseeded=reseeded, enc=self._last_enc)
+                    min_pop=int(pop.min().item()), max_pop=int(pop.max().item()), reseeded=reseeded, enc=self._last_enc,
+                    null=self._last_null if null_on else 0.0)
         self.history.append(info)
         self.pop_live = pop.detach().float().cpu()    # class sizes of this iteration (dashboard live view)
         self.log(f"[it {it + 1:3d}] align {s['res']:5.1f}A rec {s['res_rec']:5.1f}A box {b_al:3d}/{b:3d} rot {R:3d} ({360 / R:4.1f}deg) "
                  f"trans {T1}x{T1} n={n_sub:7d} | estRes {self.est_res:5.1f}A <Pmax> {info['maxprob']:.3f} ENC {self._last_enc:4.2f} "
                  f"changed {changed * 100:5.1f}% pop[{info['min_pop']},{info['max_pop']}]"
+                 f"{f' null {self._last_null * 100:4.1f}%' if null_on else ''}"
                  f"{' reseed ' + str(reseeded) if reseeded else ''} | {dt:6.2f}s")
 
     # ------------------------------------------------------- E/M pass (multi-GPU)
@@ -787,7 +835,8 @@ class Classifier2D:
                            dm2_0=torch.zeros((M, 2 * b * (b + 1)), device=dev),
                            dm2_1=torch.zeros((M, 2 * b * (b + 1)), device=dev),
                            sumx2=torch.zeros((c["b_al"], c["b_al"] // 2 + 1), device=dev),
-                           pop=torch.zeros(self.p.n_classes, device=dev), enc=torch.zeros((), device=dev))
+                           pop=torch.zeros(self.p.n_classes, device=dev), enc=torch.zeros((), device=dev),
+                           null=torch.zeros((), device=dev))
                 while True:
                     with lock:
                         idx = next(queue, None)
@@ -803,6 +852,7 @@ class Classifier2D:
                 accs = list(ex.map(worker, self.devs))
         tot = {k: sum(a[k].to(self.dev) for a in accs) for k in accs[0]}
         self._last_enc = float(tot["enc"]) / max(len(idx_all), 1)
+        self._last_null = float(tot["null"]) / max(len(idx_all), 1)
         bh = ctx["b"] // 2 + 1
         halves = [(torch.complex(tot[f"numer{h}"][..., :bh], tot[f"numer{h}"][..., bh:]), tot[f"dm2_{h}"])
                   for h in (0, 1)]
@@ -818,6 +868,14 @@ class Classifier2D:
         inside = (t[:, None] ** 2 + t[None, :] ** 2 <= self.p.precenter_a ** 2).flatten()
         a = cc.masked_fill(~inside[None], float("-inf")).argmax(1)
         return torch.stack([t[a % b2], t[a // b2]], 1)
+
+    @staticmethod
+    def _pnull(nul, lreal, badn):
+        """P(no particle) from the log-sum over classes x poses of (2 CC - |CA|^2 + log prior); the null image
+        scores 0 at every pose, so the comparison is prior_null vs (1 - prior_null) x mean over poses."""
+        lpi, l1pi, lnpose = nul
+        pn = torch.sigmoid(lpi - (lreal - lnpose + l1pi))
+        return torch.where(badn, torch.zeros_like(pn), pn)
 
     def _report_bad(self, idx, badn, x):
         bad = badn.nonzero()[:, 0]
@@ -873,6 +931,7 @@ class Classifier2D:
             ll.masked_fill_(~same[None, :, :, None], float("-inf"))
         if c["temp"] != 1.0:
             ll.div_(c["temp"])
+        nul = c.get("null")
         if p.hard_pose:
             # cryoSPARC-style "force max over poses": soft over classes, each class takes its best pose only
             llv = ll.view(T1, K, R, n, T1).permute(1, 3, 2, 0, 4).reshape(K, n, R * T1 * T1)
@@ -886,15 +945,19 @@ class Classifier2D:
                 lse = torch.where(badn, torch.zeros_like(lse), lse)
             cpost = torch.exp(mx - lse[None])                                          # class posterior (K, n)
             cpost[:, badn] = 0.0
+            if nul is not None:  # evidence for "a particle": class likelihood averaged over poses, not the best one
+                lreal = torch.logsumexp(torch.logsumexp(llv, -1), 0)
             r_, rest = arg // (T1 * T1), arg % (T1 * T1)
             ty_, tx_ = rest // T1, rest % T1
             kk = torch.arange(K, device=dev)[:, None].expand(K, n)
             nn = torch.arange(n, device=dev)[None, :].expand(K, n)
+            pn = self._pnull(nul, lreal, badn) if nul is not None else None
             ll.zero_()
-            ll[ty_, kk * R + r_, nn, tx_] = cpost
+            ll[ty_, kk * R + r_, nn, tx_] = cpost if pn is None else cpost * (1 - pn)[None]
             wts = ll
             sw, kord = torch.sort(cpost.T, dim=1, descending=True)                     # (n, K)
             kb = kord[:, 0]
+            del llv
             ar = torch.arange(n, device=dev)
             best = ((kb * R + r_[kb, ar]) * T1 + ty_[kb, ar]) * T1 + tx_[kb, ar]
         else:
@@ -911,6 +974,9 @@ class Classifier2D:
             wts = ll.sub_(lse[None, None, :, None]).exp_()                            # posterior, in place
             best = best[:, 0]
             sw = torch.exp(top - lse[:, None])
+            pn = self._pnull(nul, lse, badn) if nul is not None else None
+            if pn is not None:
+                wts.mul_((1 - pn)[None, None, :, None])
 
         if badn.any():  # a broken image must not reach the class sums
             x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
@@ -921,7 +987,7 @@ class Classifier2D:
         self.psi[idx] = c["psi"][bm_ % R].cpu()
         self.offsets[idx] = (t0 + torch.stack([tg[bt % T1], tg[bt // T1]], 1)).clamp_(
             -p.max_offset_a, p.max_offset_a).cpu()
-        self.maxprob[idx] = sw[:, 0].cpu()
+        self.maxprob[idx] = (sw[:, 0] if pn is None else sw[:, 0] * (1 - pn)).cpu()
         self.nsig[idx] = ((torch.cumsum(sw, 1) < 0.999).sum(1) + 1).cpu()
         self.loglik[idx] = (lse - (x2 * w8).reshape(n, -1).sum(1)).cpu()
 
@@ -930,6 +996,10 @@ class Classifier2D:
         y = ctf * x * torch.conj(ramp0) * self.store_scale                                  # aligned to t0, O(1) scale
         wnm = wts.sum((0, 3))                                                         # (M, n)
         cp = wnm.view(K, R, n).sum(1)                                                 # class posterior (K, n)
+        if pn is not None:  # stored posterior and ENC: over the classes, given that it is a particle
+            acc["null"] += pn.sum()
+            self.pnull[idx] = pn.cpu()
+            cp = cp / (1 - pn).clamp_min(1e-6)[None]
         self.cpost[idx] = cp.T.to(torch.float16).cpu()
         acc["enc"] += (1.0 / (cp * cp).sum(0).clamp_min(1e-12)).sum()                 # effective no. of classes
         c2all = ctf_2d(ctfp, self.optics, fy2, fx2, 2 * self.box_a) ** 2              # (n, 2b, b+1), 2x oversampled

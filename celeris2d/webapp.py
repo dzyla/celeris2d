@@ -27,7 +27,7 @@ from .engine import Params
 _LOAD_KEYS = ("diameter_a", "max_res_a", "init_res_a", "psi_step_min", "psi_factor", "trans_div", "max_shift_a",
               "notch_thresh", "noise_model", "seed")
 _RUN_KEYS = ("n_iter", "n_full_iter", "batch_per_class", "march_margin", "recon_margin", "frc_reg", "tau2_fudge",
-             "sigma_init_factor", "solvent_flatten", "gold_standard", "solvent_thresh", "solvent_dilate_a",
+             "sigma_init_factor", "solvent_flatten", "gold_standard", "null_class", "solvent_thresh", "solvent_dilate_a",
              "center_classes", "recenter_thresh", "hard_pose", "class_prior", "polish", "reseed_frac", "max_offset_a")
 _FIELDS = {f.name for f in dataclasses.fields(Params)}
 LOAD_KEYS = tuple(k for k in _LOAD_KEYS if k in _FIELDS)   # tolerate Params fields being renamed / removed
@@ -155,6 +155,11 @@ SETTINGS = {
                           help="Experimental. Each half-set is aligned only to classes built from its own half, so "
                                "the half-set FRC cannot mistake a shared noise pattern for signal. Over-smooths "
                                "classes with few particles."),
+    "null_class": dict(group="run_classes", label="Null ('no particle') class", unit="", type="bool",
+                       help="Adds a 'no particle' hypothesis with a learned share. A pick that fits no class better "
+                            "than empty noise (likelihood averaged over all poses) goes there and is left out of "
+                            "the class averages, so structureless picks stop building honeycomb classes. Lowers the "
+                            "confidence of those particles; mean P(null) per class is in class_stats.csv."),
     "sigma_init_factor": dict(group="run_classes", label="Initial noise inflation", unit="×", type="number",
                               help="Values > 1 inflate the noise estimate at the start and anneal it to 1 between "
                                    "iterations 2 and 17 (cryoSPARC-style). 1 = off; inflation hurt separation of "
