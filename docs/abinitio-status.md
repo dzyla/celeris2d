@@ -32,10 +32,17 @@ lacking 5.4 % of the density): 2 3D classes, 99.5 % correct.
      Relaxation is also tried when the best group scores >= 0.3 (a blurred C1 map scored C3 only 0.36).
    - synthetic (tests' objects, 12 Å): true C3 100 % (relaxed kept), asymmetric 89 % (false C2 rejected by 3.9 %),
      pseudo-C3 (C3 + one extra blob) 68 %, direct C1 kept.
-   Open: J1279 (C3, 77k, strong top-view preference) C1 — the blurred C1 map suggests C2, the C2-relaxed map loses,
-   C3 is never tried; direct C1 keeps a smeared side view (FSC 0.5 vs reference 22–47 Å, C3 run 11 Å). Trying the
-   two best-scoring groups would cover it. "Relaxed map stays symmetric after C1 refinement" is no test: a forced
-   C2 start stayed C2 (0.97). Leads still open: independent half sets from the start; more 2D classes.
+   - relaxed refinement searched only around each pose, so a map solved with symmetry stayed symmetric (a forced
+     C2 start still scored C2 0.97 after C1 refinement) and a pseudo-symmetric particle's extra feature never
+     appeared. Now the first `relax_iters` (3) C1 iterations also search every symmetry-related copy of each pose
+     (RELION's relaxed symmetry); a fit difference within 2 paired standard errors is a tie, decided by half-map
+     resolution. J341 C1 seeds 0-2: 90 / 89 / 90 % within 10°, FSC 0.5 vs reference 8.9-9.3 Å (C3 imposed: 89 %,
+     9.1 Å). Synthetic pseudo-C3: 17-68 % -> 77-89 % (direct C1 correctly kept); true C3 100 %; asymmetric 89 %.
+   Open: J1279 (C3 by the user's refinement, 77k, strong top-view preference) in C1: the particles prefer the
+   direct C1 map by 3 % (17x the paired noise) over the C3-relaxed one, though its side view is smeared (FSC 0.5 vs
+   the C3 reference 22 Å; C3 imposed 11 Å). Either the particle is not strictly C3 or the missing side views leave
+   C1 under-determined; trying the two best-scoring groups did not change it. Leads still open: independent half
+   sets from the start; more 2D classes.
 2. **Speed.** For 3.5k particles we are ~4× faster than RELION on a quarter of the GPUs, not 20×. Most time is the
    refinement at the full 218 px box (61–100 s) and SGD (21–34 s). Leads: run early refinement iterations on a
    smaller box (Nyquist ~2× the current resolution; `_fetch` already crops), scale SGD rounds/batch with the

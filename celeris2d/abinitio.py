@@ -724,8 +724,8 @@ def particle_sgd(clf, idx: torch.Tensor, t: torch.Tensor, init: Volume, sym: str
 
 
 def cross_fit(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, halves, res_a: float, box: int,
-              n_max: int = 8000, seed: int = 0) -> float:
-    """Mean normalised correlation of particles with the projection of the half map they did NOT go into (the
+              n_max: int = 8000, seed: int = 0) -> torch.Tensor:
+    """Normalised correlation (per particle, a fixed random subset of n_max) of particles with the projection of the half map they did NOT go into (the
     half split of refine_particles), at their poses A, t, over frequencies up to res_a. Comparable between maps
     only at the same res_a: a correlation over a lower band is higher for any map, and a particle compared with
     a map it helped build agrees with it whatever the map is."""
@@ -740,7 +740,7 @@ def cross_fit(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, halves, 
     fxb = fx[None, :].expand(b, b // 2 + 1)[band]
     ph = TWO_PI / box_a
     A, t = A.to(dev).float(), t.to(dev).float()
-    tot = 0.0
+    out = torch.empty(len(sub), device=dev)
     for i in range(0, len(sub), 1024):
         s = sub[i:i + 1024]
         j = idx[s.cpu()]
@@ -754,19 +754,23 @@ def cross_fit(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, halves, 
                 mdl[k] = halves[1 - h].project(A[s[k]], band)
         mdl = mdl * ctf * e_t
         cc = (x.conj() * mdl).real.sum(1) / ((x.abs() ** 2).sum(1) * (mdl.abs() ** 2).sum(1)).sqrt().clamp_min(1e-12)
-        tot += float(cc.sum())
-    return tot / len(sub)
+        out[i:i + 1024] = cc
+    return out
 
 
 def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, inits, z: torch.Tensor | None = None,
                      sym: str = "C1", n_iter: int = 8, res_start: float = 15.0, step_start: float | None = None,
                      batch: int = 256, n_local: int = 1, step_scale: float | None = None, global_at: tuple = (),
                      global_res: float = 12.0, drop_frac: float = 0.0, rebalance: float = 0.0,
-                     box: int | None = None, log=print):
+                     box: int | None = None, relax_ops: torch.Tensor | None = None, relax_iters: int = 0, log=print):
     """Local refinement of particle orientations A and shifts t (A, model shift) against CTF-modulated projections,
     gold-standard halves. inits: starting Volume or list of M Volumes. A: (n, 3, 3) or, with several models, the
     pose in every model's own frame (n, M, 3, 3); t: (n, 2) or (n, M, 2); z: (n,) starting model. Each iteration
     refines the pose in every model and puts the particle in the model that fits best.
+    relax_ops: symmetry operators of the group the start map was solved in; for the first relax_iters iterations
+    the local search also covers every symmetry-related copy of each pose (RELION's relaxed symmetry), so a
+    particle can move to the copy that matches an asymmetric feature; a refinement started from a symmetric map
+    otherwise stays symmetric.
     global_at: iterations (1-based) before which every particle also gets an exhaustive orientation search at
     global_res (single model); a particle takes the global pose if it fits better than its current one.
     drop_frac: the worst-fitting fraction of particles (normalised fit, compared within defocus groups) is left out
@@ -890,7 +894,12 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
         Rl = local_rotations(step, n_local).to(dev)               # ((2n+1)^2, 3, 3) out-of-plane
         dpsi = torch.arange(-n_local, n_local + 1, dtype=torch.float32) * step
         Rc = (rotz(dpsi).to(dev)[:, None] @ Rl[None]).reshape(-1, 3, 3)   # (J, 3, 3) applied on the left: A' = Rc @ A
-        J = len(Rc)
+        xo = relax_ops is not None and it < relax_iters
+        J0 = len(Rc)
+        J = J0 * (len(relax_ops) if xo else 1)
+        jc = (J0 // 2) * (len(relax_ops) if xo else 1)                 # index of the unperturbed pose
+        if xo:
+            ops_x = relax_ops.to(dev).float()
         ts = torch.tensor([-1.0, 0.0, 1.0], device=dev) * (box_a / b) * max(0.5, step / 3)
         sx, sy = torch.meshgrid(ts, ts, indexing="xy")
         sg = torch.stack([sx.reshape(-1), sy.reshape(-1)], 1)    # (Sh, 2)
@@ -916,7 +925,11 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             hh = half[i:i + bt].to(dev)
             x = clf._fetch(j, dev, b)[:, band]                    # (nb, F)
             ctf = ctf_2d(clf.ctf_p[j].to(dev), clf.optics, fy, fx, box_a)[:, band]
-            Ac = Rc[None, None] @ A[i:i + bt][:, :, None]         # (nb, M, J, 3, 3): around the pose in each model
+            if xo:   # around every symmetry-related copy of the pose: (nb, M, J0 * S, 3, 3)
+                Ac = (Rc[None, None, :, None] @ (A[i:i + bt][:, :, None, None] @ ops_x[None, None, None])).reshape(
+                    nb, M, J, 3, 3)
+            else:
+                Ac = Rc[None, None] @ A[i:i + bt][:, :, None]     # (nb, M, J, 3, 3): around the pose in each model
             P = torch.empty((nb, M, J, x.shape[1]), dtype=torch.complex64, device=dev)
             for m in range(M):
                 for h in (0, 1):
@@ -944,7 +957,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             switched += int((bm != z[i:i + bt]).sum())
             z[i:i + bt] = bm
             bj, bs = bj[ar, bm], bs[ar, bm]
-            changed += float((bj != J // 2).float().sum() + (bs != Sh // 2).float().sum()) / 2
+            changed += float((bj != jc).float().sum() + (bs != Sh // 2).float().sum()) / 2
             # residual power for the noise model
             mdl = CP[ar, bm, bj] * e_t[ar, bm] * E[bs]
             score[i:i + bt] = ((x.conj() * mdl).real.sum(1)
@@ -1173,6 +1186,7 @@ class AbinitioParams:
                                     # C3 within 10 deg of cryoSPARC 76 -> 89%, map vs reference FSC 0.5 11.1 -> 9.0 A
                                     # (3 seeds); J1279 C3 equal; +5 s
     relax_sym: bool = True          # C1 run whose map looks symmetric: solve with that symmetry, refine in C1 from it
+    relax_iters: int = 3            # ... the first n C1 iterations search every symmetry-related copy of each pose
     check_starts: int = 3           # without SGD: the best n class-stage starts each get a short particle refinement; the one
                                     # the particles fit best is kept (1 = trust the class agreement)
     drop_frac: float = 0.1          # worst-fitting fraction of particles left out of the reconstruction (0 = keep all)
@@ -1260,7 +1274,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
             # judged like the symmetry relaxation: each particle against the half map it was not in, all
             # candidates over the same band (a candidate's own fit is higher the blurrier it is)
             r_cmp = max(12.0, max(o[3] for o in outs))
-            fits = [cross_fit(clf, idx_[sub], o[0], o[1], o[2], r_cmp, b, seed=prm.seed) for o in outs]
+            fits = [float(cross_fit(clf, idx_[sub], o[0], o[1], o[2], r_cmp, b, seed=prm.seed).mean()) for o in outs]
             for c_i, (c_score, _, _) in enumerate(starts):
                 lg(f"[3d] candidate start {c_i + 1}: class agreement {c_score:.3f}, cross-validated fit at "
                    f"{r_cmp:.1f} A {fits[c_i]:.4f} ({outs[c_i][3]:.1f} A)")
@@ -1337,6 +1351,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
                 t0 = time.time()
                 out = refine_particles(clf, ii, A_g, t_g, Vg, sym="C1", n_iter=prm.n_iter, res_start=max(r_g[0], 8.0),
                                        n_local=prm.n_local, box=b, drop_frac=prm.drop_frac, rebalance=prm.rebalance,
+                                       relax_ops=symmetry_ops(g_sym), relax_iters=prm.relax_iters,
                                        log=lambda *a: None)
                 torch.cuda.synchronize()
                 timing["particles"] += time.time() - t0
@@ -1348,7 +1363,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
             if sub is None:
                 res_ref = c1_result[5][0]
                 r_cmp = max(res_ref, res_rel)
-                fit_ref = cross_fit(clf, ii, c1_result[1], c1_result[2], c1_result[6][0], r_cmp, b, seed=prm.seed)
+                cc_ref = cross_fit(clf, ii, c1_result[1], c1_result[2], c1_result[6][0], r_cmp, b, seed=prm.seed)
             else:   # the direct C1 map, refined on the same subset, for a like-for-like comparison
                 Vc = Volume(b, dev)
                 Vc.set_real(c1_result[0][0])
@@ -1360,18 +1375,24 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
                 timing["particles"] += time.time() - t0
                 res_ref = oc[5][0]
                 r_cmp = max(res_ref, res_rel)
-                fit_ref = cross_fit(clf, ii, oc[1], oc[2], oc[6][0], r_cmp, b, seed=prm.seed)
+                cc_ref = cross_fit(clf, ii, oc[1], oc[2], oc[6][0], r_cmp, b, seed=prm.seed)
                 del oc
             # the symmetry score of a C1 map can be a false positive (an asymmetric particle can come out slightly
             # symmetric-looking), so the particles decide: each particle against the half map it was not part of,
             # both maps over the same band (the worse resolution of the two). The refinement's own fit compares
             # each map at its own resolution with the particles that built it, and preferred a blurred, wrong
             # C1 map on J341 (C3): 0.282 vs 0.199 at 17.8 vs 8.7 A, 39% vs 74% of orientations within 10 deg.
-            fit_rel = cross_fit(clf, ii, out_rel[1], out_rel[2], out_rel[6][0], r_cmp, b, seed=prm.seed)
+            cc_rel = cross_fit(clf, ii, out_rel[1], out_rel[2], out_rel[6][0], r_cmp, b, seed=prm.seed)
+            # same particles in both: a difference within 2 paired standard errors is a tie, decided by the better
+            # half-map resolution (J341 C1: 0.2181 vs 0.2178 kept the worse direct map, 75 vs 90% within 10 deg)
+            d = cc_rel - cc_ref
+            se = float(d.std() / math.sqrt(len(d)))
+            fit_rel, fit_ref = float(cc_rel.mean()), float(cc_ref.mean())
+            tie = abs(fit_rel - fit_ref) < 2 * se
             on = f" ({len(sub)} particles)" if sub is not None else ""
-            if fit_rel >= fit_ref:
+            if (fit_rel > fit_ref and not tie) or (tie and res_rel < res_ref):
                 log(f"[3d] relaxed map kept{on}: cross-validated fit at {r_cmp:.1f} A {fit_rel:.4f} vs {fit_ref:.4f} "
-                    f"(direct C1), {res_rel:.1f} vs {res_ref:.1f} A")
+                    f"(direct C1, +-{2 * se:.4f}), {res_rel:.1f} vs {res_ref:.1f} A")
                 if sub is not None:
                     del out_rel
                     Ak_g, out_rel = relaxed(None)
@@ -1380,7 +1401,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
                 relaxed_from = g_sym
             else:
                 log(f"[3d] direct C1 map kept{on}: cross-validated fit at {r_cmp:.1f} A {fit_ref:.4f} vs {fit_rel:.4f} "
-                    f"(relaxed), {res_ref:.1f} vs {res_rel:.1f} A")
+                    f"(relaxed, +-{2 * se:.4f}), {res_ref:.1f} vs {res_rel:.1f} A")
                 del out_rel
                 maps, A, t, z, fs, res, vols = c1_result
                 refine_particles.last_weights, refine_particles.last_score = c1_weights
