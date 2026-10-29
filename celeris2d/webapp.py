@@ -27,7 +27,7 @@ from .engine import Params
 _LOAD_KEYS = ("diameter_a", "max_res_a", "init_res_a", "psi_step_min", "psi_factor", "trans_div", "max_shift_a",
               "notch_thresh", "noise_model", "seed")
 _RUN_KEYS = ("n_iter", "n_full_iter", "batch_per_class", "march_margin", "recon_margin", "frc_reg", "tau2_fudge",
-             "sigma_init_factor", "solvent_flatten", "gold_standard", "null_class", "solvent_thresh", "solvent_dilate_a",
+             "sigma_init_factor", "solvent_flatten", "gold_standard", "null_class", "junk_classes", "junk_res_a", "class_by_evidence", "solvent_thresh", "solvent_dilate_a",
              "center_classes", "recenter_thresh", "hard_pose", "class_prior", "polish", "reseed_frac", "max_offset_a")
 _FIELDS = {f.name for f in dataclasses.fields(Params)}
 LOAD_KEYS = tuple(k for k in _LOAD_KEYS if k in _FIELDS)   # tolerate Params fields being renamed / removed
@@ -160,6 +160,17 @@ SETTINGS = {
                             "than empty noise (likelihood averaged over all poses) goes there and is left out of "
                             "the class averages, so structureless picks stop building honeycomb classes. Lowers the "
                             "confidence of those particles; mean P(null) per class is in class_stats.csv."),
+    "junk_classes": dict(group="run_classes", label="Junk decoy classes", unit="classes", type="number",
+                         help="The last N of the K classes are decoys that can only be a featureless round blob "
+                              "(rotationally averaged, low-passed). Picks without orientation-specific signal (dots, "
+                              "aggregates, ice, empty picks) collect there instead of forming honeycomb-textured "
+                              "noise classes. Classes are then compared by likelihood averaged over poses. 0 = off."),
+    "junk_res_a": dict(group="run_classes", label="Junk decoy low-pass", unit="Å", type="number",
+                       help="Resolution limit of the junk decoys."),
+    "class_by_evidence": dict(group="run_classes", label="Classes by pose-averaged likelihood", unit="", type="bool",
+                              help="Choose a particle's class by its likelihood averaged over all poses rather than "
+                                   "the best pose (which a noise pattern always wins somewhere). On whenever junk "
+                                   "decoys are used."),
     "sigma_init_factor": dict(group="run_classes", label="Initial noise inflation", unit="×", type="number",
                               help="Values > 1 inflate the noise estimate at the start and anneal it to 1 between "
                                    "iterations 2 and 17 (cryoSPARC-style). 1 = off; inflation hurt separation of "

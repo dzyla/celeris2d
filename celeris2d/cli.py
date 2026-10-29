@@ -87,7 +87,8 @@ def _write_rest(outdir, clf, src, in_path, imgs, pops, cls, apix_out, K, particl
                 f"{clf.total_time:.0f} s on {len(clf.devs)} GPU(s)")
     pd.DataFrame({"class": np.arange(1, K + 1), "particles": pops, "fraction": pops / pops.sum(),
                   "mean_max_posterior": conf, "resolution_A": clf.class_res.numpy(),
-                  "mean_p_null": np.bincount(cls, weights=clf.pnull.numpy(), minlength=K) / np.maximum(pops, 1)}).to_csv(
+                  "mean_p_null": np.bincount(cls, weights=clf.pnull.numpy(), minlength=K) / np.maximum(pops, 1),
+                  "junk_decoy": np.arange(K) >= K - clf.p.junk_classes}).to_csv(
         os.path.join(outdir, "class_stats.csv"), index=False)
     if is_cs:
         write_cryosparc(outdir, clf, src, imgs, apix_out, particles)
@@ -271,6 +272,13 @@ def main(argv=None):
     ap.add_argument("--null-class", action="store_true",
                     help="extra 'no particle' hypothesis: picks without evidence for any class are kept out of "
                          "the class averages (fewer noise-attractor classes); P(null) lowers their confidence")
+    ap.add_argument("--junk-classes", type=int, default=0, metavar="N",
+                    help="the last N of the K classes are junk decoys (rotationally symmetric, low-passed): picks "
+                         "without orientation-specific signal collect there instead of in noise-attractor classes")
+    ap.add_argument("--junk-res", type=float, default=25.0, help="decoy low-pass in A (default 25)")
+    ap.add_argument("--class-by-evidence", action="store_true",
+                    help="choose classes by likelihood averaged over poses instead of each class's best pose "
+                         "(implied by --junk-classes)")
     ap.add_argument("--polish", action="store_true",
                     help="final pass aligns out to the reconstruction limit with classes locked: sharper on "
                          "high-SNR data, harmful on low-SNR / heavily binned data")
@@ -346,7 +354,8 @@ def main(argv=None):
     prm = Params(**preset, n_classes=a.K, n_iter=a.iter, diameter_a=a.diameter, max_res_a=a.max_res, init_res_a=a.init_res,
                  max_shift_a=a.max_shift, max_offset_a=a.max_offset, psi_step_min=a.psi_step, tau2_fudge=a.tau2_fudge,
                  batch_per_class=a.batch_per_class, n_full_iter=a.full_iter, anneal_t0=a.anneal,
-                 center_classes=not a.no_center, seed=a.seed, init_classes=a.init_classes, frc_reg=not a.no_frc_reg, march_margin=a.march_margin, noise_model=a.noise_model, notch_thresh=a.notch, polish=a.polish, solvent_flatten=a.solvent_flatten, gold_standard=a.gold_standard, null_class=a.null_class, sigma_init_factor=a.sigma_init_factor, hard_pose=a.hard_pose, class_prior=a.class_prior,
+                 center_classes=not a.no_center, seed=a.seed, init_classes=a.init_classes, frc_reg=not a.no_frc_reg, march_margin=a.march_margin, noise_model=a.noise_model, notch_thresh=a.notch, polish=a.polish, solvent_flatten=a.solvent_flatten, gold_standard=a.gold_standard, null_class=a.null_class, junk_classes=a.junk_classes, junk_res_a=a.junk_res,
+                 class_by_evidence=a.class_by_evidence, sigma_init_factor=a.sigma_init_factor, hard_pose=a.hard_pose, class_prior=a.class_prior,
                  polarity=-1 if a.invert else (1 if a.no_invert else 0))
     for kv in a.param:  # any Params field, typed like its default: --param solvent_dilate_a=40
         k, _, v = kv.partition("=")

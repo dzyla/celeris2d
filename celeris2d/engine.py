@@ -198,6 +198,13 @@ class Params:
                                     # P(null) per particle lowers its confidence (maxprob)
     null_start: float = 0.3         # null hypothesis on after this fraction of the online iterations (classes need
                                     # signal first, or everything is "noise" and the classes starve)
+    junk_classes: int = 0           # the last n of the K classes are junk decoys: rotationally averaged and low-passed
+                                    # to junk_res_a every iteration, so they can only be "a featureless blob". Picks
+                                    # without orientation-specific signal (dots, aggregates, ice, empty picks) collect
+                                    # there instead of building noise-attractor classes. Implies class_by_evidence
+    junk_res_a: float = 25.0        # decoy low-pass (A)
+    class_by_evidence: bool = False # class posterior from each class's likelihood averaged over poses (hard pose:
+                                    # instead of its best pose, which a pattern fitted to noise always wins somewhere)
     gold_standard: bool = False     # each half-set is aligned only to classes built from its own half, so the
                                     # half-set FRC (Wiener filter) cannot mistake a shared noise pattern for signal
     sigma_init_factor: float = 1.0  # >1: noise inflated at the start, annealed to 1 (cryoSPARC-style); off: hurt LoG separation
@@ -590,7 +597,7 @@ class Classifier2D:
             scale = (ft.abs() ** 2).sum() / (ft_ref.abs() ** 2).sum().clamp_min(1e-30) * len(ft_ref) / K
             ft[: len(ft_ref)] = ft_ref * (scale.sqrt() if rescale else 1.0)
             self.log(f"[init] {len(ft_ref)} of {K} starting classes from templates")
-        self.classes = self._postprocess(ft, bm, center=False)[0]
+        self.classes = self._postprocess(self._decoys(ft, bm), bm, center=False)[0]
         # both half-sets start from the same (low-resolution) classes and then evolve independently
         self.classes_h = self.classes[None].repeat(2, 1, 1, 1) if self.p.gold_standard else None
         self.S_numh = self.S_denh = None
@@ -652,7 +659,8 @@ class Classifier2D:
                    Exr=torch.exp(-1j * ph * fx[:, None] * tg[None, :]).to(torch.complex64),    # (bh, T1) M-step
                    E2=torch.cat([torch.cos(ang), torch.sin(ang)], 0).to(self._mdt),           # (2b, T1): conj(Ey)
                    logprior=torch.log(self.prior.clamp_min(1e-8)).repeat_interleave(R),       # (M,)
-                   b=b, b_al=b_al, R=R, M=M, T1=T1, temp=s["temp"], lock_class=s["polish"])
+                   b=b, b_al=b_al, R=R, M=M, T1=T1, temp=s["temp"], lock_class=s["polish"],
+                   by_evidence=p.class_by_evidence or p.junk_classes > 0)
         null_on = p.null_class and it >= int(p.null_start * p.n_iter)
         if null_on:
             self.null_pi = self.null_pi or 0.05
@@ -765,6 +773,13 @@ class Classifier2D:
         kk = torch.where(bad.any(1), bad.float().argmax(1) + 1, torch.full_like(bad[:, 0], nsh - 1, dtype=torch.long))
         self.class_res = (self.box_a / kk.clamp_min(1).float()).cpu()
 
+        J = min(p.junk_classes, K - 1)
+        if J > 0:  # an empty decoy would turn into a zero image for good: refill it with the mean class's blob
+            dead = torch.nonzero(pop[-J:] < 1e-3 * pop.sum()).flatten() + (K - J)
+            if len(dead):
+                wr = pop[:K - J] / pop[:K - J].sum().clamp_min(1e-12)
+                ft[dead] = (ft[:K - J] * wr[:, None, None]).sum(0)
+        ft = self._decoys(ft, b)
         if not torch.isfinite(ft).all():  # never let one bad value poison every later iteration
             nb = int((~torch.isfinite(ft)).flatten(1).any(1).sum())
             self.log(f"[warn] it {it + 1}: non-finite values in {nb} class(es) zeroed")
@@ -938,6 +953,8 @@ class Classifier2D:
             # cryoSPARC-style "force max over poses": soft over classes, each class takes its best pose only
             llv = ll.view(T1, K, R, n, T1).permute(1, 3, 2, 0, 4).reshape(K, n, R * T1 * T1)
             mx, arg = llv.max(-1)                                                      # (K, n)
+            if c["by_evidence"]:  # compare classes by their pose-averaged likelihood, keep each one's best pose
+                mx = torch.logsumexp(llv, -1)
             lse = torch.logsumexp(mx, dim=0)                                           # (n,)
             badn = ~torch.isfinite(lse)
             if badn.any():  # one non-finite particle would make every class NaN: park it in class 0, weight 0
@@ -948,7 +965,7 @@ class Classifier2D:
             cpost = torch.exp(mx - lse[None])                                          # class posterior (K, n)
             cpost[:, badn] = 0.0
             if nul is not None:  # evidence for "a particle": class likelihood averaged over poses, not the best one
-                lreal = torch.logsumexp(torch.logsumexp(llv, -1), 0)
+                lreal = lse if c["by_evidence"] else torch.logsumexp(torch.logsumexp(llv, -1), 0)
             r_, rest = arg // (T1 * T1), arg % (T1 * T1)
             ty_, tx_ = rest // T1, rest % T1
             kk = torch.arange(K, device=dev)[:, None].expand(K, n)
@@ -1094,15 +1111,37 @@ class Classifier2D:
             ft = torch.fft.rfft2(img2, norm="forward")
         return ft, shifts
 
+    def _decoys(self, ft, b):
+        """Junk decoys (the last junk_classes classes): rotational average (= radial average of the real part of
+        the spectrum) low-passed to junk_res_a."""
+        J = min(self.p.junk_classes, self.p.n_classes - 1)
+        if J <= 0:
+            return ft
+        fy, fx = freqs(b, self.dev)
+        kr = torch.sqrt(fy[:, None] ** 2 + fx[None, :] ** 2)
+        sh = torch.round(kr).long()
+        nb = int(sh.max()) + 1
+        w = torch.ones_like(kr)
+        w[:, 1:-1] = 2.0  # half-plane: interior columns stand for two pixels of the full plane
+        d = ft[-J:].real
+        num = torch.zeros((J, nb), device=self.dev).index_add_(1, sh.flatten(), (d * w).reshape(J, -1))
+        den = torch.zeros(nb, device=self.dev).index_add_(0, sh.flatten(), w.flatten())
+        rad = (num / den.clamp_min(1e-12))[:, sh]
+        lp = torch.exp(-0.5 * (kr / (self.box_a / self.p.junk_res_a)) ** 2)
+        ft = ft.clone()
+        ft[-J:] = (rad * lp).to(ft.dtype)
+        return ft
+
     def _reseed(self, it, pop):
         p = self.p
         if it >= int(0.7 * p.n_iter) or p.reseed_frac <= 0:
             return 0
-        thr = p.reseed_frac * pop.sum() / p.n_classes
-        small = torch.nonzero(pop < thr).flatten().tolist()
+        Kr = p.n_classes - min(p.junk_classes, p.n_classes - 1) if p.junk_classes > 0 else p.n_classes
+        thr = p.reseed_frac * pop[:Kr].sum() / Kr
+        small = torch.nonzero(pop[:Kr] < thr).flatten().tolist()   # decoys are never reseeded nor split
         n = 0
         for k in small:
-            big = int(torch.argmax(pop))
+            big = int(torch.argmax(pop[:Kr]))
             noise = torch.randn(self.classes[big].shape, device=self.dev, dtype=torch.complex64)
             amp = self.classes[big].abs().mean()
             self.classes[k] = self.classes[big] + 0.3 * amp * noise * (self.classes[big] != 0)
