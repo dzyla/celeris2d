@@ -276,6 +276,32 @@ def masked_fsc(a: Volume, b: Volume, mask: torch.Tensor) -> torch.Tensor:
     return fsc_maps(a.real() * mask, b.real() * mask)
 
 
+def corrected_masked_fsc(h1: torch.Tensor, h2: torch.Tensor, mask: torch.Tensor, seed: int = 0) -> torch.Tensor:
+    """Masked FSC of two real half maps corrected for the correlation a (tight) mask creates by itself (RELION
+    PostProcess): beyond the shell where the unmasked FSC drops below 0.8, the half maps' phases are randomised,
+    masked again, and FSC_true = (FSC_masked - FSC_random) / (1 - FSC_random)."""
+    n = h1.shape[0]
+    f_un = fsc_maps(h1, h2)
+    f_m = fsc_maps(h1 * mask, h2 * mask)
+    below = torch.nonzero(f_un < 0.8)
+    k_r = int(below[0]) if len(below) else len(f_un) - 1
+    k = torch.fft.fftfreq(n, device=h1.device) * n
+    kz = torch.arange(n // 2 + 1, device=h1.device, dtype=torch.float32)
+    kk = torch.sqrt(k[:, None, None] ** 2 + k[None, :, None] ** 2 + kz[None, None, :] ** 2)
+    g = torch.Generator(device=h1.device).manual_seed(seed)
+    out = []
+    for h in (h1, h2):
+        ft = torch.fft.rfftn(h)
+        ph = torch.rand(ft.shape, generator=g, device=h1.device) * TWO_PI
+        rnd = torch.where(kk >= k_r, ft.abs() * torch.exp(1j * ph), ft)
+        out.append(torch.fft.irfftn(rnd, s=h.shape) * mask)
+    f_r = fsc_maps(out[0], out[1])
+    f = f_m.clone()
+    hi = torch.arange(len(f), device=f.device) >= k_r
+    f[hi] = (f_m[hi] - f_r[hi]) / (1 - f_r[hi]).clamp_min(1e-6)
+    return f
+
+
 def resolution_from_fsc(c: torch.Tensor, box_a: float, thr: float = 0.143) -> float:
     c = c.cpu().numpy()
     for i in range(1, len(c)):
@@ -1265,7 +1291,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
              shift_a=t.cpu().numpy(), model=rank[z.cpu()].numpy(), used=used.numpy(),
              fit=refine_particles.last_score.numpy())
     fsc_unmasked = fsc(vols[order[0]][0], vols[order[0]][1])
-    fsc_solvent = fsc_maps(vols[order[0]][0].real() * solvent[0], vols[order[0]][1].real() * solvent[0])
+    fsc_solvent = corrected_masked_fsc(vols[order[0]][0].real(), vols[order[0]][1].real(), solvent[0])
     tag = f"{len(idx):,} particles · {prm.sym}" + (f" (relaxed from {relaxed_from})" if relaxed_from else "")
     if M > 1:
         curves = [(f"3D class {r + 1}", fs[m].cpu().numpy()) for r, m in enumerate(order[:3])]
@@ -1291,9 +1317,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
     summary = dict(params=asdict(prm), particles=int(len(idx)), classes=int(keep.sum()), seconds_classes=round(t1, 1),
                    seconds_particles=round(t2, 1), resolution_a=round(res[order[0]], 2), apix=round(apix, 3), box=b,
                    resolution_unmasked_a=round(unmasked_res, 2), fsc_mask="soft sphere of the particle diameter",
-                   resolution_solvent_mask_a=round(resolution_from_fsc(fsc_maps(vols[order[0]][0].real() * solvent[0],
-                                                                              vols[order[0]][1].real() * solvent[0]),
-                                                                     box_a), 2),
+                   resolution_solvent_mask_a=round(resolution_from_fsc(fsc_solvent, box_a), 2),
                    particles_used=int(used.sum()), particles_dropped=int((~used).sum()),
                    relaxed_from=relaxed_from, seconds_sgd=round(timing["sgd"], 1),
                    fsc=[round(float(x), 4) for x in fs[order[0]].cpu()], box_a=round(box_a, 2),
