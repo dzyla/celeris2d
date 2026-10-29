@@ -549,6 +549,14 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
     return Ah[best_h], best_ll, cur_ll
 
 
+def global_step(res_a: float, diameter_a: float, max_hyp: float = 2.0e5) -> float:
+    """Angular step of a global search: the resolution-limited step res/diameter, but coarse enough that the whole
+    sphere x all in-plane angles (8 pi^2 / step^3 orientations, step in radians) stays below max_hyp. A global search only has to
+    find the right basin (local refinement follows); without the cap a 300 A particle at 12 A needs 1.2M
+    orientations per particle (J341 at 4 A ran > 40 min)."""
+    return max(2.0, math.degrees(res_a / diameter_a), math.degrees((8 * math.pi ** 2 / max_hyp) ** (1 / 3)))
+
+
 def _view_weights(A: torch.Tensor, cap: float) -> torch.Tensor:
     """Rebalance preferred orientation: particles in over-populated viewing directions (~10 deg bins) are
     down-weighted so no bin counts more than cap x the median occupied bin."""
@@ -607,7 +615,7 @@ def particle_sgd(clf, idx: torch.Tensor, t: torch.Tensor, init: Volume, sym: str
     for it in range(n_iter):
         f = it / max(n_iter - 1, 1)
         res = res_start * (res_end / res_start) ** f
-        step = max(2.0, math.degrees(res / diam))
+        step = global_step(res, diam)
         sel = torch.randperm(n, generator=g)[:batch]
         j = idx[sel]
         Ab, _, _ = global_search(clf, j, torch.eye(3).expand(len(j), 3, 3), t[sel.to(dev)], [V, V], zeros[:len(j)],
@@ -628,7 +636,7 @@ def particle_sgd(clf, idx: torch.Tensor, t: torch.Tensor, init: Volume, sym: str
         lowpass(V, res, box_a) if it == 0 else None
     # every particle's orientation in the final map
     A, _, _ = global_search(clf, idx, torch.eye(3).expand(n, 3, 3), t, [V, V], zeros, res_end,
-                            max(2.0, math.degrees(res_end / diam)), box=bs)
+                            global_step(res_end, diam), box=bs)
     log(f"[3d] particle SGD: {n_iter} rounds of {min(batch, n)} particles, {res_start:.0f} -> {res_end:.0f} A "
         f"({time.time() - t0:.1f}s)")
     return V, A
@@ -743,7 +751,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
         # ---- global re-search: particles that inherited a wrong pose (mixed 2D classes) can jump
         if M == 1 and (it + 1) in global_at:
             g_res = max(global_res, al_res)
-            g_step = max(2.0, math.degrees(g_res / diam))
+            g_step = global_step(g_res, diam)
             tg = time.time()
             Ag, llg, llc = global_search(clf, idx, A[:, 0], t[:, 0], refs[0], half, g_res, g_step, sigma2, box=b,
                                          log=log)
@@ -1143,10 +1151,25 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
         torch.cuda.synchronize()
         timing["sgd"] += time.time() - t0
         t0 = time.time()
-        out = refine_particles(clf, idx, A0, off_p, vols0, sym=sym, n_iter=prm.n_iter, res_start=prm.res_start,
-                               n_local=prm.n_local, box=b, global_res=prm.global_res,
-                               global_at=tuple(range(1, prm.global_iters + 1)), drop_frac=prm.drop_frac,
-                               rebalance=prm.rebalance, log=lg)
+        common = dict(sym=sym, n_local=prm.n_local, drop_frac=prm.drop_frac, rebalance=prm.rebalance, log=lg)
+        n_fine = min(prm.n_iter, 4)
+        b_lo = min(b, int(math.ceil(2 * box_a / 5.0 / 2)) * 2)          # Nyquist ~5 A: enough below ~8 A
+        if prm.n_iter > n_fine and b_lo < b - 8:
+            # early iterations align at 8-15 A: run them on a smaller box (projection and reconstruction cost
+            # ~ box^2 per particle), then the last iterations at the full box
+            lo = refine_particles(clf, idx, A0, off_p, vols0, n_iter=prm.n_iter - n_fine, res_start=prm.res_start,
+                                  box=b_lo, global_res=prm.global_res,
+                                  global_at=tuple(range(1, prm.global_iters + 1)), **common)
+            V_lo = Volume(b_lo, dev)
+            V_lo.set_real(lo[0][0])
+            for v in lo[6][0]:
+                v.free_acc()
+            out = refine_particles(clf, idx, lo[1], lo[2], V_lo, n_iter=n_fine, res_start=max(lo[5][0], 2.2 * box_a / b),
+                                   box=b, **common)
+        else:
+            out = refine_particles(clf, idx, A0, off_p, vols0, n_iter=prm.n_iter, res_start=prm.res_start, box=b,
+                                   global_res=prm.global_res, global_at=tuple(range(1, prm.global_iters + 1)),
+                                   **common)
         torch.cuda.synchronize()
         timing["particles"] += time.time() - t0
         return vols_cls, Ak, cc, out
