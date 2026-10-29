@@ -171,7 +171,9 @@ class Params:
     batch_per_class: int = 500      # online-EM subset size per class for the early iterations (cryoSPARC-like)
     n_full_iter: int = -1           # final iterations over all particles (-1 = auto from N, then extended)
     full_converge: float = 0.10     # auto: add full passes while more than this fraction changes class
-    max_full_iter: int = 6          # auto: at most this many full passes in total
+    max_full_iter: int = 3          # auto: at most this many full passes in total. 6 doubled the time on 0.5-1.2M particles
+                                    # for no measurable separation gain (J2473 vs J2474 F1 0.464 -> 0.469, J461 vs J466
+                                    # 0.600 -> 0.611; seed noise +-0.03): what keeps changing are near-identical views
     online_decay: float = 0.0       # online EM: running-statistics decay (0 = fresh batch each iter; 0.8 hurt)
     anneal_t0: float = 1.0          # likelihood temperature at iter 1 (1 = no annealing)
     reseed_frac: float = 0.25       # reseed classes holding < frac * N/K particles (early iters)

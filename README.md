@@ -157,7 +157,8 @@ RELION wall time = start note → last model file, so approximate)**
 
 Lessons from these runs: shape-adaptive solvent flattening (formerly the default) grew honeycomb classes on
 small particles, so it is now opt-in; on 0.5M+ particles two full passes left 30-40 % of particles still
-changing class, so full passes now continue until < 10 % change (max 6).
+changing class, so full passes continue until < 10 % change, but at most 3: scored against the cryoSPARC selections,
+6 passes doubled the time without improving separation (most of the churn is between near-identical views).
 
 Known weakness: small, round, low-information particles still form noise-attractor classes (starburst
 texture at ~20 Å) — junk-like classes that do not always look like junk; use per-class confidence / seeds.
