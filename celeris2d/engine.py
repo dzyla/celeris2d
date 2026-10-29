@@ -206,7 +206,10 @@ class Params:
     notch_thresh: float = 2.5       # zero Fourier pixels whose mean power is > this x their shell mean
                                     # (fixed-frame detector/extraction artefacts; 0 = off)
     noise_model: str = "coloured"   # "coloured": per-Fourier-pixel noise in the particle frame (down-weights
-                                    # detector/extraction artefacts); "radial": one value per shell
+                                    # detector/extraction artefacts); "radial": one value per shell. Flat (white)
+                                    # E-step weights agreed best with cryoSPARC's own classes in an exhaustive search,
+                                    # but in full runs: NS J75 F1 0.442 -> 0.421 (estRes 16 -> 23 A), J43 0.451 -> 0.450,
+                                    # RELION tutorial 0.849 -> 0.849 -> not kept
     init_classes: str = ""          # optional .mrc/.mrcs of starting class images (reference-based start)
     spill_dir: str = ""             # where spectra go when they fit neither on the GPU nor in host RAM (a disk-backed
                                     # file read through the page cache; "" = $TMPDIR); a fast local SSD is best
@@ -289,6 +292,7 @@ class Classifier2D:
         self.S_numh = self.S_denh = None              # the same per half-set (gold-standard alignment)
         self.classes_h = None                         # (2, K, bm, bh) half-set classes (gold-standard)
         self._last_enc = float('nan')
+        self._last_nbad, self._bad_logged = 0, False
         self.prior = torch.full((p.n_classes,), 1.0 / p.n_classes, device=self.dev)
         self.class_res = torch.full((p.n_classes,), float(p.init_res_a))
         # per-particle class posterior (marginal over poses) of the last pass that saw the particle
@@ -662,9 +666,28 @@ class Classifier2D:
             bn = int(np.clip(0.4e9 / (M * T1 * T1 * 4), 4, 1024))
         ctx["mc"] = max(16, int(0.4e9 / (b * bn * T1 * 8)))  # reference chunk for the GEMMs
         old_cls = self.cls[idx_all].clone()
+        old_psi, old_off = self.psi[idx_all].clone(), self.offsets[idx_all].clone()
         seen_before = self.seen[idx_all].clone()
 
         halves, sumx2, pop = self._run_pass(idx_all, ctx, bn)
+        if self._last_nbad > 0.5 * n_sub:
+            # a pass in which most likelihoods are non-finite carries no information; rebuilding the classes from it
+            # would leave K identical empty classes that never separate again (NS J75 seed 2, it 36). Keep the state.
+            self.cls[idx_all], self.psi[idx_all], self.offsets[idx_all] = old_cls, old_psi, old_off
+            fin = lambda t: "ok" if bool(torch.isfinite(t).all()) else f"{int((~torch.isfinite(t)).sum())} non-finite"
+            self.log(f"[warn] it {it + 1}: {self._last_nbad} of {n_sub} particles had non-finite likelihoods; "
+                     f"classes and poses kept from the previous iteration (classes {fin(self.classes)}, "
+                     f"refs {fin(ctx['refs'])}, weights {fin(w8)}, prior {fin(ctx['logprior'])}, "
+                     f"offsets {fin(old_off)}, noise min {float(self.noise2d.min()):.3g})")
+            badk = ~torch.isfinite(self.classes).flatten(1).all(1)
+            if badk.any():  # a non-finite class would poison every later pass too: replace it by the mean class
+                self.classes[badk] = self.classes[~badk].mean(0) if (~badk).any() else 0
+            h = dict(self.history[-1]) if self.history else dict(
+                res=s["res"], res_rec=s["res_rec"], box=b, n_rot=R, n_trans=T1 * T1, est_res=self.est_res, maxprob=0.0,
+                min_pop=0, max_pop=0, reseeded=0, enc=float("nan"))
+            h.update(it=it + 1, n=n_sub, time=time.time() - t_start, changed=1.0, skipped=True)
+            self.history.append(h)
+            return
 
         # ---- noise model (exact expected residual power per frequency)
         res2 = sumx2.clone()
@@ -806,6 +829,7 @@ class Classifier2D:
             batches = [idx_all[i:i + bn] for i in range(0, len(idx_all), bn)]
         lock = threading.Lock()
         queue = iter(batches)
+        self._bad_logged = False
 
         def worker(dev):
             with torch.cuda.device(dev):
@@ -816,7 +840,8 @@ class Classifier2D:
                            dm2_0=torch.zeros((M, 2 * b * (b + 1)), device=dev),
                            dm2_1=torch.zeros((M, 2 * b * (b + 1)), device=dev),
                            sumx2=torch.zeros((c["b_al"], c["b_al"] // 2 + 1), device=dev),
-                           pop=torch.zeros(self.p.n_classes, device=dev), enc=torch.zeros((), device=dev))
+                           pop=torch.zeros(self.p.n_classes, device=dev), enc=torch.zeros((), device=dev),
+                           nbad=torch.zeros((), device=dev))
                 while True:
                     with lock:
                         idx = next(queue, None)
@@ -832,6 +857,7 @@ class Classifier2D:
                 accs = list(ex.map(worker, self.devs))
         tot = {k: sum(a[k].to(self.dev) for a in accs) for k in accs[0]}
         self._last_enc = float(tot["enc"]) / max(len(idx_all), 1)
+        self._last_nbad = int(tot["nbad"])
         bh = ctx["b"] // 2 + 1
         halves = [(torch.complex(tot[f"numer{h}"][..., :bh], tot[f"numer{h}"][..., bh:]), tot[f"dm2_{h}"])
                   for h in (0, 1)]
@@ -849,6 +875,9 @@ class Classifier2D:
         return torch.stack([t[a % b2], t[a // b2]], 1)
 
     def _report_bad(self, idx, badn, x):
+        if self._bad_logged:   # once per pass; the total is reported by iterate()
+            return
+        self._bad_logged = True
         bad = badn.nonzero()[:, 0]
         fin = torch.isfinite(x[bad]).flatten(1).all(1)
         self.log(f"[warn] {len(bad)} particle(s) with non-finite likelihood dropped from this pass "
@@ -910,6 +939,7 @@ class Classifier2D:
             badn = ~torch.isfinite(lse)
             if badn.any():  # one non-finite particle would make every class NaN: park it in class 0, weight 0
                 self._report_bad(idx, badn, x)
+                acc["nbad"] += badn.sum()
                 mx[:, badn] = float("-inf")
                 mx[0, badn] = 0.0
                 lse = torch.where(badn, torch.zeros_like(lse), lse)
@@ -931,6 +961,7 @@ class Classifier2D:
             badn = ~torch.isfinite(lse)
             if badn.any():                                                            # drop broken particles
                 self._report_bad(idx, badn, x)
+                acc["nbad"] += badn.sum()
                 ll[:, :, badn, :] = float("-inf")
                 ll[0, 0, badn, 0] = 0.0
                 lse = torch.where(badn, torch.zeros_like(lse), lse)
