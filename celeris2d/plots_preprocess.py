@@ -239,3 +239,46 @@ def fsc_figure(path: str, curves: dict, apix: float, box: int, title: str = "Hal
     fig.tight_layout()
     fig.savefig(path, dpi=110)
     plt.close(fig)
+
+
+def picks_figure(path: str, cand, keep: np.ndarray, diameter_a: float, threshold: float, title: str = "",
+                 ref_xy_a: np.ndarray | None = None):
+    """Picks on the binned, phase-flipped micrograph used for picking (circles: kept picks; optional reference
+    positions as dots), the score map, and the candidate score distribution with the threshold."""
+    _style()
+    w = cand.work
+    fig, (a_img, a_sc, a_h) = plt.subplots(1, 3, figsize=(19, 6.4), gridspec_kw=dict(width_ratios=[1, 1, 0.8]))
+    img, wa = w["image"], w["apix"]
+    lo, hi = np.percentile(img, [1, 99])
+    a_img.imshow(img, cmap=GRAY, vmin=lo, vmax=hi)
+    th = np.linspace(0, 2 * math.pi, 40)
+    r = diameter_a / 2 / wa
+    xy = cand.xy_a[keep] / wa
+    for x, y in xy:
+        a_img.plot(x + r * np.cos(th), y + r * np.sin(th), color=SERIES[0], lw=0.8)
+    if ref_xy_a is not None:
+        a_img.scatter(ref_xy_a[:, 0] / wa, ref_xy_a[:, 1] / wa, s=6, color=SERIES[1], edgecolors="none",
+                      label="reference particles")
+        a_img.legend(loc="lower left", bbox_to_anchor=(0, -0.09), fontsize=8, frameon=False)
+    a_img.set_xticks([])
+    a_img.set_yticks([])
+    a_img.set_title(f"Picks: {len(keep)} of {len(cand.score)} candidates")
+    a_img.set_xlabel(f"binned to {wa:.1f} Å/px, phase-flipped; circles: {diameter_a:g} Å")
+    sm = w["score"]
+    v = np.percentile(np.abs(sm), 99.5)
+    a_sc.imshow(sm, cmap=DENSITY, vmin=0, vmax=v)
+    a_sc.set_xticks([])
+    a_sc.set_yticks([])
+    a_sc.set_title("Blob score (normalised cross-correlation)")
+    h, e = np.histogram(cand.score, bins=40)
+    a_h.bar(0.5 * (e[1:] + e[:-1]), h, width=0.9 * (e[1] - e[0]), color=SERIES[0])
+    a_h.axvline(threshold, color=SERIES[1], lw=1.6)
+    a_h.text(threshold, max(h) * 0.97, f"  threshold {threshold:.3f}", color=INK, fontsize=8.5, va="top")
+    a_h.set_xlabel("score")
+    a_h.set_ylabel("candidates")
+    a_h.set_title("Score distribution")
+    if title:
+        fig.suptitle(title, x=0.01, ha="left", color=INK, fontsize=12, fontweight="bold")
+    fig.tight_layout()
+    fig.savefig(path, dpi=100)
+    plt.close(fig)

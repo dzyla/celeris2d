@@ -107,8 +107,9 @@ def _find_root(start_dir: str, rel: str) -> str:
 class RelionSource(_StackReader):
     kind = "relion"
 
-    def __init__(self, star_path: str, project_dir=None, no_ctf=False, apix=None):
-        blocks = read_star(star_path)
+    def __init__(self, star_path, project_dir=None, no_ctf=False, apix=None):
+        """star_path: a .star file, or its blocks ({name: DataFrame}; then project_dir is required)."""
+        blocks = read_star(star_path) if isinstance(star_path, str) else dict(star_path)
         parts = blocks.pop("particles", None)
         optics = blocks.get("optics")
         if parts is None:  # RELION 3.0 style
@@ -325,6 +326,9 @@ class StackSource(_StackReader):
 
 
 def open_source(path: str, project_dir=None, no_ctf=False, apix=None):
+    if os.path.isfile(os.path.join(path, "job.json")):          # a Celeris2D Extract job folder
+        from .export import job_source
+        return job_source(path, no_ctf=no_ctf, apix=apix)
     if path.endswith((".cs", ".csg")):
         return CryosparcSource(path, project_dir, no_ctf, apix)
     if path.endswith((".mrcs", ".mrc")):

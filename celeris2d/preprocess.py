@@ -46,10 +46,10 @@ GAIN_ORIENT = {"as is": lambda g: g, "flip y": lambda g: g[::-1], "flip x": lamb
                "rotate 270": lambda g: np.rot90(g, 3), "anti-transpose": lambda g: np.rot90(g, 2).T}
 
 
-def orient_gain(gain: np.ndarray, frames: np.ndarray, log=print) -> np.ndarray:
+def orient_gain(gain: np.ndarray, frames: np.ndarray, log=print, return_name: bool = False):
     """The orientation of the gain reference (of 8 flips / rotations with the frame's shape) that makes the frame
     sum flattest: a mis-oriented gain imprints its fixed pattern (pixel-to-pixel roughness) instead of removing it.
-    The 8-bit K2 frames of EMPIAR-10025 come with a gain that must be flipped in y."""
+    EMPIAR-10025 (K2 super-resolution TIFF + norm-amibox05-0.mrc): "as is"."""
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     s = torch.as_tensor(np.asarray(frames.sum(0), dtype=np.float32), device=dev)
     best = None
@@ -63,7 +63,7 @@ def orient_gain(gain: np.ndarray, frames: np.ndarray, log=print) -> np.ndarray:
         if best is None or rough < best[0]:
             best = (rough, name, g)
     log(f"[gain] orientation: {best[1]}")
-    return best[2]
+    return (best[2], best[1]) if return_name else best[2]
 
 
 # --------------------------------------------------------------------------------------- Fourier helpers
@@ -126,34 +126,38 @@ def _peak(cc: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def align_frames(F: torch.Tensor, apix: float, bfactor: float = 1500.0, n_iter: int = 10,
-                 max_shift_a: float = 150.0) -> torch.Tensor:
+                 max_shift_a: float = 150.0, chunk: int = 8) -> torch.Tensor:
     """Rigid shift (x, y) in A per frame that aligns frame spectra F (n, ny, nx//2+1) to the sum of the other
     frames (leave-one-out, so a frame's own noise does not pull it to zero shift). Correlations are B-factor
-    filtered (low-pass) and searched within max_shift_a of the current shift."""
-    n, ny, nh = F.shape
+    filtered (low-pass) and searched within max_shift_a of the current shift. F may carry a batch dimension
+    (B, n, ny, nx//2+1), e.g. all patches of a micrograph at once: shifts (B, n, 2), one GPU pass for all."""
+    single = F.dim() == 3
+    if single:
+        F = F[None]
+    B, n, ny, nh = F.shape
     nx = 2 * (nh - 1)
     ky, kx = _grid(ny, nx, apix, F.device)
     filt = torch.exp(-bfactor * (ky ** 2 + kx ** 2) / 4)
-    sh = torch.zeros(n, 2, device=F.device)                              # (x, y) A
+    sh = torch.zeros(B, n, 2, device=F.device)                           # (x, y) A
     rad = int(min(ny, nx) // 2 - 2)
     lim = min(rad, int(max_shift_a / apix) + 2)
     for _ in range(n_iter):
-        Fs = F * _shift_phase(ky, kx, sh[:, 1], sh[:, 0])
-        tot = Fs.sum(0)
+        Fs = F * _shift_phase(ky, kx, sh[..., 1].reshape(-1), sh[..., 0].reshape(-1)).view(B, n, ny, nh)
+        tot = Fs.sum(1, keepdim=True)
         upd = torch.zeros_like(sh)
-        for i in range(0, n, 8):
-            fi = Fs[i:i + 8]
-            ref = tot[None] - fi
-            cc = torch.fft.irfft2(ref * fi.conj() * filt[None], s=(ny, nx))
+        for i in range(0, n, chunk):
+            fi = Fs[:, i:i + chunk]
+            cc = torch.fft.irfft2((tot - fi) * fi.conj() * filt, s=(ny, nx))
             cc = torch.fft.fftshift(cc, dim=(-2, -1))
-            c = cc[:, ny // 2 - lim: ny // 2 + lim + 1, nx // 2 - lim: nx // 2 + lim + 1]
-            dy, dx = _peak(c)
-            upd[i:i + 8, 0], upd[i:i + 8, 1] = dx * apix, dy * apix
+            c = cc[..., ny // 2 - lim: ny // 2 + lim + 1, nx // 2 - lim: nx // 2 + lim + 1]
+            k = c.shape[1]
+            dy, dx = _peak(c.reshape(B * k, *c.shape[-2:]))
+            upd[:, i:i + k, 0], upd[:, i:i + k, 1] = (dx * apix).view(B, k), (dy * apix).view(B, k)
         sh = sh + upd
-        sh = sh - sh.mean(0, keepdim=True)
+        sh = sh - sh.mean(1, keepdim=True)
         if float(upd.abs().max()) < 0.05 * apix:
             break
-    return sh
+    return sh[0] if single else sh
 
 
 class MotionModel:
@@ -189,19 +193,20 @@ class MotionModel:
 
 def patch_shifts(R: torch.Tensor, apix: float, grid: int = 5, align_apix: float = 2.6, bfactor: float = 500.0):
     """Residual shifts of globally aligned real-space frames R (n, ny, nx) on a grid x grid set of patches:
-    (centres (P, 2) in -1..1 as (x, y), shifts (P, n, 2) in A)."""
+    (centres (P, 2) in -1..1 as (x, y), shifts (P, n, 2) in A). All patches are aligned in one batch."""
     n, ny, nx = R.shape
     py, px = (ny // grid) // 2 * 2, (nx // grid) // 2 * 2
-    cen, out = [], []
+    na = max(64, int(round(py * apix / align_apix / 2)) * 2)
+    ma = max(64, int(round(px * apix / align_apix / 2)) * 2)
+    cen, Fs = [], []
     for gy in range(grid):
         for gx in range(grid):
             y0, x0 = gy * py, gx * px
             P = R[:, y0:y0 + py, x0:x0 + px]
-            F = torch.fft.rfft2(P - P.mean((1, 2), keepdim=True), norm="forward")
-            na, ma = max(64, int(round(py * apix / align_apix / 2)) * 2), max(64, int(round(px * apix / align_apix / 2)) * 2)
-            out.append(align_frames(crop_half(F, na, ma), apix * py / na, bfactor=bfactor, max_shift_a=40.0))
+            Fs.append(crop_half(torch.fft.rfft2(P - P.mean((1, 2), keepdim=True), norm="forward"), na, ma))
             cen.append(((x0 + px / 2) / nx * 2 - 1, (y0 + py / 2) / ny * 2 - 1))
-    return torch.tensor(cen, device=R.device), torch.stack(out)
+    out = align_frames(torch.stack(Fs), apix * py / na, bfactor=bfactor, max_shift_a=40.0)
+    return torch.tensor(cen, device=R.device), out
 
 
 def _local_sums(F, sh_g, model, w, apix, tile=512):
@@ -236,9 +241,10 @@ def _local_sums(F, sh_g, model, w, apix, tile=512):
     return out[:, st:st + ny, st:st + nx]
 
 
-def motion_correct(frames: np.ndarray, gain: np.ndarray | None, apix: float, dose_per_frame: float, bin: int = 1,
+def motion_correct(frames: np.ndarray, gain: np.ndarray | None, apix: float, dose_per_frame: float, bin: float = 1,
                    align_apix: float = 4.0, pre_dose: float = 0.0, patches: int = 5, device=None) -> Micrograph:
-    """Gain, Fourier binning by `bin` (super-resolution -> physical pixels), whole-frame alignment on a copy
+    """Gain, Fourier binning by `bin` (any factor >= 1: 2 for super-resolution -> physical pixels, more to save
+    space and time; the pixel size becomes apix * NY / ny, x within one pixel of the same), whole-frame alignment on a copy
     binned to ~align_apix, then the aligned sums (plain and dose-weighted) at apix * bin. patches > 0: local
     motion measured on patches x patches patches of the globally aligned frames, a smooth model fitted to it
     (MotionModel), and the sums built from overlapping tiles that each follow the model. EMPIAR-10025 (20 movies,
@@ -247,7 +253,7 @@ def motion_correct(frames: np.ndarray, gain: np.ndarray | None, apix: float, dos
     the two local-motion models place particles ~1 A apart)."""
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
     n, NY, NX = frames.shape
-    ny, nx = (NY // bin) // 2 * 2, (NX // bin) // 2 * 2
+    ny, nx = int(round(NY / bin / 2)) * 2, int(round(NX / bin / 2)) * 2
     g = None if gain is None else torch.as_tensor(np.ascontiguousarray(gain), device=dev)
     # hot pixels: far more counts over the movie than the Poisson spread allows -> the frame mean
     tot = torch.zeros(NY, NX, device=dev)
@@ -263,7 +269,7 @@ def motion_correct(frames: np.ndarray, gain: np.ndarray | None, apix: float, dos
             x = x * g
         x = torch.where(hot, x.mean(), x)
         F[i] = crop_half(torch.fft.rfft2(x, norm="forward"), ny, nx)
-    p = apix * bin
+    p = apix * NY / ny
     na = max(64, int(round(ny * p / align_apix / 2)) * 2)
     ma = max(64, int(round(nx * p / align_apix / 2)) * 2)
     Fa = crop_half(F, na, ma)
@@ -296,6 +302,19 @@ def motion_correct(frames: np.ndarray, gain: np.ndarray | None, apix: float, dos
     inv = lambda X: torch.fft.irfft2(X, s=(ny, nx), norm="forward")
     return Micrograph(sum=inv(S), sum_dw=inv(Sw), apix=p, shifts=sh.cpu().numpy(), halves=(inv(He), inv(Ho)),
                       dose_per_frame=dose_per_frame)
+
+
+def frc(a: torch.Tensor, b: torch.Tensor, apix: float, n_shell: int = 40):
+    """Fourier ring correlation of two images: (shell centres in 1/A, FRC) as numpy arrays."""
+    fa, fb = torch.fft.rfft2(a), torch.fft.rfft2(b)
+    ky, kx = _grid(a.shape[0], a.shape[1], apix, a.device)
+    sh = (torch.sqrt(ky ** 2 + kx ** 2) / (0.5 / apix) * n_shell).long().clamp(max=n_shell)
+    m = sh < n_shell
+    s = sh[m]
+    z = lambda v: torch.zeros(n_shell, device=a.device).index_add_(0, s, v[m])
+    num, da, db = z((fa * fb.conj()).real), z(fa.abs().pow(2)), z(fb.abs().pow(2))
+    ks = (torch.arange(n_shell, device=a.device) + 0.5) / n_shell * 0.5 / apix
+    return ks.cpu().numpy(), (num / (da * db).sqrt().clamp_min(1e-12)).cpu().numpy()
 
 
 # -------------------------------------------------------------------------------------------- CTF

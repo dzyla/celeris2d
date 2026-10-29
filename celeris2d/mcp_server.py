@@ -7,6 +7,12 @@ seconds to a few minutes. Class decisions are never automatic: look at `show_cla
 Typical flow:
   load_particles -> classify (or isac) -> show_classes -> select_good -> [assign | deep2d] -> export
 
+Projects (movies -> particles; docs/project-design.md): project_open -> import_movies -> process_movies (MotionCtf,
+Pick, Extract jobs, in the background) -> job_status / job_report -> [rethreshold_picks | extract_particles] ->
+load_particles(<project>/jobs/NNN_extract_...) -> classify -> select_good -> save_selection -> extract_particles(
+select=...) at full size.  Every job is a folder jobs/NNN_<type>_<what it holds>; running a step again with other
+settings makes a new job. Heavy data (micrographs, stacks) is in data/NNN: project_disk / purge_job / rebuild_job.
+
 Run:  celeris2d-mcp            (stdio transport; register it in your MCP client config)
 """
 from __future__ import annotations
@@ -26,7 +32,9 @@ server = MCPServer(
         "Fast GPU 2D classification of cryo-EM particles (RELION .star, cryoSPARC .cs/.csg, or .mrcs). "
         "Load a dataset once, then classify / isac / show_classes / select_good / assign / export. "
         "Good/bad class decisions are made by you after looking at show_classes (suggest_good only proposes). "
-        "Class numbers are 1-based and refer to the result they were shown for."),
+        "Class numbers are 1-based and refer to the result they were shown for. "
+        "From movies: project_open, import_movies, process_movies, job_status, job_report; an extract job folder "
+        "is a valid load_particles path, and save_selection stores a 2D selection back in the project."),
 )
 _session: Session | None = None
 _lock = threading.Lock()  # one GPU job at a time
@@ -43,19 +51,22 @@ def _js(d) -> str:
 
 
 @server.tool()
-def load_particles(path: str, diameter_a: float, max_res_a: float = 6.0, gpus: str = "auto", subset: int = 0,
+def load_particles(path: str, diameter_a: float = 0.0, max_res_a: float = 6.0, gpus: str = "auto", subset: int = 0,
                    workdir: str = "", speed: str = "balanced", contrast: str = "auto") -> str:
     """Open particles (RELION .star, cryoSPARC .cs/.csg, or .mrc/.mrcs stack) and start streaming them to the GPU.
-    diameter_a: particle mask diameter in A. max_res_a: finest resolution used. gpus: 'auto' or nvidia-smi
+    path may be a Celeris2D Extract job folder (<project>/Extract/jobNNN).
+    diameter_a: particle mask diameter in A (0: 200, or 1.25 x the particle size of an Extract job). max_res_a: finest resolution used. gpus: 'auto' or nvidia-smi
     indices like '0,2,3'. subset: random subset size for quick tests (0 = all). speed: fast|balanced|accurate.
     contrast: auto|invert|keep (protein must be white; auto decides from the particle average)."""
     global _session
     preset = dict(fast=dict(psi_factor=1.5, trans_div=2.5), balanced=dict(psi_factor=1.0, trans_div=3.0),
                   accurate=dict(psi_factor=1.0, trans_div=4.0))[speed]
     with _lock:
+        if not workdir and os.path.isfile(os.path.join(path, "job.json")):    # a project job: keep 2D work in it
+            workdir = os.path.join(os.path.abspath(path), "class2d")
         wd = workdir or os.path.join(os.path.dirname(os.path.abspath(path)), "celeris2d_session")
         _session = Session(wd, log=lambda *a: None)
-        info = _session.load(path, diameter=diameter_a, max_res=max_res_a, gpus=gpus, subset=subset,
+        info = _session.load(path, diameter=diameter_a or None, max_res=max_res_a, gpus=gpus, subset=subset,
                              polarity=dict(auto=0, invert=-1, keep=1)[contrast], **preset)
     return _js(dict(info, workdir=wd))
 
@@ -148,6 +159,228 @@ def status() -> str:
                     gpus=[str(d) for d in s.clf.devs], workdir=s.workdir,
                     results={k: dict(kind=r.kind, particles=int(len(r.idx)), classes=int(len(r.images)),
                                      selected=r.good is not None) for k, r in s.results.items()}))
+
+
+# ----------------------------------------------------------------------------------------------- projects
+_project = None
+_bg: dict = {}            # job dir -> dict(thread, progress, error)
+
+
+def _p():
+    if _project is None:
+        raise RuntimeError("no project open: call project_open first")
+    return _project
+
+
+@server.tool()
+def project_open(path: str) -> str:
+    """Open (or create) a processing project directory. Returns its jobs with their key numbers."""
+    global _project
+    from .project import Project
+    _project = Project(path)
+    return _js(_project.summary())
+
+
+@server.tool()
+def import_movies(pattern: str, root: str = "", label: str = "") -> str:
+    """Register movies matching a glob pattern (e.g. '/data/session1/**/*.tif') in a new Import job. root: the
+    folder whose sub-directories are kept in output names (default: the movies' common parent)."""
+    import glob
+    paths = sorted(glob.glob(pattern, recursive=True))
+    if not paths:
+        raise ValueError(f"no files match {pattern}")
+    job = _p().import_movies(paths, root=root, label=label)
+    return _js(dict(job=job.name, movies=len(paths), first=paths[0]))
+
+
+def _background(jobs, movie_ids=None):
+    from .pipeline import finish, run
+    prj = _p()
+    key = jobs[-1].name
+    st = _bg[key] = dict(done=0, of=None, error=None, jobs=[j.id for j in jobs], started=__import__("time").time())
+
+    def work():
+        try:
+            with _lock:
+                st["result"] = run(prj, jobs, movie_ids=movie_ids, log=lambda *a: None,
+                                   progress=lambda n, of: st.update(done=n, of=of))
+        except Exception as e:                       # visible through job_status
+            st["error"] = repr(e)
+            for j in jobs:
+                finish(prj, j, "failed")
+    st["thread"] = threading.Thread(target=work, daemon=True)
+    st["thread"].start()
+    return key
+
+
+@server.tool()
+def process_movies(movies_job: str, apix: float, dose_total: float, diameter_a: float, particle_a: float = 0.0,
+                   bin: float = 1.0, gain: str = "", kv: float = 300.0, cs_mm: float = 2.7, amp_contrast: float = 0.1,
+                   dark: bool = True, box_a: float = 0.0, particle_apix: float = 0.0, dtype: str = "float16",
+                   export: list[str] | None = None, figures: str = "outliers") -> str:
+    """Motion correction + CTF, blob picking and extraction of an Import job's movies, as three new jobs
+    (MotionCtf, Pick, Extract) run together in the background; poll job_status. apix: movie pixel size (bin 2 for
+    super-resolution); dose_total e/A^2 over all frames; diameter_a: blob for picking; particle_a: longest particle
+    dimension (default 1.3 x diameter) - the box is particle + CTF delocalisation unless box_a is given;
+    particle_apix: bin particles to this pixel size; export: ['relion', 'cryosparc'] to also write their files;
+    figures: all | outliers (+ the first micrograph) | none - any figure can be drawn later by job_report."""
+    from .pipeline import (ExtractSettings, MotionSettings, PickSettings, extract_job, motion_job, pick_job)
+    prj = _p()
+    imp = prj.job(movies_job)
+    mc = motion_job(prj, imp, MotionSettings(apix, dose_total, bin, gain, kv, cs_mm, amp_contrast, dtype=dtype,
+                                             figures=figures))
+    pj = pick_job(prj, mc, PickSettings(diameter_a, dark=dark, figures=figures))
+    ej = extract_job(prj, pj, ExtractSettings(particle_a or 1.3 * diameter_a, box_a, particle_apix=particle_apix,
+                                              dtype=dtype, dark=dark, export=tuple(export or ())))
+    _background([mc, pj, ej])
+    return _js(dict(jobs=[mc.name, pj.name, ej.name], box=ej.params["box"], particle_apix=ej.params["out_apix"],
+                    note="running in the background: job_status"))
+
+
+@server.tool()
+def extract_particles(picks_job: str, particle_a: float, box_a: float = 0.0, particle_apix: float = 0.0,
+                      dtype: str = "float16", dark: bool = True, select: str = "", export: list[str] | None = None,
+                      label: str = "") -> str:
+    """A new Extract job from a Pick job's kept picks (another box, binning or precision; micrographs are read
+    from disk). select: a Select job (save_selection) - extract only its particles. label: the descriptive part of
+    the folder name (default: box, pixel size, precision, selection)."""
+    from .pipeline import ExtractSettings, extract_job
+    prj = _p()
+    ej = extract_job(prj, prj.job(picks_job), ExtractSettings(particle_a, box_a, particle_apix=particle_apix,
+                                                             dtype=dtype, dark=dark, export=tuple(export or ()),
+                                                             select=prj.job(select).id if select else 0),
+                     label=label)
+    _background([ej])
+    return _js(dict(job=ej.name, box=ej.params["box"], particle_apix=ej.params["out_apix"],
+                    box_a=ej.params["box_a_used"]))
+
+
+@server.tool()
+def rethreshold_picks(picks_job: str, threshold: float | None = None, max_std: float = 2.0, max_mean: float = 3.0,
+                      label: str = "") -> str:
+    """A new Pick job keeping other candidates of the same picking (score >= threshold, None = automatic per
+    micrograph; max_std / max_mean reject carbon edges and thick ice). Instant: nothing is picked again."""
+    from .pipeline import rethreshold
+    j = rethreshold(_p(), _p().job(picks_job), threshold, max_std, max_mean, label)
+    return _js(dict(job=j.name, **_p().summary_of(j)))
+
+
+@server.tool()
+def job_status(job: str = "") -> str:
+    """Progress of background jobs (or one), with each job's status and key numbers."""
+    prj = _p()
+    out = {}
+    for key, st in _bg.items():
+        if job and prj.job(job).id not in st["jobs"]:
+            continue
+        out[key] = dict(running=st["thread"].is_alive(), movies_done=st["done"], of=st["of"], error=st["error"],
+                        jobs={prj.job(d).name: dict(status=prj.job(d).status, **prj.summary_of(d)) for d in st["jobs"]},
+                        seconds=round(__import__("time").time() - st["started"], 1))
+    if job and not out:
+        j = prj.job(job)
+        out[j.name] = dict(status=j.status, **prj.summary_of(j))
+    return _js(out or prj.summary())
+
+
+@server.tool()
+def job_report(job: str, movies: list[str] | None = None, max_figures: int = 3) -> list:
+    """A job's parameters, inputs and key numbers; for MotionCtf jobs per-micrograph statistics with outliers
+    (> 4 MAD). For MotionCtf / Pick jobs also control figures: of the named movie stems (drawn now if needed,
+    ~2 s each), else of the outliers and the first micrograph, at most max_figures."""
+    import glob
+    from .pipeline import draw_figure
+    prj = _p()
+    j = prj.job(job)
+    rep = dict(job=j.name, status=j.status, inputs=[prj.job(i).name for i in j.inputs], params=j.params,
+               summary=prj.summary_of(j))
+    mc = prj.ancestor(j, "MotionCtf")
+    if j.type == "MotionCtf":
+        rep["micrographs"] = prj.micrograph_stats(j)
+    out = [None]
+    if j.type in ("MotionCtf", "Pick"):
+        if movies:
+            mi = prj.micrographs(mc)
+            ids = mi["movie_id"][mi["stem"].isin(movies)].tolist()[:max_figures]
+            figs = [draw_figure(prj, j, i) for i in ids]
+        else:
+            figs = sorted(glob.glob(os.path.join(j.path, "figures", "*.png")))[:max_figures]
+        for f in figs:
+            with open(f, "rb") as fh:
+                out.append(Image(data=fh.read(), format="png"))
+        rep["figures"] = [prj.rel(f) for f in figs]
+    out[0] = _js(rep)
+    return out
+
+
+@server.tool()
+def export_job(job: str, fmt: str = "relion") -> str:
+    """Write RELION (movies.star / micrographs_ctf.star / autopick.star + coordinates / particles.star) or cryoSPARC
+    (particles.cs, Extract jobs) files into the job folder. Paths are relative to the project: run RELION there."""
+    from .export import export
+    return _js(dict(written=_p().rel(export(_p(), _p().job(job), fmt))))
+
+
+@server.tool()
+def save_selection(name: str, which: str = "good", min_p: float = 0.5, label: str = "") -> str:
+    """Store a particle set of a 2D result (loaded from a project extract job) in the project as a Select job: a
+    list of particle uids, valid for any extraction of the same picks (extract_particles(select=...), e.g. at full
+    size after classifying a binned extraction). which: good | bad | ambiguous."""
+    from .project import Project
+    s = _s()
+    if "celUid" not in s.src.parts:
+        raise ValueError("the loaded particles are not a Celeris2D extract job")
+    idx = s.sets(name, min_p)[which]
+    job_dir = os.path.abspath(s.path).rstrip("/")
+    prj = Project(os.path.dirname(os.path.dirname(job_dir)))
+    sel = prj.select(prj.job(os.path.basename(job_dir)), s.src.parts["celUid"].to_numpy()[idx],
+                     label=label or f"{which}_of_{name}", note=f"result {name}: {which} at P(good) >= {min_p}")
+    return _js(dict(job=sel.name, particles=int(len(idx))))
+
+
+@server.tool()
+def project_disk() -> str:
+    """Space per job, biggest first: total, purgeable (micrographs / particle stacks that rebuild_job can make again
+    from the recorded parameters), and which jobs use it."""
+    d = _p().disk()
+    return _js(dict(total_gb=round(float(d["gb"].sum()), 2), purgeable_gb=round(float(d["purgeable_gb"].sum()), 2),
+                    jobs=d.to_dict("records")))
+
+
+@server.tool()
+def purge_job(job: str) -> str:
+    """Delete a job's micrographs / particle stacks, keeping its tables, statistics and figures (rebuild_job remakes
+    them). For cleaning up extractions or micrographs no longer worked on."""
+    return _js(dict(job=_p().job(job).name, freed_gb=round(_p().purge(job), 3)))
+
+
+@server.tool()
+def rebuild_job(job: str) -> str:
+    """Make a purged job's micrographs / particle stacks again from its recorded parameters (in the background)."""
+    prj = _p()
+    j = prj.job(job)
+    prj.forget(j)
+    prj.update_params(j, purged=False)
+    _background([j])
+    return _js(dict(job=j.name, note="running in the background: job_status"))
+
+
+@server.tool()
+def rename_job(job: str, label: str) -> str:
+    """Change the descriptive part of a job's folder name (jobs/NNN_<type>_<label>); references are by number."""
+    return _js(dict(job=_p().rename(job, label).name))
+
+
+@server.tool()
+def delete_job(job: str, force: bool = False) -> str:
+    """Move a job and its data to Trash/ (refused while other jobs use it, unless force)."""
+    return _js(dict(trash=_p().rel(_p().delete_job(job, force))))
+
+
+@server.tool()
+def find_particle(key_or_uid: str) -> str:
+    """Everything about one particle: by key '<movie stem>:<x A>:<y A>' or by its uid (a number)."""
+    k = int(key_or_uid) if key_or_uid.isdigit() else key_or_uid
+    return _js(_p().find(k))
 
 
 def main():

@@ -69,10 +69,12 @@ class Session:
         self.maps: dict[str, dict] = {}   # ab initio 3D maps: name -> summary (files in <workdir>/<name>/)
 
     # ------------------------------------------------------------------ data
-    def load(self, path, diameter=200.0, max_res=6.0, gpus="auto", subset=0, project_dir=None, seed=0, **params):
+    def load(self, path, diameter=None, max_res=6.0, gpus="auto", subset=0, project_dir=None, seed=0, **params):
+        """diameter: mask diameter in A (None: 200, or 1.25 x the particle size of a Celeris2D Extract job)."""
         from .cli import pick_devices
         t0 = time.time()
         src = open_source(path, project_dir)
+        diameter = diameter or getattr(src, "mask_diameter_a", 200.0)
         if 0 < subset < src.N:
             src.subset(np.sort(np.random.default_rng(seed).choice(src.N, subset, replace=False)))
         prm = Params(diameter_a=diameter, max_res_a=max_res, seed=seed, **params)

@@ -28,18 +28,7 @@ from celeris2d import preprocess as pp
 from celeris2d.engine import Optics
 
 
-def frc(a: torch.Tensor, b: torch.Tensor, apix: float, n_shell: int = 40):
-    fa, fb = torch.fft.rfft2(a), torch.fft.rfft2(b)
-    ky, kx = pp._grid(a.shape[0], a.shape[1], apix, a.device)
-    k = torch.sqrt(ky ** 2 + kx ** 2)
-    sh = (k / (0.5 / apix) * n_shell).long().clamp(max=n_shell)
-    m = sh < n_shell
-    s = sh[m]
-    num = torch.zeros(n_shell, device=a.device).index_add_(0, s, (fa * fb.conj()).real[m])
-    da = torch.zeros(n_shell, device=a.device).index_add_(0, s, fa.abs().pow(2)[m])
-    db = torch.zeros(n_shell, device=a.device).index_add_(0, s, fb.abs().pow(2)[m])
-    ks = (torch.arange(n_shell, device=a.device) + 0.5) / n_shell * 0.5 / apix
-    return ks.cpu().numpy(), (num / (da * db).sqrt().clamp_min(1e-12)).cpu().numpy()
+frc = pp.frc
 
 
 def main():

@@ -245,7 +245,8 @@ def main(argv=None):
     ap.add_argument("--o", "-o", required=True, help="output directory")
     ap.add_argument("--K", type=int, default=20, help="number of classes")
     ap.add_argument("--iter", type=int, default=-1, help="iterations (-1 = auto: 25, or 40 above 100k particles)")
-    ap.add_argument("--diameter", type=float, default=200.0, help="particle mask diameter (A)")
+    ap.add_argument("--diameter", type=float, default=None,
+                    help="particle mask diameter (A); default 200, or 1.25 x the particle size of a Celeris2D Extract job")
     ap.add_argument("--max-res", type=float, default=6.0, help="final resolution limit (A)")
     ap.add_argument("--init-res", type=float, default=30.0)
     ap.add_argument("--max-shift", type=float, default=16.0, help="local translation range per iteration (A)")
@@ -326,6 +327,8 @@ def main(argv=None):
 
     t0 = time.time()
     src = open_source(a.i, a.project_dir, no_ctf=a.no_ctf, apix=a.apix)
+    if a.diameter is None:
+        a.diameter = getattr(src, "mask_diameter_a", 200.0)
     print(f"[input] {src.kind}: {src.N} particles {src.box}px @ {src.apix:.4f} A/px, "
           f"{'NO CTF (CTF=1)' if src.optics.no_ctf else 'CTF from metadata'} ({time.time() - t0:.1f}s)")
     if 0 < a.subset < src.N:

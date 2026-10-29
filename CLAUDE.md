@@ -65,13 +65,20 @@ Layers, bottom to top:
    `plots3d.py` (its figures). It only reads a finished 2D `Result` — the 2D engine does not know about it.
    `preprocess.py`: movies -> micrographs on the GPU (gain orientation check, whole-frame + patch motion
    correction, dose weighting, per-micrograph CTF fit with background/envelope by least squares), figures in
-   `plots_preprocess.py`; not yet wired into the front ends. `scripts/preprocess_eval.py` compares it with
+   `plots_preprocess.py`. `picking.py`: blob picker (NCC with a soft disk on a binned, phase-flipped micrograph;
+   candidates keep their scores so thresholds change without re-picking), box size from CTF delocalisation,
+   batched GPU extraction. `project.py` + `pipeline.py`: the movies -> particles project store and its jobs
+   (layout and rules in docs/project-design.md: `jobs/NNN_<type>_<label>/` small results, `data/NNN/` heavy and
+   purgeable, catalog `project.db`, particle uid/key, selections as uid lists); `pipeline.run` overlaps decoding
+   (worker processes), GPU stages and writes. `export.py`: RELION / cryoSPARC files on request, and `job_source`
+   (an extract job folder is a particle input for the CLI / Session / MCP). `scripts/pick_eval.py` runs the chain on
+   movies and scores pick recall against a refined set. `scripts/preprocess_eval.py` compares it with
    cryoSPARC on the same movies, `scripts/extract_eval.py` + `abinitio_truth.py ref` compare micrograph sets by
    reconstruction at known poses (docs/preprocess-status.md). Judge motion correction by such downstream FSC or
    the even/odd-frame FRC, not by FRC against another program's micrograph (shared shot noise).
 4. **Front ends**: `cli.py` (one-shot runs, output writers, `pick_devices`), `session.py` (stateful
    `Session`), and `webapp.py` (FastAPI + `web/index.html`) and `mcp_server.py`, both thin wrappers
-   around one `Session`, running one GPU job at a time. The 3D part of the page is `web/abinitio3d.js`, loaded
+   around one `Session`, running one GPU job at a time; `mcp_server.py` also has the project tools. The 3D part of the page is `web/abinitio3d.js`, loaded
    by index.html, which only emits `celeris:status` / `celeris:result` events for it — keep the two independent.
 
 ### Cross-cutting conventions
