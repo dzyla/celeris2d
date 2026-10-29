@@ -346,10 +346,17 @@ def main(argv=None):
         if not hasattr(prm, k):
             raise SystemExit(f"--param: unknown parameter '{k}'")
         cur = getattr(prm, k)
-        if isinstance(cur, bool) or cur is None:
-            v = {"true": True, "false": False, "none": None, "auto": None}[v.lower()]
-        else:
-            v = type(cur)(v)
+        words = {"true": True, "1": True, "yes": True, "on": True, "false": False, "0": False, "no": False,
+                 "off": False, "none": None, "auto": None}
+        try:
+            if isinstance(cur, bool):
+                v = words[v.lower()]
+            elif cur is None:
+                v = words[v.lower()] if v.lower() in words else float(v)
+            else:
+                v = type(cur)(v)
+        except (KeyError, ValueError):
+            raise SystemExit(f"--param {k}: cannot parse '{v}' (current value {cur!r})")
         setattr(prm, k, v)
     clf = Classifier2D(src, prm, devices=devices)
     if a.optimize > 0:
