@@ -1185,7 +1185,9 @@ class AbinitioParams:
                                     # (noise from the batch's power spectrum). Hard (1) locks in a wrong start: J341
                                     # C3 within 10 deg of cryoSPARC 76 -> 89%, map vs reference FSC 0.5 11.1 -> 9.0 A
                                     # (3 seeds); J1279 C3 equal; +5 s
-    relax_sym: bool = True          # C1 run whose map looks symmetric: solve with that symmetry, refine in C1 from it
+    relax_from: str = ""            # C1 run of a pseudo-symmetric particle: solve with this symmetry (the user's choice,
+                                    # e.g. "C3"), then refine in C1 from it. J341 (C3) C1 vs cryoSPARC poses: 89-90%
+                                    # within 10 deg, map vs reference 8.9-9.3 A; direct C1 47-72%, 21-25 A
     relax_iters: int = 3            # ... the first n C1 iterations search every symmetry-related copy of each pose
     check_starts: int = 3           # without SGD: the best n class-stage starts each get a short particle refinement; the one
                                     # the particles fit best is kept (1 = trust the class agreement)
@@ -1320,95 +1322,31 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
         timing["particles"] += time.time() - t0
         return vols_cls, Ak, cc, out
 
-    vols_cls, Ak, cc, (maps, A, t, z, fs, res, vols) = consensus(prm.sym)
-    relaxed_from = None
-    fit_c1 = float(refine_particles.last_score.mean())
-    if prm.sym.upper() == "C1" and prm.relax_sym:
-        rows, g_sym, _ = detect_symmetry(maps[0], box_a / b, diam)
-        if g_sym == "C1" and rows and rows[0][2] >= 0.3 and _stands_out(rows):
-            # a blurred, wrong C1 map scores its true group weakly (J341, C3: 0.36); the particles decide below
-            g_sym = rows[0][0]
-        if g_sym != "C1":
-            # pseudo-symmetric particle: C1 matching has several near-equivalent wrong answers. Solve it with the
-            # symmetry imposed (well constrained), then refine without symmetry from there (symmetry relaxation).
-            log(f"[3d] the C1 map looks {g_sym}: trying {g_sym} ab initio + C1 refinement from it")
-            for v in vols[0]:
-                v.free_acc()
-            c1_result = (maps, A, t, z, fs, res, vols)
-            c1_weights = (refine_particles.last_weights, refine_particles.last_score)
-            n_all = len(idx)
-            # decide on a subset (the trial would otherwise double the time on large sets; usually it is rejected)
-            sub = (torch.randperm(n_all, generator=torch.Generator().manual_seed(prm.seed + 3))[:25000]
-                   if n_all > 30000 else None)
-
-            def relaxed(sel):
-                _, Ak_g, _, (m_g, A_g, t_g, _, _, r_g, v_g) = consensus(g_sym, quiet=True, sel=sel)
-                for v in v_g[0]:
-                    v.free_acc()
-                Vg = Volume(b, dev)
-                Vg.set_real(m_g[0])
-                lowpass(Vg, max(r_g[0], 8.0), box_a)
-                ii = idx if sel is None else idx[sel]
-                t0 = time.time()
-                out = refine_particles(clf, ii, A_g, t_g, Vg, sym="C1", n_iter=prm.n_iter, res_start=max(r_g[0], 8.0),
-                                       n_local=prm.n_local, box=b, drop_frac=prm.drop_frac, rebalance=prm.rebalance,
-                                       relax_ops=symmetry_ops(g_sym), relax_iters=prm.relax_iters,
-                                       log=lambda *a: None)
-                torch.cuda.synchronize()
-                timing["particles"] += time.time() - t0
-                return Ak_g, out
-
-            Ak_g, out_rel = relaxed(sub)
-            res_rel = out_rel[5][0]
-            ii = idx if sub is None else idx[sub]
-            if sub is None:
-                res_ref = c1_result[5][0]
-                r_cmp = max(res_ref, res_rel)
-                cc_ref = cross_fit(clf, ii, c1_result[1], c1_result[2], c1_result[6][0], r_cmp, b, seed=prm.seed)
-            else:   # the direct C1 map, refined on the same subset, for a like-for-like comparison
-                Vc = Volume(b, dev)
-                Vc.set_real(c1_result[0][0])
-                lowpass(Vc, max(c1_result[5][0], 8.0), box_a)
-                t0 = time.time()
-                oc = refine_particles(clf, idx[sub], c1_result[1][sub.to(dev)], c1_result[2][sub.to(dev)], Vc, sym="C1",
-                                      n_iter=prm.n_iter, res_start=max(c1_result[5][0], 8.0), n_local=prm.n_local,
-                                      box=b, drop_frac=prm.drop_frac, rebalance=prm.rebalance, log=lambda *a: None)
-                timing["particles"] += time.time() - t0
-                res_ref = oc[5][0]
-                r_cmp = max(res_ref, res_rel)
-                cc_ref = cross_fit(clf, ii, oc[1], oc[2], oc[6][0], r_cmp, b, seed=prm.seed)
-                del oc
-            # the symmetry score of a C1 map can be a false positive (an asymmetric particle can come out slightly
-            # symmetric-looking), so the particles decide: each particle against the half map it was not part of,
-            # both maps over the same band (the worse resolution of the two). The refinement's own fit compares
-            # each map at its own resolution with the particles that built it, and preferred a blurred, wrong
-            # C1 map on J341 (C3): 0.282 vs 0.199 at 17.8 vs 8.7 A, 39% vs 74% of orientations within 10 deg.
-            cc_rel = cross_fit(clf, ii, out_rel[1], out_rel[2], out_rel[6][0], r_cmp, b, seed=prm.seed)
-            # same particles in both: a difference within 2 paired standard errors is a tie, decided by the better
-            # half-map resolution (J341 C1: 0.2181 vs 0.2178 kept the worse direct map, 75 vs 90% within 10 deg)
-            d = cc_rel - cc_ref
-            se = float(d.std() / math.sqrt(len(d)))
-            fit_rel, fit_ref = float(cc_rel.mean()), float(cc_ref.mean())
-            tie = abs(fit_rel - fit_ref) < 2 * se
-            on = f" ({len(sub)} particles)" if sub is not None else ""
-            if (fit_rel > fit_ref and not tie) or (tie and res_rel < res_ref):
-                log(f"[3d] relaxed map kept{on}: cross-validated fit at {r_cmp:.1f} A {fit_rel:.4f} vs {fit_ref:.4f} "
-                    f"(direct C1, +-{2 * se:.4f}), {res_rel:.1f} vs {res_ref:.1f} A")
-                if sub is not None:
-                    del out_rel
-                    Ak_g, out_rel = relaxed(None)
-                maps, A, t, z, fs, res, vols = out_rel
-                Ak = _class_poses(A, kp, psi_p, len(Ak_g))
-                relaxed_from = g_sym
-            else:
-                log(f"[3d] direct C1 map kept{on}: cross-validated fit at {r_cmp:.1f} A {fit_ref:.4f} vs {fit_rel:.4f} "
-                    f"(relaxed, +-{2 * se:.4f}), {res_ref:.1f} vs {res_rel:.1f} A")
-                del out_rel
-                maps, A, t, z, fs, res, vols = c1_result
-                refine_particles.last_weights, refine_particles.last_score = c1_weights
+    relaxed_from = prm.relax_from.upper() if prm.relax_from and prm.sym.upper() == "C1" else None
+    if relaxed_from == "C1":
+        relaxed_from = None
+    vols_cls, Ak, cc, (maps, A, t, z, fs, res, vols) = consensus(relaxed_from or prm.sym)
+    if relaxed_from:
+        # pseudo-symmetric particle (the user's choice): C1 matching has several near-equivalent wrong answers.
+        # Solved with the symmetry imposed (well constrained), then refined without it; the first relax_iters
+        # iterations search every symmetry-related copy of each pose, so a feature that breaks the symmetry appears.
+        log(f"[3d] {relaxed_from} map: {res[0]:.1f} A; refining in C1 (symmetry relaxation)")
+        for v in vols[0]:
+            v.free_acc()
+        Vg = Volume(b, dev)
+        Vg.set_real(maps[0])
+        lowpass(Vg, max(res[0], 8.0), box_a)
+        t0 = time.time()
+        maps, A, t, z, fs, res, vols = refine_particles(
+            clf, idx, A, t, Vg, sym="C1", n_iter=prm.n_iter, res_start=max(res[0], 8.0), n_local=prm.n_local, box=b,
+            drop_frac=prm.drop_frac, rebalance=prm.rebalance, relax_ops=symmetry_ops(relaxed_from),
+            relax_iters=prm.relax_iters, log=log)
+        torch.cuda.synchronize()
+        timing["particles"] += time.time() - t0
+        Ak = _class_poses(A, kp, psi_p, len(Ak))
     used = refine_particles.last_weights > 0
     consensus_map = maps[0]
-    cov = view_coverage(A, "C1" if not relaxed_from and prm.sym.upper() == "C1" else (relaxed_from or prm.sym))
+    cov = view_coverage(A, relaxed_from or prm.sym)
     cov["warning"] = (cov["occupied"] < 0.3 or cov["top10_share"] > 0.6)
     log(f"[3d] views: {cov['occupied'] * 100:.0f}% of directions occupied, busiest 10% hold "
         f"{cov['top10_share'] * 100:.0f}% of particles" + (" -- WARNING: narrow range of views, the map is smeared "
@@ -1479,9 +1417,6 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
     reproj_cc = _figures(outdir, clf, result, keep, Ak, [maps[m] for m in order], curves, rot, tilt, box_a, b, tag)
     if M > 1:
         _save_mrc(os.path.join(outdir, "consensus.mrc"), consensus_map, apix)
-    sym_rows, sym_sugg, _ = detect_symmetry(consensus_map, apix, diam)
-    log(f"[3d] symmetry check: {' '.join(f'{g} {sc:.2f}' for g, _, sc in sym_rows[:5])} -> "
-        f"{'suggest ' + sym_sugg if sym_sugg != 'C1' else 'no symmetry found'}")
     from dataclasses import asdict
     summary = dict(params=asdict(prm), particles=int(len(idx)), classes=int(keep.sum()), seconds_classes=round(t1, 1),
                    seconds_particles=round(t2, 1), resolution_a=round(res[order[0]], 2), apix=round(apix, 3), box=b,
@@ -1496,9 +1431,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
                    class_agreement=[round(float(x), 3) for x in cc],
                    models=[dict(model=r + 1, particles=pops_m[m], classes=int((zk == m).sum()),
                                 resolution_a=round(res[m], 2) if res[m] == res[m] else None)
-                           for r, m in enumerate(order)],
-                   symmetry=[dict(group=g, cc=round(x, 3), score=round(sc, 3)) for g, x, sc in sym_rows[:8]],
-                   suggested_sym=sym_sugg)
+                           for r, m in enumerate(order)])
     with open(os.path.join(outdir, "summary.json"), "w") as fh:
         json.dump(summary, fh, indent=1)
     models = " / ".join(f"{x['resolution_a'] or 'merged'} A ({x['particles']})" for x in summary["models"])
@@ -1530,7 +1463,7 @@ def _figures(outdir, clf, result, keep, Ak, maps, fsc_curves, rot, tilt, box_a, 
                              title=title)
 
 
-# --------------------------------------------------------------------------- symmetry detection
+# --------------------------------------------------------------------------- volume rotation (map comparison)
 def _rotate_volumes(v: torch.Tensor, R: torch.Tensor) -> torch.Tensor:
     """v (b, b, b) sampled at R @ r for each R (n, 3, 3) -> (n, b, b, b) (rotation of the map by R^T)."""
     b = v.shape[0]
@@ -1544,80 +1477,3 @@ def _rotate_volumes(v: torch.Tensor, R: torch.Tensor) -> torch.Tensor:
         out.append(F.grid_sample(v[None, None].expand(len(p), 1, b, b, b), g, align_corners=False)[:, 0])
     return torch.cat(out)
 
-
-def _axis_rotation(axes: torch.Tensor, ang_deg: float) -> torch.Tensor:
-    """Rotations by ang about unit axes (n, 3) (Rodrigues)."""
-    a = math.radians(ang_deg)
-    x, y, z = axes[:, 0], axes[:, 1], axes[:, 2]
-    c, s, C = math.cos(a), math.sin(a), 1 - math.cos(a)
-    return torch.stack([torch.stack([c + x * x * C, x * y * C - z * s, x * z * C + y * s], -1),
-                        torch.stack([y * x * C + z * s, c + y * y * C, y * z * C - x * s], -1),
-                        torch.stack([z * x * C - y * s, z * y * C + x * s, c + z * z * C], -1)], -2)
-
-
-def _stands_out(rows, margin: float = 0.05) -> bool:
-    """The best group of detect_symmetry rows scores `margin` above every group unrelated to it (neither a
-    subgroup nor a supergroup by order). A map smeared around one axis (narrow views) scores all Cn alike:
-    J56 C12 0.38, C11 0.38, C10 0.37 (asymmetric); a blurred C3 map: C3 0.36, next unrelated C2 0.24 (J341)."""
-    def order(g):
-        return int(g[1:]) * (2 if g[0] == "D" else 1) if g[1:].isdigit() else 0
-    n = order(rows[0][0])
-    other = [sc for g, _, sc in rows[1:] if n and order(g) and n % order(g) and order(g) % n]
-    return not other or rows[0][2] - max(other) >= margin
-
-
-def detect_symmetry(vmap: torch.Tensor, apix: float, diameter_a: float, res_a: float = 15.0, max_n: int = 12):
-    """Score Cn (n = 2..max_n) and Dn point groups on a C1 map: correlation of the map with its copy rotated by
-    each group generator, best axis found by search. Returns (rows (group, correlation, score) sorted by score,
-    suggested group). score = (cc - cc of an arbitrary axis) / (1 - cc of an arbitrary axis): 1 = perfect."""
-    dev = vmap.device
-    b0 = vmap.shape[0]
-    b = min(b0, max(24, int(round(b0 * apix / (res_a / 2) / 2)) * 2))      # Nyquist ~ res/2
-    ft = torch.fft.fftshift(torch.fft.fftn(vmap))
-    o = (b0 - b) // 2
-    v = torch.fft.ifftn(torch.fft.ifftshift(ft[o:o + b, o:o + b, o:o + b])).real
-    ap = apix * b0 / b
-    v = v * sphere_mask(b, diameter_a / 2 / ap, 2.0, dev)
-    v = v - v.mean()
-
-    def ncc(a, ref):
-        a = a - a.mean((1, 2, 3), keepdim=True)
-        return (a * ref).sum((1, 2, 3)) / (a.pow(2).sum((1, 2, 3)).sqrt() * ref.norm()).clamp_min(1e-12)
-
-    rot, tilt = sphere_directions(3.0)
-    keep = tilt <= 90.01                                      # an axis and its opposite are the same
-    th, ph = torch.deg2rad(tilt[keep]), torch.deg2rad(rot[keep])
-    axes = torch.stack([th.sin() * ph.cos(), th.sin() * ph.sin(), th.cos()], -1).to(dev)
-    rows, best_axis, base, perp_axis = [], {}, {}, {}
-    for n in range(2, max_n + 1):
-        cc = ncc(_rotate_volumes(v, _axis_rotation(axes, 360.0 / n)), v)
-        i = int(cc.argmax())
-        base[f"C{n}"] = float(cc.median())                       # what an arbitrary axis gives for this angle
-        rows.append([f"C{n}", float(cc[i])])
-        best_axis[n] = axes[i]
-    raw = {g: x for g, x in rows}
-    for n in range(2, max_n + 1):              # Dn: the Cn axis plus a perpendicular 2-fold
-        a = best_axis[n]
-        u = torch.linalg.cross(a, torch.tensor([1.0, 0, 0], device=dev) if abs(float(a[0])) < 0.9 else torch.tensor([0, 1.0, 0], device=dev))
-        u = u / u.norm()
-        w = torch.linalg.cross(a, u)
-        t = torch.deg2rad(torch.arange(0, 180, 2.0, device=dev))
-        perp = torch.cos(t)[:, None] * u + torch.sin(t)[:, None] * w
-        c2s = ncc(_rotate_volumes(v, _axis_rotation(perp, 180.0)), v)
-        perp_axis[n] = perp[int(c2s.argmax())]
-        rows.append([f"D{n}", min(raw[f"C{n}"], float(c2s.max()))])
-        base[f"D{n}"] = max(base[f"C{n}"], base["C2"])
-    # score: the fraction of the gap between an arbitrary axis and perfect agreement that the best axis closes
-    out = [(g, x, (x - base[g]) / max(1 - base[g], 1e-6)) for g, x in rows]
-    out.sort(key=lambda r: -r[2])
-    order = lambda g: (2 if g[0] == "D" else 1) * int(g[1:])
-    # largest group that scores clearly (>= 0.4) and close to the best one (a Dn score is the weaker of two axes:
-    # beta-gal C2 0.51 / D2 0.42; a C3 object with a near-2-fold scores C3 0.99 / D3 0.83 and is C3)
-    good = [g for g, x, sc in out if sc >= max(0.4, out[0][2] - 0.12)]
-    sugg = max(good, key=order) if good else "C1"
-    ops = torch.eye(3, device=dev)[None]
-    if sugg != "C1":
-        n = int(sugg[1:])
-        cn = torch.stack([_axis_rotation(best_axis[n][None], 360.0 * k / n)[0] for k in range(n)])
-        ops = torch.cat([cn, _axis_rotation(perp_axis[n][None], 180.0) @ cn]) if sugg[0] == "D" else cn
-    return out, sugg, ops

@@ -159,7 +159,7 @@ def cmd_score(a):
     if os.path.exists(summ):
         sm = json.load(open(summ))
         out.update({k: sm.get(k) for k in ("resolution_a", "resolution_unmasked_a", "seconds_classes",
-                                            "seconds_particles", "sym", "suggested_sym")})
+                                            "seconds_particles", "sym", "relaxed_from")})
     if a.ref and run_map:
         here = os.path.dirname(os.path.abspath(__file__))
         png = os.path.splitext(a.run)[0] + "_vs_ref.png" if a.run.endswith(".cs") else os.path.join(a.run, "vs_ref.png")

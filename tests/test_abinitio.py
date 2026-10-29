@@ -45,12 +45,11 @@ def _c3(blobs):
     return out
 
 
-@pytest.fixture(scope="module")
-def particles(tmp_path_factory):
+def _simulate(tmp_path_factory, blobs):
     dev = "cuda"
     g = torch.Generator().manual_seed(4)
     V = ab.Volume(BOX, dev)
-    V.set_real(_volume(BLOBS).to(dev))
+    V.set_real(_volume(blobs).to(dev))
     rot, psi = torch.rand(N, generator=g) * 360 - 180, torch.rand(N, generator=g) * 360 - 180
     tilt = torch.rad2deg(torch.arccos(torch.rand(N, generator=g) * 2 - 1))
     A = ab.euler_to_matrix(rot, tilt, psi)
@@ -62,6 +61,17 @@ def particles(tmp_path_factory):
         m.set_data(img.cpu().numpy().astype(np.float32))
         m.voxel_size = APIX
     return str(path), A
+
+
+@pytest.fixture(scope="module")
+def particles(tmp_path_factory):
+    return _simulate(tmp_path_factory, BLOBS)
+
+
+# pseudo-C3: a C3 object plus one blob that breaks the symmetry
+_rp = np.random.default_rng(11)
+PSEUDO_C3 = _c3([tuple(_rp.uniform(-12, 12, 3)) + (_rp.uniform(2.0, 3.5), _rp.uniform(0.6, 1.2)) for _ in range(5)]) + [
+    (9.0, -6.0, 8.0, 3.0, 1.0)]
 
 
 def _consistency(A_est, A_true):
@@ -96,17 +106,24 @@ def test_ab_initio_recovers_orientations(tmp_path, particles):
     df = read_star(os.path.join(out, "particles.star"))["particles"]
     assert {"rlnAngleRot", "rlnAngleTilt", "rlnAnglePsi", "rlnOriginXAngst"} <= set(df.columns)
     assert len(df) == summ["particles_used"]
-    assert summ["relaxed_from"] is None, "an asymmetric particle was forced into a symmetry"
+    assert summ["relaxed_from"] is None and "suggested_sym" not in summ, "symmetry is the user's choice only"
 
 
-def test_symmetry_detection():
-    """A C3 object is recognised (score ~1). An asymmetric one scores clearly lower; the score is advisory (smooth
-    blobby maps can look partly symmetric), so run() only keeps a symmetry-relaxed map if the particles fit it better."""
-    dev = "cuda"
-    rows, sugg, ops = ab.detect_symmetry(_volume(_c3(BLOBS[:5])).to(dev), APIX, 200)
-    assert sugg == "C3" and len(ops) == 3 and rows[0][2] > 0.95, rows[:4]
-    rows1, _, _ = ab.detect_symmetry(_volume(BLOBS).to(dev), APIX, 200)
-    assert rows1[0][2] < 0.8, rows1[:4]
+def test_relax_from_user_symmetry(tmp_path, tmp_path_factory):
+    """relax_from (user-given): a pseudo-C3 particle solved with C3 imposed, then refined in C1 over the C3-related
+    poses, so the blob that breaks the symmetry can be placed. Measured 0.60 of orientations within 10 deg of the
+    truth without symmetry (a symmetry-related copy counts as wrong); direct C1 reached 0.77-0.89 here, so
+    relax_from is for particles that are symmetric apart from small features (J341, C3: 89-90 % vs 47-72 %)."""
+    path, A_true = _simulate(tmp_path_factory, PSEUDO_C3)
+    s = Session(str(tmp_path / "work"), log=lambda *a: None)
+    s.load(path, diameter=200, max_res=12, gpus="0")
+    s.classify("k12", K=12, n_iter=15)
+    summ = s.abinitio("k12_3d", "k12", n_starts=4, sgd_iter=12, n_iter=6, drop_frac=0.0, relax_from="C3")
+    assert summ["relaxed_from"] == "C3" and "suggested_sym" not in summ
+    pz = np.load(os.path.join(s.workdir, "k12_3d", "poses.npz"))
+    A_est = ab.euler_to_matrix(torch.tensor(pz["rot"]), torch.tensor(pz["tilt"]), torch.tensor(pz["psi"]))
+    frac = _consistency(A_est, A_true[torch.as_tensor(pz["idx"])])
+    assert frac >= 0.5, f"only {frac:.2f} of orientations consistent with the truth"
 
 
 def test_projector_conventions():

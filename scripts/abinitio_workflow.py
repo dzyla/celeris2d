@@ -57,7 +57,7 @@ def main():
                           sym=sym, n_models=a.models)
         import torch
         keys = ("particles", "particles_used", "classes", "seconds_classes", "seconds_particles", "box", "resolution_a",
-                "resolution_unmasked_a", "resolution_solvent_mask_a", "suggested_sym")
+                "resolution_unmasked_a", "resolution_solvent_mask_a", "relaxed_from")
         print(json.dumps({k: summ.get(k) for k in keys}),
               f"peak GPU memory {torch.cuda.max_memory_allocated() / 1e9:.1f} GB")
         torch.cuda.reset_peak_memory_stats()

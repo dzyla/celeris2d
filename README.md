@@ -97,12 +97,12 @@ inherits its pose from its class (class orientation + its own in-plane angle and
    pose, global re-searches in the first iterations (particles from mixed 2D classes can change view), the
    worst-fitting 10 % of particles left out of each reconstruction, resolution from the half-map FSC (soft sphere
    mask), alignment slightly beyond the current resolution so it can keep improving.
-4. **Symmetry** — Cn / Dn can be imposed (RELION axis convention). A C1 run checks its map for symmetry (best axis
-   per group, scored against an arbitrary axis); if the particle looks symmetric it is solved with that symmetry
-   and then refined in C1 from it (symmetry relaxation — C1 matching of a pseudo-symmetric particle has several
-   near-equivalent wrong answers).
+4. **Symmetry** — only what the user sets (no automatic detection): Cn / Dn imposed (RELION axis convention), or
+   for a pseudo-symmetric particle a C1 run with `relax_from` (e.g. C3): solved with that symmetry imposed, then
+   refined in C1, the first iterations searching every symmetry-related copy of each pose (symmetry relaxation;
+   C1 matching of a pseudo-symmetric particle has several near-equivalent wrong answers).
 5. **3D classes** (`n_models` > 1) — after the consensus, a 3D classification at the consensus poses: random-subset
-   start, annealed posteriors, all classes filtered alike; for a (pseudo-)symmetric consensus it runs over the
+   start, annealed posteriors, all classes filtered alike; after `relax_from` it runs over the
    symmetry-related poses of each particle (a difference that breaks the symmetry is found wherever it is).
 
 Memory: the 3D working box is the largest that fits the free GPU memory (logged when it is smaller than the 2D
@@ -111,7 +111,7 @@ one); search batches are sized from free memory, so a run never spills into host
 Outputs (`<workdir>/<name>/`): `map.mrc` (FSC-weighted, automatic solvent mask), `map_nomask.mrc`, `mask.mrc`,
 `half1/2_unfil.mrc`, `from_classes.mrc`, `particles.star` (3D poses, RELION convention, this map's frame and
 hand — ready for Refine3D), `particles_dropped.star`, `poses.npz`, `summary.json` (resolutions, timings, FSC
-curves, symmetry scores) and figures (`fsc.png`, `views.png`, `reprojections.png`, `map_views.png`). The hand of
+curves) and figures (`fsc.png`, `views.png`, `reprojections.png`, `map_views.png`). The hand of
 an ab initio map is arbitrary.
 
 Dashboard: open a 2D result, select good classes, **Ab initio 3D** (symmetry field and **3D settings** next to it);

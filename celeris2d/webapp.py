@@ -1077,7 +1077,10 @@ def create(workdir):
 
     # ------------------------------------------------------------------ ab initio 3D
     AB_HELP = dict(
-        sym="Point group imposed from the start: C1 (none), Cn, Dn (e.g. C3, D2). RELION axis convention.",
+        sym="Point group imposed from the start: C1 (none), Cn, Dn (e.g. C3, D2). RELION axis convention. "
+            "Symmetry is never detected automatically.",
+        relax_from="C1 runs only: solve with this symmetry first (e.g. C3), then refine without symmetry, searching "
+                   "the symmetry-related poses of every particle (pseudo-symmetric particles). Empty = direct C1.",
         n_starts="Random starts of the class stage; the start whose projections agree best with the classes is kept.",
         class_res_start="Class stage starts at this resolution (A) ...",
         class_res_end="... and ends at this one (A). Class averages rarely support better than ~12-15 A here.",
@@ -1086,7 +1089,7 @@ def create(workdir):
         res_start="Particle stage: first alignment resolution (A); after that it follows the half-map FSC.",
         n_local="Local search width: (2n+1)^2 out-of-plane tilts x (2n+1) in-plane angles x 9 shifts per particle.",
         n_models="3D classes. 1 = one map. More: after the consensus map, the particles are classified into this many "
-                 "3D classes at their consensus poses (if the consensus looks symmetric, over its symmetry-related poses).",
+                 "3D classes at their consensus poses (after relax_from, over its symmetry-related poses).",
         class3d_res="3D classification compares the classes at this resolution (A), or the consensus one if worse.",
         class3d_iter="3D classification: at most this many iterations (it stops when < 0.5% of particles change).",
         seed="Random seed of the class-stage starts.")
@@ -1112,7 +1115,7 @@ def create(workdir):
             v = body.get(k)
             if v is None or v == "":
                 continue
-            prm[k] = str(v).strip().upper() if k == "sym" else (int(v) if types[k] in (int, "int") else float(v))
+            prm[k] = str(v).strip().upper() if types[k] in (str, "str") else (int(v) if types[k] in (int, "int") else float(v))
         submit("abinitio", name, lambda: s.abinitio(name, on, **prm), on=on, **prm)
         return dict(ok=True, name=name)
 

@@ -67,7 +67,7 @@
     try { defaults = await api("/api/abinitio/defaults"); } catch (e) { return; }
     const saved = store.get("ab3d", {});
     cfg.innerHTML = Object.entries(defaults.values).filter(([k]) => k !== "sym").map(([k, v]) =>
-      `<label title="${esc(defaults.help[k] || "")}">${esc(k.replace(/_/g, " "))}<input data-k="${esc(k)}" type="number" step="any" value="${esc(saved[k] ?? v)}"></label>`).join("") +
+      `<label title="${esc(defaults.help[k] || "")}">${esc(k.replace(/_/g, " "))}<input data-k="${esc(k)}" ${typeof v === "string" ? 'type="text" size="4"' : 'type="number" step="any"'} value="${esc(saved[k] ?? v)}"></label>`).join("") +
       `<label style="justify-content:flex-end"><button class="link" id="ab3dReset">reset</button></label>`;
     $("ab3dSym").value = saved.sym || defaults.values.sym;
     cfg.querySelectorAll("input").forEach(i => i.onchange = saveCfg);
@@ -76,7 +76,7 @@
   }
   function cfgValues() {
     const v = {sym: $("ab3dSym").value.trim().toUpperCase() || "C1"};
-    cfg.querySelectorAll("input[data-k]").forEach(i => { if (i.value !== "") v[i.dataset.k] = Number(i.value); });
+    cfg.querySelectorAll("input[data-k]").forEach(i => { if (i.value !== "") v[i.dataset.k] = i.type === "text" ? i.value.trim() : Number(i.value); });
     return v;
   }
   function saveCfg() { store.set("ab3d", cfgValues()); }
@@ -132,7 +132,7 @@
     panel.innerHTML = `<div class="head"><b>${esc(name)}</b> · from ${esc(summ.on || m.on || "?")} · ${summ.classes ?? "?"} classes ·
         ${esc(p.sym || "C1")}${summ.relaxed_from ? ` (solved in ${esc(summ.relaxed_from)}, refined without symmetry)` : ""} · box ${summ.box} @ ${summ.apix} Å</div>
       ${tilesHTML(summ)}
-      ${modelsHTML(summ)}${symHTML(summ)}
+      ${modelsHTML(summ)}
       <div class="grid">
         <div>
           <div id="ab3dView"></div>
@@ -152,8 +152,6 @@
       </div>`;
     renderChips(lastStatus || {});
     wireFsc(summ);
-    const rs = $("ab3dReSym");
-    if (rs) rs.onclick = () => rerun(summ, rs.dataset.sym);
     const iso = $("ab3dIso"), isoV = $("ab3dIsoV");
     isoV.textContent = Number(iso.value).toFixed(2);
     try {
@@ -260,26 +258,6 @@
     if (ms.length < 2) return "";
     const tot = ms.reduce((a, m) => a + m.particles, 0) || 1;
     return `<div class="head">3D classes: ${ms.map(m => `<b>${m.model}</b> ${fmtN(m.particles)} (${(100 * m.particles / tot).toFixed(0)}%) · ${m.resolution_a ?? "merged"} Å`).join(" &nbsp;|&nbsp; ")}</div>`;
-  }
-
-  // symmetry check of the map (C1 runs): scores 1 = perfect, ~0.3 or less = an arbitrary axis
-  function symHTML(summ) {
-    const rows = summ.symmetry || [];
-    if (!rows.length) return "";
-    const cur = (summ.params || {}).sym || "C1", sug = summ.suggested_sym || "C1";
-    const list = rows.slice(0, 5).map(r => `${r.group === sug ? "<b>" : ""}${esc(r.group)} ${r.score.toFixed(2)}${r.group === sug ? "</b>" : ""}`).join(" · ");
-    const act = sug !== "C1" && sug !== cur
-      ? ` → looks like <b>${esc(sug)}</b> <button id="ab3dReSym" data-sym="${esc(sug)}" title="Run ab initio again on the same particles with ${esc(sug)} imposed">Re-run with ${esc(sug)}</button>`
-      : sug === "C1" ? " → no symmetry found" : "";
-    return `<div class="head" title="How well the map matches itself after rotation about the best axis for each group (1 = perfect; an arbitrary axis scores 0). Subgroups of the true group also score high.">symmetry check: ${list}${act}</div>`;
-  }
-  async function rerun(summ, sym) {
-    const p = Object.assign(cfgValues(), {sym});
-    const on = summ.on, name = `${String(on).replace(":", "_")}_3d_${sym.toLowerCase()}`;
-    try {
-      const r = await api("/api/abinitio", Object.assign({on, name}, p));
-      runningFor = r.name; toast(`ab initio ${r.name} started (${sym})`); poll();
-    } catch (e) { toast(e.message, true); }
   }
 
   function hideMap() {

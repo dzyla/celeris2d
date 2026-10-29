@@ -20,6 +20,10 @@ lacking 5.4 % of the density): 2 3D classes, 99.5 % correct.
 
 ## Open problems
 
+0. **Symmetry is the user's choice only** (2026-10-29): no automatic detection. `sym` imposes a group;
+   `relax_from` (C1 runs) solves with a given group and refines in C1 over its symmetry-related poses. The
+   detector-driven relaxation and its gates described below are removed; the numbers stay as the record of why
+   relaxation from the right group works (J341 C1 with relax_from=C3: 89-90 % within 10 deg).
 1. **C1 robustness (main one).** Measured against cryoSPARC NU-refine poses (`scripts/abinitio_truth.py`: share
    of particles within 10° after the best global rotation/hand/symmetry operator, and map FSC vs a map
    reconstructed at the cryoSPARC poses). J341 (C3, 21k particles, 8 Å), 3 seeds:
