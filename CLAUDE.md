@@ -19,7 +19,9 @@ pip install -e .        # installs entry points celeris2d, celeris2d-web, celeri
 - Dashboard: `celeris2d-web --port 8765` (restart it after code changes).
 - MCP server: `celeris2d-mcp` (stdio).
 
-There is no test suite, linter config or CI. Changes are validated on real datasets with the scripts in
+`pytest -q tests` runs synthetic end-to-end checks (known classes and angles; needs a CUDA GPU, ~10 s). If the
+`celeris2d` env is an editable install of another checkout, prefix `PYTHONPATH=.`. There is no linter config or
+CI. Algorithm changes are validated on real datasets with the scripts in
 `scripts/` (run as `python scripts/<name>.py ...`, usage in each docstring): `validate.py` (ψ consistency
 vs refined 3D angles), `evaluate_frc.py` / `evaluate_cs.py` (classifier-independent half-set FRC per
 class from the written alignments), `separation_eval.py` / `evaluate_selection.py` (precision/recall vs a

@@ -125,7 +125,7 @@ SETTINGS = {
                                  "(cryoSPARC-like online EM). 0 = every iteration is a full pass over all particles."),
     "reseed_frac": dict(group="run_schedule", label="Reseed small classes below", unit="× average class size",
                         type="number",
-                        help="During the first 70 % of iterations, a class holding fewer than this fraction of the "
+                        help="During the first 90 % of iterations (never in full passes), a class holding fewer than this fraction of the "
                              "average class size (N / K) is replaced by a perturbed copy of the largest class. 0 = off."),
     "hard_pose": dict(group="run_align", label="Hard pose assignment", unit="", type="tri",
                       auto="on for runs with ≥ 100,000 particles, off below",
@@ -144,9 +144,9 @@ SETTINGS = {
                    help="The last iteration aligns out to the reconstruction limit with the classes locked. Sharper "
                         "classes on high-SNR data; scrambles poses on low-SNR or heavily binned data, hence off by default."),
     "local_refine": dict(group="run_align", label="Coarse-to-fine search", unit="", type="bool",
-                         help="Full passes with hard pose (>= 100k particles): search all classes at twice the angular "
-                              "step, then refine each particle's two best classes at a quarter of that step and half-"
-                              "step shifts. 1.7-2.5x faster full passes with finer angles; same separation in tests."),
+                         help="With hard pose (>= 100k particles): search all classes at twice the angular step, then "
+                              "refine each particle's two best classes at a quarter of that step and half-step shifts. "
+                              "About 2x faster runs with finer angles; same or better separation in tests."),
     "max_offset_a": dict(group="run_align", label="Maximum particle offset", unit="Å", type="number", auto="-1",
                          help="Cap on the total shift a particle can accumulate from its picked centre. "
                               "-1 = diameter / 4."),

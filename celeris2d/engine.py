@@ -167,9 +167,12 @@ class Params:
                                     # The local window (max_shift_a) cannot reach off-centre picks: on NS J75 an
                                     # exhaustive E-step vs cryoSPARC's final classes drops F1 0.61 -> 0.42 at +-19 A
     # (+-38 A: 0.635; rotation step, alignment resolution and particle mask cost little)
-    local_refine: bool = False      # full passes (hard pose): coarse global search at 2x the angular step, then for each
-                                    # particle's best classes a local search at refine_split x finer angles and half-step
-                                    # shifts around the coarse optimum; class sums by direct rotation at the fine pose
+    local_refine: bool = True       # hard pose: coarse global search at 2x the angular step, then for each particle's
+                                    # best classes a local search at refine_split x finer angles and half-step shifts
+                                    # around the coarse optimum; class sums by direct rotation at the fine pose. Every
+                                    # iteration, not only full passes: with reseed_until 0.9, 4 seeds, single 5090,
+                                    # J1798 F1/AP vs J1814 0.507/0.434 -> 0.531/0.449 in 120 -> 61 s, NS J75 0.452/0.392
+                                    # -> 0.443/0.393 (seed sd 0.012) in 86 -> 52 s. Full passes only: 89 s and 69 s.
     refine_split: int = 4           # fine angle step = coarse step / refine_split, searched over +-1 coarse step
     refine_classes: int = 2         # classes per particle refined locally (the rest keep their coarse score)
     tau2_fudge: float = 2.0
@@ -182,6 +185,9 @@ class Params:
     online_decay: float = 0.0       # online EM: running-statistics decay (0 = fresh batch each iter; 0.8 hurt)
     anneal_t0: float = 1.0          # likelihood temperature at iter 1 (1 = no annealing)
     reseed_frac: float = 0.25       # reseed classes holding < frac * N/K particles (early iters)
+    reseed_until: float = 0.9       # ... during the first reseed_until * n_iter iterations, never in full passes.
+                                    # 0.7 left 4-7 of 50 classes empty on J1798 (they empty out once reseeding stops);
+                                    # 0.9: 1-3, more distinct views. Reseeding late only below 0.02 N/K: no better
     center_classes: bool = True
     seed: int = 0
     batch_size: int = 0             # particles per GPU batch (0 = auto)
@@ -621,7 +627,7 @@ class Classifier2D:
     def iterate(self, it: int):
         p, K = self.p, self.p.n_classes
         s = self._iter_settings(it)
-        refine = (p.local_refine and p.hard_pose and s["n_sub"] >= self.Na and not s["polish"] and s["n_rot"] >= 16
+        refine = (p.local_refine and p.hard_pose and not s["polish"] and s["n_rot"] >= 16
                   and p.refine_split >= 2)
         if refine:  # coarse global stage at twice the angular step; the fine stage covers +-1 coarse step
             R_c = int(math.ceil(s["n_rot"] / 2))
@@ -1300,7 +1306,7 @@ class Classifier2D:
 
     def _reseed(self, it, pop):
         p = self.p
-        if it >= int(0.7 * p.n_iter) or p.reseed_frac <= 0:
+        if it >= min(int(p.reseed_until * p.n_iter), p.n_iter - p.n_full_iter) or p.reseed_frac <= 0:
             return 0
         thr = p.reseed_frac * pop.sum() / p.n_classes
         small = torch.nonzero(pop < thr).flatten().tolist()
