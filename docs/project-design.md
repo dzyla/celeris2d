@@ -70,8 +70,13 @@ memory between stages, decodes the next movies in worker processes into shared m
 figures on background threads (EMPIAR-10025, 20 K2 super-resolution movies, one RTX 5090: 2.45 s per movie for
 motion, CTF, picking and extraction, decoding included).
 
-Particle tables: one `.npz` per micrograph in `data/NNN` while a job runs (append-only, cheap), consolidated
-into one `particles.npz` in the job folder when it finishes (10 M particles load in seconds, not 20,000 files).
+Particle tables: one `.npz` per micrograph in `data/NNN` while a job runs (append-only, cheap). The code currently
+also consolidates them into one `particles.npz` per job at the end; that does not scale and has to be replaced
+before 5,000-10,000-movie projects (millions of particles, live jobs that keep growing). A single file is rewritten
+whole on every update and read whole for any subset. The replacement must be sharded and append-friendly
+(shards of a fixed number of micrographs, or an indexed store), so reading by uid, micrograph or subset stays
+cheap. It must be tested at that size with synthetic tables, not only on 20 movies. The same holds for
+`micrographs.npz` and `picks.npz`.
 An extract job folder is itself a particle input (`celeris2d -i jobs/004_...`, `Session.load`, MCP
 `load_particles`): no star file needed; the mask defaults to 1.25 x the job's particle size.
 
