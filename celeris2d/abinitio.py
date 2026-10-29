@@ -522,11 +522,12 @@ def working_box(clf, n_acc: int, n_ft: int, log=print) -> int:
 
 
 def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs, half: torch.Tensor, res_a: float,
-                  step_deg: float, sigma2: torch.Tensor | None = None, box: int | None = None, log=print):
+                  step_deg: float, sigma2: torch.Tensor | None = None, box: int | None = None, log=print,
+                  topk: int = 1):
     """Exhaustive orientation search (whole sphere x all in-plane angles, shift kept) of particles against the
     half-set references refs = [ref_half0, ref_half1], as two GEMMs per chunk of orientations:
     ll = Re<ctf conj(x) e_t, P> / sigma2 - 0.5 <ctf^2 / sigma2, |P|^2>. Returns (best A (n, 3, 3), best ll (n,),
-    ll at the current pose (n,))."""
+    ll at the current pose (n,)); with topk > 1 the best topk orientations (n, topk, 3, 3) and their ll (n, topk)."""
     dev = clf.dev
     box_a, b = clf.box_a, box or clf.bmax
     n = len(idx)
@@ -543,6 +544,9 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
     H = len(Ah)
     best_ll = torch.full((n,), -float("inf"), device=dev)
     best_h = torch.zeros(n, dtype=torch.long, device=dev)
+    if topk > 1:
+        top_ll = torch.full((n, topk), -float("inf"), device=dev)
+        top_h = torch.zeros((n, topk), dtype=torch.long, device=dev)
     cur_ll = torch.zeros(n, device=dev)
     A, t = A.to(dev), t.to(dev)
     Fb = int(band.sum())
@@ -568,10 +572,17 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
             for c in range(0, H, hc):
                 P = refs[h].project(Ah[c:c + hc], band)                           # (Hc, F)
                 ll = Xr @ P.real.T - Xi @ P.imag.T - 0.5 * (C2 @ (P.abs() ** 2).T)   # (n_chunk, Hc)
+                if topk > 1:
+                    v, k = torch.topk(torch.cat([top_ll[sel], ll], 1), topk, dim=1)
+                    hh = torch.cat([top_h[sel], torch.arange(c, c + ll.shape[1], device=dev).expand(len(sel), -1)], 1)
+                    top_ll[sel], top_h[sel] = v, hh.gather(1, k)
+                    continue
                 v, k = ll.max(1)
                 upd = v > best_ll[sel]
                 best_ll[sel[upd]] = v[upd]
                 best_h[sel[upd]] = k[upd] + c
+    if topk > 1:
+        return Ah[top_h], top_ll, cur_ll
     return Ah[best_h], best_ll, cur_ll
 
 
@@ -617,7 +628,7 @@ def solvent_mask(vmap: torch.Tensor, apix: float, lowpass_a: float = 15.0, dilat
 
 def particle_sgd(clf, idx: torch.Tensor, t: torch.Tensor, init: Volume, sym: str = "C1", n_iter: int = 30,
                  res_start: float = 30.0, res_end: float = 12.0, batch: int = 2000, eta: float = 0.5, seed: int = 0,
-                 log=print):
+                 topk: int = 1, log=print):
     """Stochastic projection matching on the particles (the role of cryoSPARC's SGD ab initio): each round, a random
     batch of particles is searched over all orientations against the current map, the map is moved part of the way
     (eta) towards the batch's reconstruction, and the resolution goes from res_start to res_end. Thousands of
@@ -637,6 +648,10 @@ def particle_sgd(clf, idx: torch.Tensor, t: torch.Tensor, init: Volume, sym: str
     g = torch.Generator().manual_seed(seed + 11)
     t = t.to(dev).float()
     zeros = torch.zeros(n, dtype=torch.long)
+    kr_i = torch.round(torch.sqrt(fy[:, None] ** 2 + fx[None, :] ** 2)).long().reshape(-1)
+    nsh = int(kr_i.max()) + 2
+    sh_i, cnt_i = kr_i, torch.bincount(kr_i, minlength=nsh).float().clamp_min(1)
+    sigma2 = None
     t0 = time.time()
     for it in range(n_iter):
         f = it / max(n_iter - 1, 1)
@@ -644,8 +659,21 @@ def particle_sgd(clf, idx: torch.Tensor, t: torch.Tensor, init: Volume, sym: str
         step = global_step(res, diam)
         sel = torch.randperm(n, generator=g)[:batch]
         j = idx[sel]
-        Ab, _, _ = global_search(clf, j, torch.eye(3).expand(len(j), 3, 3), t[sel.to(dev)], [V, V], zeros[:len(j)],
-                                 res, step, box=bs)
+        if topk > 1:
+            # soft poses: the batch's own power spectrum as the noise model (at low SNR a particle is mostly noise),
+            # each particle inserted at its topk orientations weighted by their posterior probability
+            if sigma2 is None:
+                xs_ = clf._fetch(j[:1024], dev, bs)
+                sigma2 = torch.bincount(sh_i, weights=(xs_.abs() ** 2).mean(0).reshape(-1), minlength=nsh)
+                sigma2 = (sigma2 / cnt_i).clamp_min(1e-12)
+                del xs_
+            Ab, llb, _ = global_search(clf, j, torch.eye(3).expand(len(j), 3, 3), t[sel.to(dev)], [V, V],
+                                       zeros[:len(j)], res, step, sigma2=sigma2, box=bs, topk=topk)
+            wb = torch.softmax(llb, 1)                                                  # (nb, topk)
+        else:
+            Ab, _, _ = global_search(clf, j, torch.eye(3).expand(len(j), 3, 3), t[sel.to(dev)], [V, V],
+                                     zeros[:len(j)], res, step, box=bs)
+            Ab, wb = Ab[:, None], torch.ones(len(j), 1, device=dev)
         Vb = Volume(bs, dev)
         for i in range(0, len(j), 1024):
             jj = j[i:i + 1024]
@@ -653,7 +681,9 @@ def particle_sgd(clf, idx: torch.Tensor, t: torch.Tensor, init: Volume, sym: str
             ctf = ctf_2d(clf.ctf_p[jj].to(dev), clf.optics, fy, fx, box_a)
             tt = t[sel[i:i + 1024].to(dev)]
             xs = x * torch.exp(1j * ph * (fx[None, None, :] * tt[:, 0, None, None] + fy[None, :, None] * tt[:, 1, None, None]))
-            Vb.insert(xs * ctf, ctf * ctf, Ab[i:i + 1024], kmax=min(bs / 2 - 1, box_a / res + 2), ops=ops)
+            for q in range(Ab.shape[1]):
+                wq = wb[i:i + 1024, q, None, None]
+                Vb.insert(xs * ctf * wq, ctf * ctf * wq, Ab[i:i + 1024, q], kmax=min(bs / 2 - 1, box_a / res + 2), ops=ops)
         _regularise_solve(Vb, 0.05)
         Vb.free_acc()
         lowpass(Vb, res, box_a)
@@ -666,6 +696,41 @@ def particle_sgd(clf, idx: torch.Tensor, t: torch.Tensor, init: Volume, sym: str
     log(f"[3d] particle SGD: {n_iter} rounds of {min(batch, n)} particles, {res_start:.0f} -> {res_end:.0f} A "
         f"({time.time() - t0:.1f}s)")
     return V, A
+
+
+def cross_fit(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, halves, res_a: float, box: int,
+              n_max: int = 8000, seed: int = 0) -> float:
+    """Mean normalised correlation of particles with the projection of the half map they did NOT go into (the
+    half split of refine_particles), at their poses A, t, over frequencies up to res_a. Comparable between maps
+    only at the same res_a: a correlation over a lower band is higher for any map, and a particle compared with
+    a map it helped build agrees with it whatever the map is."""
+    dev, box_a, b = clf.dev, clf.box_a, box
+    n = len(idx)
+    half = (torch.randperm(n, generator=torch.Generator().manual_seed(1)) % 2).to(dev)
+    sub = torch.randperm(n, generator=torch.Generator().manual_seed(seed + 5))[:n_max].to(dev)
+    fy, fx = freqs(b, dev)
+    kr = torch.sqrt(fy[:, None] ** 2 + fx[None, :] ** 2)
+    band = (kr >= 1) & (kr <= box_a / res_a)
+    fyb = fy[:, None].expand(b, b // 2 + 1)[band]
+    fxb = fx[None, :].expand(b, b // 2 + 1)[band]
+    ph = TWO_PI / box_a
+    A, t = A.to(dev).float(), t.to(dev).float()
+    tot = 0.0
+    for i in range(0, len(sub), 1024):
+        s = sub[i:i + 1024]
+        j = idx[s.cpu()]
+        x = clf._fetch(j, dev, b)[:, band]
+        ctf = ctf_2d(clf.ctf_p[j].to(dev), clf.optics, fy, fx, box_a)[:, band]
+        e_t = torch.exp(-1j * ph * (fxb * t[s, 0, None] + fyb * t[s, 1, None]))
+        mdl = torch.empty_like(x)
+        for h in (0, 1):
+            k = torch.nonzero(half[s] == h).squeeze(1)
+            if len(k):
+                mdl[k] = halves[1 - h].project(A[s[k]], band)
+        mdl = mdl * ctf * e_t
+        cc = (x.conj() * mdl).real.sum(1) / ((x.abs() ** 2).sum(1) * (mdl.abs() ** 2).sum(1)).sqrt().clamp_min(1e-12)
+        tot += float(cc.sum())
+    return tot / len(sub)
 
 
 def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, inits, z: torch.Tensor | None = None,
@@ -1078,6 +1143,10 @@ class AbinitioParams:
     sgd_iter: int = 30              # particle SGD rounds after the class stage (0 = off: refine the class model)
     sgd_batch: int = 2000           # ... particles per round
     sgd_res: float = 12.0           # ... final resolution (A) of the SGD stage (it starts at 30 A)
+    sgd_topk: int = 8               # ... soft poses: each particle at its best k orientations, posterior-weighted
+                                    # (noise from the batch's power spectrum). Hard (1) locks in a wrong start: J341
+                                    # C3 within 10 deg of cryoSPARC 76 -> 89%, map vs reference FSC 0.5 11.1 -> 9.0 A
+                                    # (3 seeds); J1279 C3 equal; +5 s
     relax_sym: bool = True          # C1 run whose map looks symmetric: solve with that symmetry, refine in C1 from it
     check_starts: int = 3           # the best n class-stage starts each get a short particle refinement; the one
                                     # the particles fit best is kept (1 = trust the class agreement)
@@ -1154,13 +1223,20 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
             # Short refinement (global search + 2 local iterations) of each candidate on up to 5000 particles.
             g = torch.Generator().manual_seed(prm.seed)
             sub = torch.randperm(len(idx), generator=g)[:5000]
-            fits = []
+            outs = []
             for c_i, (c_score, c_vols, c_Ak) in enumerate(starts):
-                refine_particles(clf, idx[sub], particle_poses(c_Ak[0], kp[sub], psi_p[sub]), off_p[sub], c_vols,
-                                 sym=sym, n_iter=3, res_start=prm.res_start, n_local=prm.n_local, box=b,
-                                 global_res=max(prm.global_res, 15.0), global_at=(1,), log=lambda *a: None)
-                fits.append(float(refine_particles.last_score.mean()))
-                lg(f"[3d] candidate start {c_i + 1}: class agreement {c_score:.3f}, particle fit {fits[-1]:.4f}")
+                o = refine_particles(clf, idx[sub], particle_poses(c_Ak[0], kp[sub], psi_p[sub]), off_p[sub], c_vols,
+                                     sym=sym, n_iter=3, res_start=prm.res_start, n_local=prm.n_local, box=b,
+                                     global_res=max(prm.global_res, 15.0), global_at=(1,), log=lambda *a: None)
+                outs.append((o[1], o[2], o[6][0], o[5][0]))
+            # judged like the symmetry relaxation: each particle against the half map it was not in, all
+            # candidates over the same band (a candidate's own fit is higher the blurrier it is)
+            r_cmp = max(12.0, max(o[3] for o in outs))
+            fits = [cross_fit(clf, idx[sub], o[0], o[1], o[2], r_cmp, b, seed=prm.seed) for o in outs]
+            for c_i, (c_score, _, _) in enumerate(starts):
+                lg(f"[3d] candidate start {c_i + 1}: class agreement {c_score:.3f}, cross-validated fit at "
+                   f"{r_cmp:.1f} A {fits[c_i]:.4f} ({outs[c_i][3]:.1f} A)")
+            del outs
             pick = int(np.argmax(fits))
             vols0, Ak = starts[pick][1], starts[pick][2]
             if pick:
@@ -1171,7 +1247,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
             # the class averages constrain the structure only weakly (a wrong model can match a few dozen
             # projections); stochastic global matching of the particles themselves settles it
             Vs, A0 = particle_sgd(clf, idx, off_p, vols0[0], sym=sym, n_iter=prm.sgd_iter, res_end=prm.sgd_res,
-                                  batch=prm.sgd_batch, seed=prm.seed, log=lg)
+                                  batch=prm.sgd_batch, seed=prm.seed, topk=prm.sgd_topk, log=lg)
             vols0 = [Vs]
             Ak = _class_poses(A0, kp, psi_p, len(Ak))      # class orientations follow the particles (figures)
         torch.cuda.synchronize()
@@ -1204,7 +1280,10 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
     relaxed_from = None
     fit_c1 = float(refine_particles.last_score.mean())
     if prm.sym.upper() == "C1" and prm.relax_sym:
-        _, g_sym, _ = detect_symmetry(maps[0], box_a / b, diam)
+        rows, g_sym, _ = detect_symmetry(maps[0], box_a / b, diam)
+        if g_sym == "C1" and rows and rows[0][2] >= 0.3:
+            # a blurred, wrong C1 map scores its true group weakly (J341, C3: 0.36); the particles decide below
+            g_sym = rows[0][0]
         if g_sym != "C1":
             # pseudo-symmetric particle: C1 matching has several near-equivalent wrong answers. Solve it with the
             # symmetry imposed (well constrained), then refine without symmetry from there (symmetry relaxation).
@@ -1226,20 +1305,26 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
                                                             drop_frac=prm.drop_frac, rebalance=prm.rebalance, log=log)
             torch.cuda.synchronize()
             timing["particles"] += time.time() - t0
-            fit_rel = float(refine_particles.last_score.mean())
             # the symmetry score of a C1 map can be a false positive (an asymmetric particle can come out slightly
-            # symmetric-looking), so the particles decide. Mean fit alone is blunt: beta-gal (truly D2) fits the
-            # relaxed and the direct C1 map within 0.5% (relaxed: better half-map resolution, and 5.0 vs 10 A FSC 0.5
-            # against RELION's map); an asymmetric test particle forced into C2 fits 2.7% worse. Keep the relaxed
-            # map if it fits clearly better, or about as well (within 1%) at a better half-map resolution.
+            # symmetric-looking), so the particles decide: each particle against the half map it was not part of,
+            # both maps over the same band (the worse resolution of the two). The refinement's own fit compares
+            # each map at its own resolution with the particles that built it, and preferred a blurred, wrong
+            # C1 map on J341 (C3): 0.282 vs 0.199 at 17.8 vs 8.7 A, 39% vs 74% of orientations within 10 deg.
             res_c1 = c1_result[5][0]
-            if fit_rel > fit_c1 or (fit_rel > 0.99 * fit_c1 and res[0] < res_c1):
-                log(f"[3d] relaxed map kept: particle fit {fit_rel:.4f} vs {fit_c1:.4f}, {res[0]:.1f} vs {res_c1:.1f} A")
+            r_cmp = max(res_c1, res[0])
+            fit_c1 = cross_fit(clf, idx, c1_result[1], c1_result[2], c1_result[6][0], r_cmp, b, seed=prm.seed)
+            fit_rel = cross_fit(clf, idx, A, t, vols[0], r_cmp, b, seed=prm.seed)
+            sc_rel = {g: sc for g, _, sc in detect_symmetry(maps[0], box_a / b, diam)[0]}.get(g_sym, 0.0)
+            sc_c1 = {g: sc for g, _, sc in detect_symmetry(c1_result[0][0], box_a / b, diam)[0]}.get(g_sym, 0.0)
+            log(f"[3d] {g_sym} score after C1 refinement: relaxed map {sc_rel:.2f}, direct C1 map {sc_c1:.2f}")
+            if fit_rel >= fit_c1:
+                log(f"[3d] relaxed map kept: cross-validated fit at {r_cmp:.1f} A {fit_rel:.4f} vs {fit_c1:.4f} (direct "
+                    f"C1), {res[0]:.1f} vs {res_c1:.1f} A")
                 Ak = _class_poses(A, kp, psi_p, len(Ak_g))
                 relaxed_from = g_sym
             else:
-                log(f"[3d] direct C1 map kept: particle fit {fit_c1:.4f} vs {fit_rel:.4f} (relaxed), "
-                    f"{res_c1:.1f} vs {res[0]:.1f} A")
+                log(f"[3d] direct C1 map kept: cross-validated fit at {r_cmp:.1f} A {fit_c1:.4f} vs {fit_rel:.4f} "
+                    f"(relaxed), {res_c1:.1f} vs {res[0]:.1f} A")
                 maps, A, t, z, fs, res, vols = c1_result
                 refine_particles.last_weights, refine_particles.last_score = c1_weights
     used = refine_particles.last_weights > 0
