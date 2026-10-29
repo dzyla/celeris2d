@@ -191,6 +191,9 @@
         summ.particles_dropped ? `${fmtN(summ.particles_dropped)} dropped (worst fit)` : `of ${fmtN(summ.particles)}`) +
       t(fmtS(tot), "time", `classes ${fmtS(summ.seconds_classes)} · SGD ${fmtS(summ.seconds_sgd)} · refine ${fmtS((summ.seconds_particles || 0) - (summ.seconds_sgd || 0))}`) +
       (med != null ? t(med.toFixed(2), "classes vs reprojections", "median correlation (1 = identical)") : "") +
+      (summ.view_coverage ? t(`${Math.round(100 * summ.view_coverage.occupied)}%`, "viewing directions covered",
+        summ.view_coverage.warning ? `<span style="color:var(--warn)">⚠ narrow range of views: map smeared along missing ones</span>`
+          : `busiest 10% hold ${Math.round(100 * summ.view_coverage.top10_share)}%`) : "") +
       `</div>`;
   }
   // half-map FSC, drawn here so it can be inspected point by point (hover)

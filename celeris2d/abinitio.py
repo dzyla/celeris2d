@@ -551,8 +551,8 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
     A, t = A.to(dev), t.to(dev)
     Fb = int(band.sum())
     free = _free(dev)
-    npc = int(max(256, min(n, 0.15 * free / (Fb * 12))))           # particles per chunk (band spectra)
-    hc = int(max(256, min(H, 0.2 * free / (npc * 12 + Fb * 24))))   # orientations per chunk (scores + projections)
+    npc = int(max(256, min(n, 0.1 * free / (Fb * 12))))           # particles per chunk (band spectra)
+    hc = int(max(256, min(H, 0.15 * free / (npc * 20 + Fb * 24))))   # orientations per chunk (scores + projections)
     for h in (0, 1):
         sel_h = torch.nonzero(half.to(dev) == h).squeeze(1)
         for p0 in range(0, len(sel_h), npc):
@@ -604,6 +604,31 @@ def _view_weights(A: torch.Tensor, cap: float) -> torch.Tensor:
     cnt = torch.bincount(k, minlength=len(bins)).float()
     lim = cap * cnt[cnt > 0].median()
     return (lim / cnt[k]).clamp(max=1.0)
+
+
+def view_coverage(A: torch.Tensor, sym: str = "C1") -> dict:
+    """How the viewing directions (third rows of A, folded by the symmetry group) spread over the sphere, in ~10 deg
+    bins: the fraction of bins with a real share of the particles (relative to the group's share of the sphere) and
+    the share of
+    particles in the busiest 10 % of bins. A map from a narrow range of views is smeared along the missing
+    directions, whatever its FSC says."""
+    ops = symmetry_ops(sym).to(A.device)
+    rot, tilt = sphere_directions(10.0)
+    th, ph = torch.deg2rad(tilt), torch.deg2rad(rot)
+    bins = torch.stack([th.sin() * ph.cos(), th.sin() * ph.sin(), th.cos()], -1).to(A.device)
+    d = A[:, 2, :]                                            # viewing direction in the map frame
+    best = (d @ bins.T)
+    for S in ops[1:]:                                         # fold symmetry-equivalent directions
+        best = torch.maximum(best, (d @ S) @ bins.T)
+    k = best.argmax(1)
+    cnt = torch.bincount(k, minlength=len(bins)).float()
+    # a direction counts if it holds at least a quarter of what a uniform spread over the group's share would give
+    # (with 10^5+ particles a few strays land everywhere)
+    expect = cnt.sum() * len(ops) / len(bins)
+    occ = float((cnt >= 0.25 * expect).float().mean()) * len(ops)
+    top = torch.sort(cnt, descending=True).values
+    share = float(top[:max(1, len(bins) // (10 * len(ops)))].sum() / cnt.sum().clamp_min(1))
+    return dict(occupied=round(min(1.0, occ), 3), top10_share=round(share, 3))
 
 
 def solvent_mask(vmap: torch.Tensor, apix: float, lowpass_a: float = 15.0, dilate_a: float = 4.0,
@@ -883,7 +908,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
         # particles per search batch: projections, CTF-weighted copies and products (~4 complex arrays of
         # M x J x F per particle) must fit in a third of the free memory
         Fb = int(band.sum())
-        bt = int(max(8, min(batch, _free(dev) / 3 / (M * J * Fb * 8 * 4 + M * J * Sh * 8))))
+        bt = int(max(8, min(batch, _free(dev) / 4 / (M * J * Fb * 8 * 4 + M * J * Sh * 8))))
         llm_all = torch.zeros((n, M), device=dev)
         for i in range(0, n, bt):
             j = idx[i:i + bt]
@@ -1004,7 +1029,7 @@ def classify3d(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, n_model
     t0 = time.time()
     X = torch.eye(3, device=dev)[None] if expand_ops is None else expand_ops.to(dev).float()
     S = len(X)
-    B = int(max(32, min(1024, _free(dev) / 3 / (b * (b // 2 + 1) * 8 * 5 + S * int(band.sum()) * 8 * 3))))
+    B = int(max(32, min(1024, _free(dev) / 4 / (b * (b // 2 + 1) * 8 * 5 + S * int(band.sum()) * 8 * 3))))
     s_best = torch.zeros((n, M), dtype=torch.long, device=dev)   # which symmetry-related pose, per particle and model
 
     def batches():
@@ -1141,14 +1166,14 @@ class AbinitioParams:
     global_iters: int = 3           # global orientation search of every particle in the first n iterations (0 = off)
     global_res: float = 12.0        # ... at the current resolution, but not finer than this (A)
     sgd_iter: int = 30              # particle SGD rounds after the class stage (0 = off: refine the class model)
-    sgd_batch: int = 2000           # ... particles per round
+    sgd_batch: int = 2000           # ... particles per round (at most a quarter of the particles, at least 500)
     sgd_res: float = 12.0           # ... final resolution (A) of the SGD stage (it starts at 30 A)
     sgd_topk: int = 8               # ... soft poses: each particle at its best k orientations, posterior-weighted
                                     # (noise from the batch's power spectrum). Hard (1) locks in a wrong start: J341
                                     # C3 within 10 deg of cryoSPARC 76 -> 89%, map vs reference FSC 0.5 11.1 -> 9.0 A
                                     # (3 seeds); J1279 C3 equal; +5 s
     relax_sym: bool = True          # C1 run whose map looks symmetric: solve with that symmetry, refine in C1 from it
-    check_starts: int = 3           # the best n class-stage starts each get a short particle refinement; the one
+    check_starts: int = 3           # without SGD: the best n class-stage starts each get a short particle refinement; the one
                                     # the particles fit best is kept (1 = trust the class agreement)
     drop_frac: float = 0.1          # worst-fitting fraction of particles left out of the reconstruction (0 = keep all)
     rebalance: float = 0.0          # > 0: cap crowded viewing directions at this x the median direction (preferred orientation)
@@ -1203,14 +1228,17 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
     psi_p, off_p = torch.as_tensor(np.asarray(result.psi))[ok], torch.as_tensor(np.asarray(result.offsets))[ok]
     timing = dict(classes=0.0, sgd=0.0, particles=0.0)
 
-    def consensus(sym: str, quiet: bool = False):
-        """Class stage -> (candidate starts judged by the particles) -> particle SGD -> local refinement."""
+    def consensus(sym: str, quiet: bool = False, sel: torch.Tensor | None = None):
+        """Class stage -> (candidate starts judged by the particles) -> particle SGD -> local refinement.
+        sel: run on these particles only (indices into idx)."""
         lg = (lambda *a: None) if quiet else log
+        idx_, kp_, psi_, off_ = (idx, kp, psi_p, off_p) if sel is None else (idx[sel], kp[sel], psi_p[sel], off_p[sel])
         t0 = time.time()
         vols0, Ak, cc, _, starts = classes_to_volume(cls_ft[keep], pops[keep], box_a, diam, sym=sym,
                                                      n_starts=prm.n_starts, res_start=prm.class_res_start,
                                                      res_end=prm.class_res_end, n_iter=prm.class_iter, seed=prm.seed,
-                                                     n_models=1, keep_top=max(1, prm.check_starts), log=lg)
+                                                     n_models=1, log=lg,
+                                                     keep_top=1 if prm.sgd_iter > 0 else max(1, prm.check_starts))
         torch.cuda.synchronize()
         timing["classes"] += time.time() - t0
         vols_cls = vols0
@@ -1222,17 +1250,17 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
             # the class averages can prefer a wrong model (few views, pseudo-symmetry): let the particles decide.
             # Short refinement (global search + 2 local iterations) of each candidate on up to 5000 particles.
             g = torch.Generator().manual_seed(prm.seed)
-            sub = torch.randperm(len(idx), generator=g)[:5000]
+            sub = torch.randperm(len(idx_), generator=g)[:5000]
             outs = []
             for c_i, (c_score, c_vols, c_Ak) in enumerate(starts):
-                o = refine_particles(clf, idx[sub], particle_poses(c_Ak[0], kp[sub], psi_p[sub]), off_p[sub], c_vols,
+                o = refine_particles(clf, idx_[sub], particle_poses(c_Ak[0], kp_[sub], psi_[sub]), off_[sub], c_vols,
                                      sym=sym, n_iter=3, res_start=prm.res_start, n_local=prm.n_local, box=b,
                                      global_res=max(prm.global_res, 15.0), global_at=(1,), log=lambda *a: None)
                 outs.append((o[1], o[2], o[6][0], o[5][0]))
             # judged like the symmetry relaxation: each particle against the half map it was not in, all
             # candidates over the same band (a candidate's own fit is higher the blurrier it is)
             r_cmp = max(12.0, max(o[3] for o in outs))
-            fits = [cross_fit(clf, idx[sub], o[0], o[1], o[2], r_cmp, b, seed=prm.seed) for o in outs]
+            fits = [cross_fit(clf, idx_[sub], o[0], o[1], o[2], r_cmp, b, seed=prm.seed) for o in outs]
             for c_i, (c_score, _, _) in enumerate(starts):
                 lg(f"[3d] candidate start {c_i + 1}: class agreement {c_score:.3f}, cross-validated fit at "
                    f"{r_cmp:.1f} A {fits[c_i]:.4f} ({outs[c_i][3]:.1f} A)")
@@ -1241,15 +1269,16 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
             vols0, Ak = starts[pick][1], starts[pick][2]
             if pick:
                 lg(f"[3d] particles prefer candidate {pick + 1} over the best class agreement")
-        A0 = particle_poses(Ak[0], kp, psi_p)
+        A0 = particle_poses(Ak[0], kp_, psi_)
         Ak = Ak[0]
         if prm.sgd_iter > 0:
             # the class averages constrain the structure only weakly (a wrong model can match a few dozen
             # projections); stochastic global matching of the particles themselves settles it
-            Vs, A0 = particle_sgd(clf, idx, off_p, vols0[0], sym=sym, n_iter=prm.sgd_iter, res_end=prm.sgd_res,
-                                  batch=prm.sgd_batch, seed=prm.seed, topk=prm.sgd_topk, log=lg)
+            Vs, A0 = particle_sgd(clf, idx_, off_, vols0[0], sym=sym, n_iter=prm.sgd_iter, res_end=prm.sgd_res,
+                                  batch=min(prm.sgd_batch, max(500, len(idx_) // 4)), seed=prm.seed,
+                                  topk=prm.sgd_topk, log=lg)
             vols0 = [Vs]
-            Ak = _class_poses(A0, kp, psi_p, len(Ak))      # class orientations follow the particles (figures)
+            Ak = _class_poses(A0, kp_, psi_, len(Ak))      # class orientations follow the particles (figures)
         torch.cuda.synchronize()
         timing["sgd"] += time.time() - t0
         t0 = time.time()
@@ -1259,17 +1288,17 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
         if prm.n_iter > n_fine and b_lo < b - 8:
             # early iterations align at 8-15 A: run them on a smaller box (projection and reconstruction cost
             # ~ box^2 per particle), then the last iterations at the full box
-            lo = refine_particles(clf, idx, A0, off_p, vols0, n_iter=prm.n_iter - n_fine, res_start=prm.res_start,
+            lo = refine_particles(clf, idx_, A0, off_, vols0, n_iter=prm.n_iter - n_fine, res_start=prm.res_start,
                                   box=b_lo, global_res=prm.global_res,
                                   global_at=tuple(range(1, prm.global_iters + 1)), **common)
             V_lo = Volume(b_lo, dev)
             V_lo.set_real(lo[0][0])
             for v in lo[6][0]:
                 v.free_acc()
-            out = refine_particles(clf, idx, lo[1], lo[2], V_lo, n_iter=n_fine, res_start=max(lo[5][0], 2.2 * box_a / b),
+            out = refine_particles(clf, idx_, lo[1], lo[2], V_lo, n_iter=n_fine, res_start=max(lo[5][0], 2.2 * box_a / b),
                                    box=b, **common)
         else:
-            out = refine_particles(clf, idx, A0, off_p, vols0, n_iter=prm.n_iter, res_start=prm.res_start, box=b,
+            out = refine_particles(clf, idx_, A0, off_, vols0, n_iter=prm.n_iter, res_start=prm.res_start, box=b,
                                    global_res=prm.global_res, global_at=tuple(range(1, prm.global_iters + 1)),
                                    **common)
         torch.cuda.synchronize()
@@ -1287,48 +1316,81 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
         if g_sym != "C1":
             # pseudo-symmetric particle: C1 matching has several near-equivalent wrong answers. Solve it with the
             # symmetry imposed (well constrained), then refine without symmetry from there (symmetry relaxation).
-            log(f"[3d] the C1 map looks {g_sym}: ab initio with {g_sym} imposed, then refined in C1 from it")
+            log(f"[3d] the C1 map looks {g_sym}: trying {g_sym} ab initio + C1 refinement from it")
             for v in vols[0]:
                 v.free_acc()
             c1_result = (maps, A, t, z, fs, res, vols)
             c1_weights = (refine_particles.last_weights, refine_particles.last_score)
-            _, Ak_g, _, (m_g, A_g, t_g, _, _, r_g, v_g) = consensus(g_sym, quiet=True)
-            log(f"[3d] {g_sym} map: {r_g[0]:.1f} A; refining in C1")
-            for v in v_g[0]:
-                v.free_acc()
-            Vg = Volume(b, dev)
-            Vg.set_real(m_g[0])
-            lowpass(Vg, max(r_g[0], 8.0), box_a)
-            t0 = time.time()
-            maps, A, t, z, fs, res, vols = refine_particles(clf, idx, A_g, t_g, Vg, sym="C1", n_iter=prm.n_iter,
-                                                            res_start=max(r_g[0], 8.0), n_local=prm.n_local, box=b,
-                                                            drop_frac=prm.drop_frac, rebalance=prm.rebalance, log=log)
-            torch.cuda.synchronize()
-            timing["particles"] += time.time() - t0
+            n_all = len(idx)
+            # decide on a subset (the trial would otherwise double the time on large sets; usually it is rejected)
+            sub = (torch.randperm(n_all, generator=torch.Generator().manual_seed(prm.seed + 3))[:25000]
+                   if n_all > 30000 else None)
+
+            def relaxed(sel):
+                _, Ak_g, _, (m_g, A_g, t_g, _, _, r_g, v_g) = consensus(g_sym, quiet=True, sel=sel)
+                for v in v_g[0]:
+                    v.free_acc()
+                Vg = Volume(b, dev)
+                Vg.set_real(m_g[0])
+                lowpass(Vg, max(r_g[0], 8.0), box_a)
+                ii = idx if sel is None else idx[sel]
+                t0 = time.time()
+                out = refine_particles(clf, ii, A_g, t_g, Vg, sym="C1", n_iter=prm.n_iter, res_start=max(r_g[0], 8.0),
+                                       n_local=prm.n_local, box=b, drop_frac=prm.drop_frac, rebalance=prm.rebalance,
+                                       log=lambda *a: None)
+                torch.cuda.synchronize()
+                timing["particles"] += time.time() - t0
+                return Ak_g, out
+
+            Ak_g, out_rel = relaxed(sub)
+            res_rel = out_rel[5][0]
+            ii = idx if sub is None else idx[sub]
+            if sub is None:
+                res_ref = c1_result[5][0]
+                r_cmp = max(res_ref, res_rel)
+                fit_ref = cross_fit(clf, ii, c1_result[1], c1_result[2], c1_result[6][0], r_cmp, b, seed=prm.seed)
+            else:   # the direct C1 map, refined on the same subset, for a like-for-like comparison
+                Vc = Volume(b, dev)
+                Vc.set_real(c1_result[0][0])
+                lowpass(Vc, max(c1_result[5][0], 8.0), box_a)
+                t0 = time.time()
+                oc = refine_particles(clf, idx[sub], c1_result[1][sub.to(dev)], c1_result[2][sub.to(dev)], Vc, sym="C1",
+                                      n_iter=prm.n_iter, res_start=max(c1_result[5][0], 8.0), n_local=prm.n_local,
+                                      box=b, drop_frac=prm.drop_frac, rebalance=prm.rebalance, log=lambda *a: None)
+                timing["particles"] += time.time() - t0
+                res_ref = oc[5][0]
+                r_cmp = max(res_ref, res_rel)
+                fit_ref = cross_fit(clf, ii, oc[1], oc[2], oc[6][0], r_cmp, b, seed=prm.seed)
+                del oc
             # the symmetry score of a C1 map can be a false positive (an asymmetric particle can come out slightly
             # symmetric-looking), so the particles decide: each particle against the half map it was not part of,
             # both maps over the same band (the worse resolution of the two). The refinement's own fit compares
             # each map at its own resolution with the particles that built it, and preferred a blurred, wrong
             # C1 map on J341 (C3): 0.282 vs 0.199 at 17.8 vs 8.7 A, 39% vs 74% of orientations within 10 deg.
-            res_c1 = c1_result[5][0]
-            r_cmp = max(res_c1, res[0])
-            fit_c1 = cross_fit(clf, idx, c1_result[1], c1_result[2], c1_result[6][0], r_cmp, b, seed=prm.seed)
-            fit_rel = cross_fit(clf, idx, A, t, vols[0], r_cmp, b, seed=prm.seed)
-            sc_rel = {g: sc for g, _, sc in detect_symmetry(maps[0], box_a / b, diam)[0]}.get(g_sym, 0.0)
-            sc_c1 = {g: sc for g, _, sc in detect_symmetry(c1_result[0][0], box_a / b, diam)[0]}.get(g_sym, 0.0)
-            log(f"[3d] {g_sym} score after C1 refinement: relaxed map {sc_rel:.2f}, direct C1 map {sc_c1:.2f}")
-            if fit_rel >= fit_c1:
-                log(f"[3d] relaxed map kept: cross-validated fit at {r_cmp:.1f} A {fit_rel:.4f} vs {fit_c1:.4f} (direct "
-                    f"C1), {res[0]:.1f} vs {res_c1:.1f} A")
+            fit_rel = cross_fit(clf, ii, out_rel[1], out_rel[2], out_rel[6][0], r_cmp, b, seed=prm.seed)
+            on = f" ({len(sub)} particles)" if sub is not None else ""
+            if fit_rel >= fit_ref:
+                log(f"[3d] relaxed map kept{on}: cross-validated fit at {r_cmp:.1f} A {fit_rel:.4f} vs {fit_ref:.4f} "
+                    f"(direct C1), {res_rel:.1f} vs {res_ref:.1f} A")
+                if sub is not None:
+                    del out_rel
+                    Ak_g, out_rel = relaxed(None)
+                maps, A, t, z, fs, res, vols = out_rel
                 Ak = _class_poses(A, kp, psi_p, len(Ak_g))
                 relaxed_from = g_sym
             else:
-                log(f"[3d] direct C1 map kept: cross-validated fit at {r_cmp:.1f} A {fit_c1:.4f} vs {fit_rel:.4f} "
-                    f"(relaxed), {res_c1:.1f} vs {res[0]:.1f} A")
+                log(f"[3d] direct C1 map kept{on}: cross-validated fit at {r_cmp:.1f} A {fit_ref:.4f} vs {fit_rel:.4f} "
+                    f"(relaxed), {res_ref:.1f} vs {res_rel:.1f} A")
+                del out_rel
                 maps, A, t, z, fs, res, vols = c1_result
                 refine_particles.last_weights, refine_particles.last_score = c1_weights
     used = refine_particles.last_weights > 0
     consensus_map = maps[0]
+    cov = view_coverage(A, "C1" if not relaxed_from and prm.sym.upper() == "C1" else (relaxed_from or prm.sym))
+    cov["warning"] = (cov["occupied"] < 0.3 or cov["top10_share"] > 0.6)
+    log(f"[3d] views: {cov['occupied'] * 100:.0f}% of directions occupied, busiest 10% hold "
+        f"{cov['top10_share'] * 100:.0f}% of particles" + (" -- WARNING: narrow range of views, the map is smeared "
+        "along the missing directions; include classes with other views if there are any" if cov["warning"] else ""))
     unmasked_res = resolution_from_fsc(fsc(vols[0][0], vols[0][1]), box_a)   # comparable to RELION's "without masking"
     zk = torch.zeros(len(Ak), dtype=torch.long, device=dev)
     t0 = time.time()
@@ -1404,7 +1466,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
                    resolution_unmasked_a=round(unmasked_res, 2), fsc_mask="soft sphere of the particle diameter",
                    resolution_solvent_mask_a=round(resolution_from_fsc(fsc_solvent, box_a), 2),
                    particles_used=int(used.sum()), particles_dropped=int((~used).sum()),
-                   relaxed_from=relaxed_from, seconds_sgd=round(timing["sgd"], 1),
+                   relaxed_from=relaxed_from, seconds_sgd=round(timing["sgd"], 1), view_coverage=cov,
                    fsc=[round(float(x), 4) for x in fs[order[0]].cpu()], box_a=round(box_a, 2),
                    fsc_unmasked=[round(float(x), 4) for x in fsc_unmasked.cpu()],
                    fsc_solvent=[round(float(x), 4) for x in fsc_solvent.cpu()],
