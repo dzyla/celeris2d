@@ -320,6 +320,8 @@ def main(argv=None):
                          "all GPUs above)")
     ap.add_argument("--invert", action="store_true", help="force contrast inversion (default: auto-detect)")
     ap.add_argument("--no-invert", action="store_true", help="never invert contrast (default: auto-detect)")
+    ap.add_argument("--param", action="append", default=[], metavar="KEY=VALUE",
+                    help="set any engine parameter (engine.Params field), e.g. --param solvent_dilate_a=40; repeatable")
     a = ap.parse_args(argv)
 
     t0 = time.time()
@@ -339,6 +341,16 @@ def main(argv=None):
                  batch_per_class=a.batch_per_class, n_full_iter=a.full_iter, anneal_t0=a.anneal,
                  center_classes=not a.no_center, seed=a.seed, init_classes=a.init_classes, frc_reg=not a.no_frc_reg, march_margin=a.march_margin, noise_model=a.noise_model, notch_thresh=a.notch, polish=a.polish, solvent_flatten=a.solvent_flatten, gold_standard=a.gold_standard, sigma_init_factor=a.sigma_init_factor, hard_pose=a.hard_pose, class_prior=a.class_prior,
                  polarity=-1 if a.invert else (1 if a.no_invert else 0))
+    for kv in a.param:  # any Params field, typed like its default: --param solvent_dilate_a=40
+        k, _, v = kv.partition("=")
+        if not hasattr(prm, k):
+            raise SystemExit(f"--param: unknown parameter '{k}'")
+        cur = getattr(prm, k)
+        if isinstance(cur, bool) or cur is None:
+            v = {"true": True, "false": False, "none": None, "auto": None}[v.lower()]
+        else:
+            v = type(cur)(v)
+        setattr(prm, k, v)
     clf = Classifier2D(src, prm, devices=devices)
     if a.optimize > 0:
         from .optimize import apply as apply_settings

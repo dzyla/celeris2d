@@ -169,6 +169,9 @@ class Params:
     normalize: bool = True          # per-particle background mean/std normalisation
     mstep_fp16: bool = True         # fp16 tensor-core M-step GEMMs
     frc_reg: bool = True            # Wiener filter from odd/even half-set FRC (not from a class's own power)
+    particle_scale: bool = False    # E-step: fit a per-particle amplitude for every hypothesis (contrast varies
+                                    # between particles, e.g. stain thickness); otherwise dim particles prefer dim classes.
+                                    # NS J75 vs J83: single E-step recall 0.13 -> 0.28, but full runs worse (F1 0.457 -> 0.414)
     gold_standard: bool = False     # each half-set is aligned only to classes built from its own half, so the
                                     # half-set FRC (Wiener filter) cannot mistake a shared noise pattern for signal
     sigma_init_factor: float = 1.0  # >1: noise inflated at the start, annealed to 1 (cryoSPARC-style); off: hurt LoG separation
@@ -655,7 +658,7 @@ class Classifier2D:
             nh, dh = torch.stack([ft_resize(num0, bm), ft_resize(num1, bm)]), torch.stack([ft_resize(den0, bm), ft_resize(den1, bm)])
             self.S_numh = nh + (lam * self.S_numh if lam and self.S_numh is not None else 0)
             self.S_denh = dh + (lam * self.S_denh if lam and self.S_denh is not None else 0)
-        num_k, den_k, pop = ft_resize(self.S_num, b), ft_resize(self.S_den, b), self.S_pop.clone()
+        num_k, den_k, pop = ft_resize(self.S_num, b), ft_resize(self.S_den, b), torch.nan_to_num(self.S_pop.clone())
         sig = self.sigma2_emp[shell]  # reconstruction uses the empirical (un-annealed) noise
         sh_b = shell.flatten()
         nsh = self.nsh
@@ -792,6 +795,12 @@ class Classifier2D:
                   for h in (0, 1)]
         return halves, tot["sumx2"], tot["pop"]
 
+    def _report_bad(self, idx, badn, x):
+        bad = badn.nonzero()[:, 0]
+        fin = torch.isfinite(x[bad]).flatten(1).all(1)
+        self.log(f"[warn] {len(bad)} particle(s) with non-finite likelihood dropped from this pass "
+                 f"(host idx {idx[bad.cpu()][:5].tolist()}; image finite: {fin[:5].tolist()})")
+
     def _batch(self, dev, c, idx, acc):
         p, K = self.p, self.p.n_classes
         b, b_al, R, M, T1, mc = c["b"], c["b_al"], c["R"], c["M"], c["T1"], c["mc"]
@@ -825,7 +834,12 @@ class Classifier2D:
             ll[:, m0:m1] = torch.matmul(EyT, a.view(b_al, -1)).real.view(T1, m1 - m0, n, T1)
             del a
         d = ((ctf_a * ctf_a) * w8).reshape(n, -1) @ r2w.T                       # (n, M)
-        ll.mul_(2).sub_(d.T[None, :, :, None]).add_(c["logprior"][None, :, None, None])
+        if p.particle_scale:
+            # each hypothesis at its own best amplitude a = CC/d (stain thickness / ice varies the contrast):
+            # max_a 2a CC - a^2 d = CC^2 / d, identical to 2 CC - d when a = 1
+            ll.clamp_(min=0).pow_(2).div_(d.T.clamp_min(1e-30)[None, :, :, None]).add_(c["logprior"][None, :, None, None])
+        else:
+            ll.mul_(2).sub_(d.T[None, :, :, None]).add_(c["logprior"][None, :, None, None])
         if c.get("lock_class"):  # polishing: refine poses inside each particle's converged class only
             cur = self.cls[idx].to(dev)
             same = (torch.arange(M, device=dev)[:, None] // R) == cur[None, :]       # (M, n)
@@ -837,7 +851,14 @@ class Classifier2D:
             llv = ll.view(T1, K, R, n, T1).permute(1, 3, 2, 0, 4).reshape(K, n, R * T1 * T1)
             mx, arg = llv.max(-1)                                                      # (K, n)
             lse = torch.logsumexp(mx, dim=0)                                           # (n,)
+            badn = ~torch.isfinite(lse)
+            if badn.any():  # one non-finite particle would make every class NaN: park it in class 0, weight 0
+                self._report_bad(idx, badn, x)
+                mx[:, badn] = float("-inf")
+                mx[0, badn] = 0.0
+                lse = torch.where(badn, torch.zeros_like(lse), lse)
             cpost = torch.exp(mx - lse[None])                                          # class posterior (K, n)
+            cpost[:, badn] = 0.0
             r_, rest = arg // (T1 * T1), arg % (T1 * T1)
             ty_, tx_ = rest // T1, rest % T1
             kk = torch.arange(K, device=dev)[:, None].expand(K, n)
@@ -851,8 +872,9 @@ class Classifier2D:
             best = ((kb * R + r_[kb, ar]) * T1 + ty_[kb, ar]) * T1 + tx_[kb, ar]
         else:
             lse = torch.logsumexp(ll, dim=(0, 1, 3))                                  # (n,)
-            if not torch.isfinite(lse).all():                                         # drop broken particles
-                badn = ~torch.isfinite(lse)
+            badn = ~torch.isfinite(lse)
+            if badn.any():                                                            # drop broken particles
+                self._report_bad(idx, badn, x)
                 ll[:, :, badn, :] = float("-inf")
                 ll[0, 0, badn, 0] = 0.0
                 lse = torch.where(badn, torch.zeros_like(lse), lse)
@@ -863,6 +885,8 @@ class Classifier2D:
             best = best[:, 0]
             sw = torch.exp(top - lse[:, None])
 
+        if badn.any():  # a broken image must not reach the class sums
+            x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
         # ---- per-particle bookkeeping (best hypothesis), written back to host state
         bm_, bt = best // (T1 * T1), best % (T1 * T1)
         x2 = x_a.abs() ** 2
