@@ -29,9 +29,46 @@ def test_motion_recovers_shifts():
     frames = torch.fft.irfft2(F0[None] * pp._shift_phase(ky, kx, true[:, 1], true[:, 0]), s=(b, b))
     frames = frames / frames.std() * 0.5 + 1.0                             # ~1 count per pixel per frame
     counts = torch.poisson(frames.clamp_min(0), generator=g).to(torch.uint8).cpu().numpy()
-    mic = pp.motion_correct(counts, None, apix, dose_per_frame=1.5, align_apix=2.0)
+    mic = pp.motion_correct(counts, None, apix, dose_per_frame=1.5, align_apix=2.0, patches=0)
     err = np.abs(mic.shifts + true.cpu().numpy()).max()                 # the correction undoes the drift
     assert err < 0.1, f"shift error {err:.2f} A\n{mic.shifts}\n{true.cpu().numpy()}"
+
+
+def _frc_band(a, b, apix, lo, hi):
+    fa, fb = torch.fft.rfft2(a), torch.fft.rfft2(b)
+    ky, kx = pp._grid(a.shape[0], a.shape[1], apix, a.device)
+    k = torch.sqrt(ky ** 2 + kx ** 2)
+    m = (k >= 1 / lo) & (k <= 1 / hi)
+    return float((fa * fb.conj()).real[m].sum() / torch.sqrt(fa.abs().pow(2)[m].sum() * fb.abs().pow(2)[m].sum()))
+
+
+def test_local_motion_recovers_signal():
+    """Frames warped by a smooth field that grows with time (4 A at the edges): the patch model must bring the
+    even/odd-frame FRC (independent noise, signal only) back to the level without local motion."""
+    dev, b, n, apix = "cuda", 2048, 30, 1.0
+    g = torch.Generator(device=dev).manual_seed(0)
+    ky, kx = pp._grid(b, b, apix, dev)
+    truth = torch.fft.irfft2(torch.fft.rfft2(torch.randn(b, b, generator=g, device=dev))
+                             * torch.exp(-20 * (ky ** 2 + kx ** 2)), s=(b, b))
+    truth = truth / truth.std()
+    yy, xx = torch.meshgrid(torch.linspace(-1, 1, b, device=dev), torch.linspace(-1, 1, b, device=dev), indexing="ij")
+    out = {}
+    for amp in (0.0, 4.0):
+        frames = []
+        for t in torch.linspace(0, 1, n).tolist():
+            dx = 10 * t + amp * t * (xx + 0.5 * yy * yy)
+            dy = -6 * t + amp * t * (-yy + 0.7 * xx * yy)
+            grid = torch.stack([xx - dx * 2 / b, yy - dy * 2 / b], -1)[None]
+            fr = torch.nn.functional.grid_sample(truth[None, None], grid, mode="bicubic", padding_mode="reflection",
+                                                 align_corners=True)[0, 0]
+            frames.append(torch.poisson((1.0 + 0.3 * fr).clamp_min(0), generator=g).to(torch.uint8))
+        frames = torch.stack(frames).cpu().numpy()
+        for p in (0, 5):
+            mic = pp.motion_correct(frames, None, apix, dose_per_frame=0.01, patches=p)
+            out[amp, p] = _frc_band(*mic.halves, apix, 6.0, 3.5)
+    assert out[4.0, 0] < out[0.0, 0] - 0.1, out                 # the local motion hurts a whole-frame alignment
+    assert out[4.0, 5] > out[0.0, 0] - 0.02, out                # and the patch model recovers it
+    assert out[0.0, 5] > out[0.0, 0] - 0.01, out                # without harm when there is none
 
 
 def test_ctf_recovers_defocus():

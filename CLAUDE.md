@@ -63,9 +63,12 @@ Layers, bottom to top:
    halves, symmetry detection / relaxation, 3D classification; `Volume` = 2x-padded Fourier volume in the units
    of the 2D particle spectra; RELION Euler convention, image = A @ volume, checked against Refine3D) and
    `plots3d.py` (its figures). It only reads a finished 2D `Result` — the 2D engine does not know about it.
-   `preprocess.py`: movies -> micrographs on the GPU (gain orientation check, whole-frame motion correction, dose
-   weighting, per-micrograph CTF fit with background/envelope by least squares); not yet wired into the front ends.
-   `scripts/preprocess_eval.py` compares it with cryoSPARC on the same movies (docs/preprocess-status.md).
+   `preprocess.py`: movies -> micrographs on the GPU (gain orientation check, whole-frame + patch motion
+   correction, dose weighting, per-micrograph CTF fit with background/envelope by least squares), figures in
+   `plots_preprocess.py`; not yet wired into the front ends. `scripts/preprocess_eval.py` compares it with
+   cryoSPARC on the same movies, `scripts/extract_eval.py` + `abinitio_truth.py ref` compare micrograph sets by
+   reconstruction at known poses (docs/preprocess-status.md). Judge motion correction by such downstream FSC or
+   the even/odd-frame FRC, not by FRC against another program's micrograph (shared shot noise).
 4. **Front ends**: `cli.py` (one-shot runs, output writers, `pick_devices`), `session.py` (stateful
    `Session`), and `webapp.py` (FastAPI + `web/index.html`) and `mcp_server.py`, both thin wrappers
    around one `Session`, running one GPU job at a time. The 3D part of the page is `web/abinitio3d.js`, loaded

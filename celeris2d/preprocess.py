@@ -93,7 +93,10 @@ class Micrograph:
     sum_dw: torch.Tensor        # aligned, dose-weighted sum (for particles)
     apix: float
     shifts: np.ndarray          # (frames, 2) shift (x, y) in A applied to each frame
-    gain_orientation: str = ""
+    halves: tuple = ()          # dose-weighted sums of the even and of the odd frames: their FRC measures the
+                                # aligned signal with independent noise (an alignment quality check)
+    local: dict | None = None   # local motion: fit rms, patch centres, measured and modelled patch shifts (A)
+    dose_per_frame: float = 0.0
 
 
 def dose_weights(n: int, dose_per_frame: float, k: torch.Tensor, pre_dose: float = 0.0) -> torch.Tensor:
@@ -153,10 +156,95 @@ def align_frames(F: torch.Tensor, apix: float, bfactor: float = 1500.0, n_iter: 
     return sh
 
 
+class MotionModel:
+    """Smooth local motion (MotionCor2-like): the shift of the frame at time t (0..1) at position (x, y) (-1..1
+    over the micrograph) is sum_ij c_ij * s_i(x, y) * t^j with s = 1, x, y, x^2, xy, y^2 and j = 0..3, per axis,
+    fitted by least squares (two rounds, outliers beyond 3 MAD dropped) to shifts measured on patches."""
+    SPACE = 6
+    TIME = 4
+
+    def __init__(self, xy: torch.Tensor, t: torch.Tensor, r: torch.Tensor):
+        """xy (P, 2) patch centres in -1..1, t (n,) frame times in 0..1, r (P, n, 2) measured shifts (A)."""
+        X = self._basis(xy, t).reshape(-1, self.SPACE * self.TIME)                   # (P*n, 24)
+        y = r.reshape(-1, 2)
+        keep = torch.ones(len(y), dtype=torch.bool, device=y.device)
+        for _ in range(2):
+            self.c = torch.linalg.lstsq(X[keep], y[keep]).solution                   # (24, 2)
+            res = (X @ self.c - y).norm(dim=1)
+            mad = res[keep].median() * 1.4826 + 1e-6
+            keep = res < 3 * mad + 0.5
+        self.rms = float((X[keep] @ self.c - y[keep]).pow(2).sum(1).mean().sqrt())
+        self.n_used = int(keep.sum())
+
+    def _basis(self, xy, t):
+        x, y = xy[:, 0], xy[:, 1]
+        sp = torch.stack([torch.ones_like(x), x, y, x * x, x * y, y * y], 1)          # (P, 6)
+        tm = torch.stack([t ** j for j in range(self.TIME)], 1)                       # (n, 4)
+        return sp[:, None, :, None] * tm[None, :, None, :]                            # (P, n, 6, 4)
+
+    def __call__(self, xy: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """Shifts (P, n, 2) at positions xy (P, 2) and times t (n,)."""
+        return self._basis(xy, t).reshape(len(xy), len(t), -1) @ self.c
+
+
+def patch_shifts(R: torch.Tensor, apix: float, grid: int = 5, align_apix: float = 2.6, bfactor: float = 500.0):
+    """Residual shifts of globally aligned real-space frames R (n, ny, nx) on a grid x grid set of patches:
+    (centres (P, 2) in -1..1 as (x, y), shifts (P, n, 2) in A)."""
+    n, ny, nx = R.shape
+    py, px = (ny // grid) // 2 * 2, (nx // grid) // 2 * 2
+    cen, out = [], []
+    for gy in range(grid):
+        for gx in range(grid):
+            y0, x0 = gy * py, gx * px
+            P = R[:, y0:y0 + py, x0:x0 + px]
+            F = torch.fft.rfft2(P - P.mean((1, 2), keepdim=True), norm="forward")
+            na, ma = max(64, int(round(py * apix / align_apix / 2)) * 2), max(64, int(round(px * apix / align_apix / 2)) * 2)
+            out.append(align_frames(crop_half(F, na, ma), apix * py / na, bfactor=bfactor, max_shift_a=40.0))
+            cen.append(((x0 + px / 2) / nx * 2 - 1, (y0 + py / 2) / ny * 2 - 1))
+    return torch.tensor(cen, device=R.device), torch.stack(out)
+
+
+def _local_sums(F, sh_g, model, w, apix, tile=512):
+    """Aligned sums with local motion: overlapping tiles (half-tile steps, sin^2 weights that add up to 1), each
+    frame of a tile shifted in Fourier space by the global shift plus the model at the tile centre. Returns the
+    plain sum, the dose-weighted sum and the dose-weighted sums of the even and the odd frames (ny, nx)."""
+    n, ny, nh = F.shape
+    nx = 2 * (nh - 1)
+    dev = F.device
+    st = tile // 2
+    R = torch.fft.irfft2(F, s=(ny, nx), norm="forward")                            # unshifted frames
+    pad_y, pad_x = st + (-ny) % st, st + (-nx) % st
+    R = torch.nn.functional.pad(R[:, None], (st, pad_x, st, pad_y), mode="reflect")[:, 0]
+    Ny, Nx = R.shape[1:]
+    out = torch.zeros(4, Ny, Nx, device=dev)                                       # plain, dw, dw even, dw odd
+    r = torch.arange(tile, device=dev, dtype=torch.float32)
+    win1 = torch.sin(math.pi * (r + 0.5) / tile) ** 2
+    win = win1[:, None] * win1[None, :]
+    ky, kx = _grid(tile, tile, apix, dev)
+    wt = dose_weights(n, w, torch.sqrt(ky ** 2 + kx ** 2))                          # w = dose per frame here
+    t = torch.linspace(0, 1, n, device=dev)
+    ys, xs = list(range(0, Ny - tile + 1, st)), list(range(0, Nx - tile + 1, st))
+    for y0 in ys:
+        for x0 in xs:
+            cx = ((x0 - st + tile / 2) / nx) * 2 - 1
+            cy = ((y0 - st + tile / 2) / ny) * 2 - 1
+            shf = sh_g + model(torch.tensor([[cx, cy]], device=dev), t)[0]           # (n, 2)
+            Ft = torch.fft.rfft2(R[:, y0:y0 + tile, x0:x0 + tile]) * _shift_phase(ky, kx, shf[:, 1], shf[:, 0])
+            Fw = Ft * wt
+            acc = torch.stack([Ft.sum(0), Fw.sum(0), Fw[0::2].sum(0), Fw[1::2].sum(0)])
+            out[:, y0:y0 + tile, x0:x0 + tile] += torch.fft.irfft2(acc, s=(tile, tile)) * win
+    return out[:, st:st + ny, st:st + nx]
+
+
 def motion_correct(frames: np.ndarray, gain: np.ndarray | None, apix: float, dose_per_frame: float, bin: int = 1,
-                   align_apix: float = 4.0, pre_dose: float = 0.0, device=None) -> Micrograph:
+                   align_apix: float = 4.0, pre_dose: float = 0.0, patches: int = 5, device=None) -> Micrograph:
     """Gain, Fourier binning by `bin` (super-resolution -> physical pixels), whole-frame alignment on a copy
-    binned to ~align_apix, then the aligned sums (plain and dose-weighted) at apix * bin."""
+    binned to ~align_apix, then the aligned sums (plain and dose-weighted) at apix * bin. patches > 0: local
+    motion measured on patches x patches patches of the globally aligned frames, a smooth model fitted to it
+    (MotionModel), and the sums built from overlapping tiles that each follow the model. EMPIAR-10025 (20 movies,
+    J104's 10k particles at its refined poses, D7): whole-frame 3.47 A, patches=5 3.27 A, cryoSPARC's patch-motion
+    micrographs 3.43 A (ours with each micrograph's particle positions registered to cryoSPARC's by a smooth field:
+    the two local-motion models place particles ~1 A apart)."""
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
     n, NY, NX = frames.shape
     ny, nx = (NY // bin) // 2 * 2, (NX // bin) // 2 * 2
@@ -181,15 +269,33 @@ def motion_correct(frames: np.ndarray, gain: np.ndarray | None, apix: float, dos
     Fa = crop_half(F, na, ma)
     sh = align_frames(Fa, p * ny / na)
     ky, kx = _grid(ny, nx, p, dev)
+    if patches:
+        Rg = torch.empty((n, ny, nx), device=dev)
+        for i in range(0, n, 4):
+            Rg[i:i + 4] = torch.fft.irfft2(F[i:i + 4] * _shift_phase(ky, kx, sh[i:i + 4, 1], sh[i:i + 4, 0]),
+                                           s=(ny, nx), norm="forward")
+        cen, rs = patch_shifts(Rg, p, grid=patches)
+        del Rg
+        model = MotionModel(cen, torch.linspace(0, 1, n, device=dev), rs)
+        out = _local_sums(F, sh, model, dose_per_frame, p)
+        return Micrograph(sum=out[0], sum_dw=out[1], apix=p, shifts=sh.cpu().numpy(), halves=(out[2], out[3]),
+                          dose_per_frame=dose_per_frame,
+                          local=dict(rms_a=model.rms, used=model.n_used, measured=rs.cpu().numpy(),
+                                     centres=cen.cpu().numpy(),
+                                     model=model(cen, torch.linspace(0, 1, n, device=dev)).cpu().numpy()))
     w = dose_weights(n, dose_per_frame, torch.sqrt(ky ** 2 + kx ** 2), pre_dose)
     S = torch.zeros((ny, nx // 2 + 1), dtype=torch.complex64, device=dev)
-    Sw = torch.zeros_like(S)
-    for i in range(0, n, 4):
+    Sw, He, Ho = torch.zeros_like(S), torch.zeros_like(S), torch.zeros_like(S)
+    for i in range(0, n, 4):                                         # i is even: rows 0, 2 of a chunk are even
         Fi = F[i:i + 4] * _shift_phase(ky, kx, sh[i:i + 4, 1], sh[i:i + 4, 0])
+        Fw = Fi * w[i:i + 4]
         S += Fi.sum(0)
-        Sw += (Fi * w[i:i + 4]).sum(0)
-    return Micrograph(sum=torch.fft.irfft2(S, s=(ny, nx), norm="forward"),
-                      sum_dw=torch.fft.irfft2(Sw, s=(ny, nx), norm="forward"), apix=p, shifts=sh.cpu().numpy())
+        Sw += Fw.sum(0)
+        He += Fw[0::2].sum(0)
+        Ho += Fw[1::2].sum(0)
+    inv = lambda X: torch.fft.irfft2(X, s=(ny, nx), norm="forward")
+    return Micrograph(sum=inv(S), sum_dw=inv(Sw), apix=p, shifts=sh.cpu().numpy(), halves=(inv(He), inv(Ho)),
+                      dose_per_frame=dose_per_frame)
 
 
 # -------------------------------------------------------------------------------------------- CTF
@@ -200,7 +306,7 @@ class CTFFit:
     angle: float                # deg from the x axis
     fit_res_a: float            # resolution to which the fitted CTF agrees with the Thon rings (A)
     score: float
-    profile: dict               # 1D curves for figures: k (1/A), data, model, cc per shell
+    profile: dict               # for figures (plots_preprocess): ring correlation, 2D and equal-phase 1D fit
 
 
 def power_spectrum(mic: torch.Tensor, apix: float, tile: int = 512) -> torch.Tensor:
@@ -342,4 +448,23 @@ def _fit_resolution(ps, k, du, dv, an, optics, fy, fx, box_a, res_lo, deg, z=3.0
             fit = 1 / rows[j][0]
             break
     ks = np.array([r[0] for r in rows])
-    return fit, dict(k=ks, cc=np.array([r[1] for r in rows]))
+    # for figures: background-subtracted spectrum and fitted envelope x CTF^2 on the 2D grid (NaN outside the
+    # band), and both averaged along equal CTF phase (astigmatism removed) against the equivalent frequency at
+    # the mean defocus
+    model = (B * cb[:, None]) @ sol[B.shape[1]:]
+    d2, m2 = torch.full_like(ps, float("nan")), torch.full_like(ps, float("nan"))
+    d2[band], m2[band] = a, model
+    dfm = 0.5 * (du + dv)
+    qa, qb = 0.5 * math.pi * cs * lam ** 3, math.pi * lam * dfm
+    s2e = (qb - torch.sqrt((qb * qb - 4 * qa * chi[band]).clamp_min(0))) / (2 * qa)
+    ke = s2e.clamp_min(0).sqrt()
+    nb = 160
+    lo, hi = float(kb.min()), float(kb.max())
+    ib = ((ke - lo) / (hi - lo) * nb).long().clamp(0, nb - 1)
+    cnt = torch.zeros(nb, device=dev).index_add_(0, ib, torch.ones_like(ke)).clamp_min(1)
+    d1 = torch.zeros(nb, device=dev).index_add_(0, ib, a) / cnt
+    m1 = torch.zeros(nb, device=dev).index_add_(0, ib, model) / cnt
+    kc = lo + (torch.arange(nb, device=dev) + 0.5) * (hi - lo) / nb
+    return fit, dict(k=ks, cc=np.array([r[1] for r in rows]), n=np.array([r[2] for r in rows]), z=z,
+                     data2d=d2.cpu().numpy(), model2d=m2.cpu().numpy(), apix=box_a / ps.shape[0],
+                     k1d=kc.cpu().numpy(), data1d=d1.cpu().numpy(), model1d=m1.cpu().numpy())

@@ -1,5 +1,10 @@
 # Movie preprocessing — status (2026-10-29)
 
+Control figures: `celeris2d/plots_preprocess.py` (per movie: motion, local motion model vs patch measurements,
+power spectrum data | fit, equal-phase CTF profile, ring-by-ring fit significance, even/odd-frame FRC, dose
+weights; summary of all movies vs cryoSPARC; FSC of reconstructions by micrograph set). `preprocess_eval.py`
+writes them for every run.
+
 Code: `celeris2d/preprocess.py`, tests `tests/test_preprocess.py`, evaluation `scripts/preprocess_eval.py`.
 
 ## First pass ("easy pass")
@@ -23,10 +28,36 @@ defocus of NU-refine J104).
 | FRC of our dose-weighted sum vs cryoSPARC's micrograph | 0.87-0.97 at 10 Å; at 3 Å median 0.80, 0.37-0.86 |
 | time per movie | read 3.8 s (LZW TIFF, 16 threads), motion 0.4 s, CTF 0.9 s |
 
-The lower FRC at 3 Å on 4 movies is where cryoSPARC's local (patch) motion differs from one rigid shift per frame.
+The FRC with cryoSPARC's micrograph shares the shot noise of the same frames: it measures how close our shifts
+are to cryoSPARC's, not which are better (patch motion lowers it to 0.26 at 4.7 Å while improving the image).
+
+## Local (patch) motion — default since 2026-10-29
+
+5x5 patches of the globally aligned frames, each aligned like a whole frame (leave-one-out, ~2.6 Å, B 500), a
+smooth model (quadratic in x, y times cubic in time, robust least squares; fit rms ~0.4-0.5 Å), sums from
+overlapping 512-px tiles that each follow the model. +0.2 s per movie (0.6 s motion).
+
+Downstream test (`scripts/extract_eval.py`, then `abinitio_truth.py ref`): J104's 10,000 particles cut identically
+from each micrograph set, reconstructed at J104's refined poses (D7), half-map FSC 0.143:
+
+| micrographs | as extracted | positions registered to cryoSPARC's (smooth field per micrograph) |
+|---|---|---|
+| cryoSPARC patch motion (its own frame of reference) | 3.43 Å | — |
+| ours, whole-frame | 3.51 Å | 3.47 Å |
+| ours, patch 5x5 | 3.68 Å | **3.27 Å** (curve at or slightly above cryoSPARC's from 4 to 3.3 Å) |
+
+The two local-motion models place the same particle ~1.1 Å apart (rms, smooth over the micrograph), and J104's
+shifts belong to cryoSPARC's micrographs: without registration that alone costs 0.25 Å. Per-particle registration
+is too noisy (~1 Å per particle at 10 Å) and made it worse (rigid 3.59 Å). Particles picked on our own
+micrographs have no such offset. The even/odd-frame FRC agrees (patch > rigid on every movie checked) but is
+small; the Thon-ring fit resolution cannot tell the methods apart.
+
+Synthetic check (tests): a smooth local field of 4 Å drops the 6-3.5 Å even/odd FRC by >0.1 with whole-frame
+alignment; the patch model brings it back to the no-motion level.
 
 ## Next
 
-Patch (local) motion; per-particle / local defocus; a downstream check (extract the J104 particles from our
-micrographs, reconstruct at the J104 poses, compare half-map FSC with cryoSPARC's micrographs); reading speed
-(decode is 90 % of the time); picking and extraction; CLI / dashboard.
+Picking (blob, then templates from 2D classes, then a classifier trained on manual picks with an immediate 2D
+check: EMAN-boxer-like loop in the dashboard), extraction into memory, a 2D engine that accepts particles while
+running, a live runner (`celeris2d-live <movie dir>`); per-particle defocus; reading speed (TIFF decode is
+~75 % of the time).

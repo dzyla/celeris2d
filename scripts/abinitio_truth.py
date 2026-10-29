@@ -129,7 +129,8 @@ def cmd_ref(a):
     full = ab.Volume(b, clf.dev, ft=(vols[0].ft + vols[1].ft) / 2)
     full.filter_shells(torch.sqrt((2 * f / (1 + f)).clamp(0, 1).nan_to_num(0)))
     ab._save_mrc(os.path.join(a.outdir, "ref.mrc"), full.real(), box_a / b)
-    info = dict(convention=conv, shift_sign=sgn, resolution_a=res, box=b, apix=box_a / b, n=clf.N, sym=a.sym)
+    info = dict(convention=conv, shift_sign=sgn, resolution_a=res, box=b, apix=box_a / b, n=clf.N, sym=a.sym,
+                fsc=[round(float(v), 4) for v in f])
     json.dump(info, open(os.path.join(a.outdir, "ref.json"), "w"), indent=1)
     print(json.dumps(info))
 
