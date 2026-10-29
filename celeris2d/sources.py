@@ -161,7 +161,8 @@ def read_cs_groups(path: str):
     """(merged array, {result group: absolute metafile path})."""
     if path.endswith(".cs"):
         arr = np.load(path)
-        return arr, {g: os.path.abspath(path) for g in {n.split("/")[0] for n in arr.dtype.names if "/" in n}}
+        groups = {g: os.path.abspath(path) for g in {n.split("/")[0] for n in arr.dtype.names if "/" in n}}
+        return _add_passthrough(path, arr, groups)
     import yaml
     with open(path) as fh:
         grp = yaml.safe_load(fh)
@@ -194,6 +195,40 @@ def read_cs_groups(path: str):
             if f.startswith(g + "/"):
                 out[f] = cache[mf][f]
     return out, groups
+
+
+def _add_passthrough(path, arr, groups):
+    """A bare job .cs (e.g. extracted_particles.cs) often lacks groups that cryoSPARC keeps in the job's
+    passthrough file (ctf above all). Add the missing groups from a passthrough .cs in the same folder that
+    holds the same particles (matched on uid)."""
+    import glob
+    d = os.path.dirname(os.path.abspath(path))
+    for pf in sorted(glob.glob(os.path.join(d, "*passthrough_particles*.cs"))):
+        if os.path.abspath(pf) == os.path.abspath(path):
+            continue
+        try:
+            pt = np.load(pf)
+        except (OSError, ValueError):
+            continue
+        new = sorted({n.split("/")[0] for n in pt.dtype.names if "/" in n} - set(groups))
+        if not new or len(pt) != len(arr):
+            continue
+        o_a, o_p = np.argsort(arr["uid"]), np.argsort(pt["uid"])
+        if not np.array_equal(arr["uid"][o_a], pt["uid"][o_p]):
+            continue
+        perm = np.empty(len(arr), np.int64)
+        perm[o_a] = o_p
+        pt = pt[perm]
+        add = [x for x in pt.dtype.descr if x[0].split("/")[0] in new]
+        out = np.empty(len(arr), dtype=arr.dtype.descr + add)
+        for f in arr.dtype.names:
+            out[f] = arr[f]
+        for f, *_ in add:
+            out[f] = pt[f]
+        groups.update({g: os.path.abspath(pf) for g in new})
+        print(f"[input] {os.path.basename(path)}: added {', '.join(new)} from {os.path.basename(pf)}")
+        arr = out
+    return arr, groups
 
 
 class CryosparcSource(_StackReader):
