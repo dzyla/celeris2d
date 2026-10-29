@@ -10,8 +10,8 @@ ab initio), `scripts/compare_maps.py` (map vs reference FSC after rotation/hand/
 
 | run | wall time | half-map FSC 0.143 no mask / sphere / solvent | vs RELION Refine3D map, FSC 0.5 / 0.143 |
 |---|---|---|---|
-| D2 | 4 s classes + 21 s SGD + 61 s refine = 1.4 min | 4.0 / 3.6 / 3.35 Å | 4.0 / 3.1 Å |
-| C1 (relaxed from D2) | 8 s + 31 s + 100 s = 2.3 min | 6.5 / 4.2 / 3.9 Å | 5.0 / 3.6 Å |
+| D2 | 5 s classes + 4 s SGD + 31 s refine = 40 s | 4.0 / 3.6 / 3.3 Å | 3.9 / 3.0 Å |
+| C1 (relaxed from D2) | 8 s + 7 s + 64 s = 1.3 min | — / 4.1 / — Å | 5.0 / 3.5 Å |
 | C1 direct (no relaxation) | ~1 min | 7.6 / 4.6 / 4.1 Å | 10.0 / 5.0 Å |
 | RELION InitialModel + Refine3D (D2), 4 GPUs | 2 min 23 s + 3 min 47 s | 3.79 Å unmasked, 3.15 Å PostProcess | — |
 

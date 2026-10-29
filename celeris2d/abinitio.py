@@ -1101,10 +1101,10 @@ class AbinitioParams:
     global_iters: int = 3           # global orientation search of every particle in the first n iterations (0 = off)
     global_res: float = 12.0        # ... at the current resolution, but not finer than this (A)
     sgd_iter: int = 30              # particle SGD rounds after the class stage (0 = off: refine the class model)
-    sgd_batch: int = 2000           # ... particles per round
+    sgd_batch: int = 2000           # ... particles per round (at most a quarter of the particles, at least 500)
     sgd_res: float = 12.0           # ... final resolution (A) of the SGD stage (it starts at 30 A)
     relax_sym: bool = True          # C1 run whose map looks symmetric: solve with that symmetry, refine in C1 from it
-    check_starts: int = 3           # the best n class-stage starts each get a short particle refinement; the one
+    check_starts: int = 3           # without SGD: the best n class-stage starts each get a short particle refinement; the one
                                     # the particles fit best is kept (1 = trust the class agreement)
     drop_frac: float = 0.1          # worst-fitting fraction of particles left out of the reconstruction (0 = keep all)
     rebalance: float = 0.0          # > 0: cap crowded viewing directions at this x the median direction (preferred orientation)
@@ -1168,7 +1168,8 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
         vols0, Ak, cc, _, starts = classes_to_volume(cls_ft[keep], pops[keep], box_a, diam, sym=sym,
                                                      n_starts=prm.n_starts, res_start=prm.class_res_start,
                                                      res_end=prm.class_res_end, n_iter=prm.class_iter, seed=prm.seed,
-                                                     n_models=1, keep_top=max(1, prm.check_starts), log=lg)
+                                                     n_models=1, log=lg,
+                                                     keep_top=1 if prm.sgd_iter > 0 else max(1, prm.check_starts))
         torch.cuda.synchronize()
         timing["classes"] += time.time() - t0
         vols_cls = vols0
@@ -1198,7 +1199,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
             # the class averages constrain the structure only weakly (a wrong model can match a few dozen
             # projections); stochastic global matching of the particles themselves settles it
             Vs, A0 = particle_sgd(clf, idx_, off_, vols0[0], sym=sym, n_iter=prm.sgd_iter, res_end=prm.sgd_res,
-                                  batch=prm.sgd_batch, seed=prm.seed, log=lg)
+                                  batch=min(prm.sgd_batch, max(500, len(idx_) // 4)), seed=prm.seed, log=lg)
             vols0 = [Vs]
             Ak = _class_poses(A0, kp_, psi_, len(Ak))      # class orientations follow the particles (figures)
         torch.cuda.synchronize()
