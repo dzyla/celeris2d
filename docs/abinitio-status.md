@@ -43,6 +43,19 @@ lacking 5.4 % of the density): 2 3D classes, 99.5 % correct.
    the C3 reference 22 Å; C3 imposed 11 Å). Either the particle is not strictly C3 or the missing side views leave
    C1 under-determined; trying the two best-scoring groups did not change it. Leads still open: independent half
    sets from the start; more 2D classes.
+   Other structures (zyla-lab CS-project1, C1 NU-refines as reference; map vs a map reconstructed at cryoSPARC's
+   poses, FSC 0.5 / 0.143; cryoSPARC's own ab initio poses agree with its refinement for only 8-14 % of particles,
+   so maps are compared, not poses):
+   - J56 (cryo, 102k, 64 px @ 5.28 Å): cryoSPARC ab initio J57 16.9 / 11.3 Å, 167 s; ours 21-22.5 / 10.6-10.9 Å,
+     100-170 s. Our views collapse: busiest 10 % of directions hold 72-78 % of particles, 28 % occupied (cryoSPARC
+     refinement: 59 % occupied). `rebalance` 1-2 does not change it (it reweights refinement only) and costs
+     1-3 Å; on J1279 C1 mixed (18.4 / 28.2 Å vs 22-47 Å), J341 C1 10.5 vs 9.3 Å -> stays off.
+     A map smeared around one axis scores all Cn alike (C12 0.38, C11 0.38, C10 0.37) and started a C12 trial
+     (304 s): the low-score relaxation trigger now needs the group to stand out by 0.05 from unrelated groups
+     (`_stands_out`) -> 100 s, same map. J341's blurred C3 (0.36 vs next unrelated 0.24) still triggers.
+   - J85 (negative stain, 21k, 64 px @ 6.375 Å): cryoSPARC ab initio J84 27 / 19 Å; ours fails (58-68 / 27-45 Å or no
+     agreement), sign of the map differs between seeds; Celeris loads this stack with the opposite contrast to
+     cryoSPARC (a reconstruction at cryoSPARC's poses comes out negative). Bounded by the weak NS 2D classes.
 2. **Speed.** For 3.5k particles we are ~4× faster than RELION on a quarter of the GPUs, not 20×. Most time is the
    refinement at the full 218 px box (61–100 s) and SGD (21–34 s). Leads: run early refinement iterations on a
    smaller box (Nyquist ~2× the current resolution; `_fetch` already crops), scale SGD rounds/batch with the

@@ -1324,7 +1324,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
     fit_c1 = float(refine_particles.last_score.mean())
     if prm.sym.upper() == "C1" and prm.relax_sym:
         rows, g_sym, _ = detect_symmetry(maps[0], box_a / b, diam)
-        if g_sym == "C1" and rows and rows[0][2] >= 0.3:
+        if g_sym == "C1" and rows and rows[0][2] >= 0.3 and _stands_out(rows):
             # a blurred, wrong C1 map scores its true group weakly (J341, C3: 0.36); the particles decide below
             g_sym = rows[0][0]
         if g_sym != "C1":
@@ -1552,6 +1552,17 @@ def _axis_rotation(axes: torch.Tensor, ang_deg: float) -> torch.Tensor:
     return torch.stack([torch.stack([c + x * x * C, x * y * C - z * s, x * z * C + y * s], -1),
                         torch.stack([y * x * C + z * s, c + y * y * C, y * z * C - x * s], -1),
                         torch.stack([z * x * C - y * s, z * y * C + x * s, c + z * z * C], -1)], -2)
+
+
+def _stands_out(rows, margin: float = 0.05) -> bool:
+    """The best group of detect_symmetry rows scores `margin` above every group unrelated to it (neither a
+    subgroup nor a supergroup by order). A map smeared around one axis (narrow views) scores all Cn alike:
+    J56 C12 0.38, C11 0.38, C10 0.37 (asymmetric); a blurred C3 map: C3 0.36, next unrelated C2 0.24 (J341)."""
+    def order(g):
+        return int(g[1:]) * (2 if g[0] == "D" else 1) if g[1:].isdigit() else 0
+    n = order(rows[0][0])
+    other = [sc for g, _, sc in rows[1:] if n and order(g) and n % order(g) and order(g) % n]
+    return not other or rows[0][2] - max(other) >= margin
 
 
 def detect_symmetry(vmap: torch.Tensor, apix: float, diameter_a: float, res_a: float = 15.0, max_n: int = 12):

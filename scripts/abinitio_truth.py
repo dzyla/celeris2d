@@ -1,14 +1,17 @@
 """Score ab initio runs against refined 3D poses of the same particles (cryoSPARC .cs with alignments3D).
 
 usage:
-  abinitio_truth.py ref <particles.cs> <outdir> --diameter D --max-res R [--sym C3]
+  abinitio_truth.py ref <particles.cs|.csg> <outdir> --diameter D --max-res R [--sym C3] [--poses refine.cs]
       reconstructs the reference map at the refined poses with Celeris2D's own back-projector (pose convention and
       shift sign chosen by half-map FSC on a subset) -> <outdir>/ref.mrc, ref.json
-  abinitio_truth.py score <abinitio outdir> <particles.cs> [--sym C3] [--ref <outdir>/ref.mrc]
+  abinitio_truth.py score <abinitio outdir | other job's .cs> <particles.cs|.csg> [--sym C3] [--ref <outdir>/ref.mrc]
+      [--poses refine.cs] [--map other job's map.mrc]
       orientation accuracy: the global rotation between the two pose sets (RANSAC over single-particle candidates,
       both hands, both pose conventions, symmetry-equivalent poses), then the share of particles within 5/10/20 deg
       and the median error; with --ref also the map-vs-reference FSC (compare_maps.py, rotation and hand search).
-      Prints one JSON line.
+      Prints one JSON line. A .cs in place of the run directory scores another program's 3D poses (e.g. a cryoSPARC
+      ab initio job, matched by uid), with --map its map.
+  --poses: the .cs holding the refined alignments3D when the particle input is a .csg (same particle order).
 """
 import argparse
 import json
@@ -100,7 +103,7 @@ def reconstruct(clf, idx, A, t, b, sym, half, kmax=None):
 
 def cmd_ref(a):
     from celeris2d.session import Session
-    cs = np.load(a.particles)
+    cs = np.load(a.poses or a.particles)
     s = Session(os.path.join(a.outdir, "work"), log=lambda m: None)
     s.load(a.particles, diameter=a.diameter, max_res=a.max_res, gpus="0")
     clf = s.clf
@@ -131,25 +134,36 @@ def cmd_ref(a):
 
 
 def cmd_score(a):
-    z = np.load(os.path.join(a.run, "poses.npz"))
-    cs = np.load(a.particles)
-    idx = z["idx"]
-    A = ab.euler_to_matrix(torch.as_tensor(z["rot"]), torch.as_tensor(z["tilt"]), torch.as_tensor(z["psi"]))
-    R = gt_matrices(cs)[idx]
+    cs = np.load(a.poses or a.particles)
     ops = ab.symmetry_ops(a.sym)
-    out, e = orientation_accuracy(A, R, ops)
-    used = torch.as_tensor(z["used"])
-    out["within10_used"] = float((e[used] < 10).float().mean())
-    out["n"] = len(idx)
+    if a.run.endswith(".cs"):     # another program's poses, matched by uid
+        oc = np.load(a.run)
+        pos = {u: i for i, u in enumerate(cs["uid"])}
+        keep = np.array([u in pos for u in oc["uid"]])
+        idx = np.array([pos[u] for u in oc["uid"][keep]])
+        # cryoSPARC's rotation is the transpose of ours (image = A @ volume): see the convention found by `ref`
+        out, e = orientation_accuracy(gt_matrices(oc[keep]).transpose(1, 2), gt_matrices(cs)[idx], ops)
+        out["n"] = len(idx)
+        run_map = a.map
+    else:
+        z = np.load(os.path.join(a.run, "poses.npz"))
+        idx = z["idx"]
+        A = ab.euler_to_matrix(torch.as_tensor(z["rot"]), torch.as_tensor(z["tilt"]), torch.as_tensor(z["psi"]))
+        out, e = orientation_accuracy(A, gt_matrices(cs)[idx], ops)
+        used = torch.as_tensor(z["used"])
+        out["within10_used"] = float((e[used] < 10).float().mean())
+        out["n"] = len(idx)
+        run_map = os.path.join(a.run, "map_nomask.mrc")
     summ = os.path.join(a.run, "summary.json")
     if os.path.exists(summ):
         sm = json.load(open(summ))
         out.update({k: sm.get(k) for k in ("resolution_a", "resolution_unmasked_a", "seconds_classes",
                                             "seconds_particles", "sym", "suggested_sym")})
-    if a.ref:
+    if a.ref and run_map:
         here = os.path.dirname(os.path.abspath(__file__))
-        r = subprocess.run([sys.executable, os.path.join(here, "compare_maps.py"), os.path.join(a.run, "map_nomask.mrc"),
-                            a.ref, os.path.join(a.run, "vs_ref.png")], capture_output=True, text=True)
+        png = os.path.splitext(a.run)[0] + "_vs_ref.png" if a.run.endswith(".cs") else os.path.join(a.run, "vs_ref.png")
+        r = subprocess.run([sys.executable, os.path.join(here, "compare_maps.py"), run_map, a.ref, png],
+                           capture_output=True, text=True)
         txt = r.stdout + r.stderr
         import re
         m = re.findall(r"0\.5 at ([0-9.]+) A, 0\.143 at ([0-9.]+) A", txt)
@@ -166,11 +180,14 @@ def main():
     r.add_argument("--diameter", type=float, required=True)
     r.add_argument("--max-res", type=float, required=True)
     r.add_argument("--sym", default="C1")
+    r.add_argument("--poses", default="")
     s = sp.add_parser("score")
     s.add_argument("run")
     s.add_argument("particles")
     s.add_argument("--sym", default="C1")
     s.add_argument("--ref", default="")
+    s.add_argument("--poses", default="")
+    s.add_argument("--map", default="")
     a = ap.parse_args()
     os.makedirs(getattr(a, "outdir", "."), exist_ok=True)
     cmd_ref(a) if a.cmd == "ref" else cmd_score(a)
