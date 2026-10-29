@@ -28,7 +28,8 @@ _LOAD_KEYS = ("diameter_a", "max_res_a", "init_res_a", "psi_step_min", "psi_fact
               "notch_thresh", "noise_model", "seed")
 _RUN_KEYS = ("n_iter", "n_full_iter", "batch_per_class", "march_margin", "recon_margin", "frc_reg", "tau2_fudge",
              "sigma_init_factor", "solvent_flatten", "gold_standard", "solvent_thresh", "solvent_dilate_a",
-             "center_classes", "recenter_thresh", "hard_pose", "class_prior", "polish", "reseed_frac", "max_offset_a")
+             "center_classes", "recenter_thresh", "hard_pose", "class_prior", "polish", "reseed_frac", "max_offset_a",
+             "local_refine")
 _FIELDS = {f.name for f in dataclasses.fields(Params)}
 LOAD_KEYS = tuple(k for k in _LOAD_KEYS if k in _FIELDS)   # tolerate Params fields being renamed / removed
 RUN_KEYS = tuple(k for k in _RUN_KEYS if k in _FIELDS)
@@ -142,6 +143,10 @@ SETTINGS = {
     "polish": dict(group="run_align", label="Polish final pass", unit="", type="bool",
                    help="The last iteration aligns out to the reconstruction limit with the classes locked. Sharper "
                         "classes on high-SNR data; scrambles poses on low-SNR or heavily binned data, hence off by default."),
+    "local_refine": dict(group="run_align", label="Coarse-to-fine search", unit="", type="bool",
+                         help="Full passes with hard pose (>= 100k particles): search all classes at twice the angular "
+                              "step, then refine each particle's two best classes at a quarter of that step and half-"
+                              "step shifts. 1.7-2.5x faster full passes with finer angles; same separation in tests."),
     "max_offset_a": dict(group="run_align", label="Maximum particle offset", unit="Å", type="number", auto="-1",
                          help="Cap on the total shift a particle can accumulate from its picked centre. "
                               "-1 = diameter / 4."),
