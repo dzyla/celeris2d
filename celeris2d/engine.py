@@ -300,6 +300,7 @@ class Classifier2D:
         self.class_res = torch.full((p.n_classes,), float(p.init_res_a))
         # per-particle class posterior (marginal over poses) of the last pass that saw the particle
         self.cpost = torch.zeros((self.N, p.n_classes), dtype=torch.float16)
+        self.levid = torch.zeros(self.N)  # log Bayes factor "a class" vs "no particle", pose-averaged (null_class)
         self.pnull = torch.zeros(self.N)  # P(no particle) of the last pass that saw the particle (null_class)
         self.null_pi = 0.0                # prior of the null hypothesis (0 = not active yet)
         self.est_res = p.init_res_a
@@ -869,12 +870,13 @@ class Classifier2D:
         a = cc.masked_fill(~inside[None], float("-inf")).argmax(1)
         return torch.stack([t[a % b2], t[a // b2]], 1)
 
-    @staticmethod
-    def _pnull(nul, lreal, badn):
+    def _pnull(self, nul, lreal, badn, idx):
         """P(no particle) from the log-sum over classes x poses of (2 CC - |CA|^2 + log prior); the null image
         scores 0 at every pose, so the comparison is prior_null vs (1 - prior_null) x mean over poses."""
         lpi, l1pi, lnpose = nul
-        pn = torch.sigmoid(lpi - (lreal - lnpose + l1pi))
+        lev = lreal - lnpose
+        self.levid[idx] = torch.where(badn, torch.zeros_like(lev), lev).cpu()
+        pn = torch.sigmoid(lpi - (lev + l1pi))
         return torch.where(badn, torch.zeros_like(pn), pn)
 
     def _report_bad(self, idx, badn, x):
@@ -951,7 +953,7 @@ class Classifier2D:
             ty_, tx_ = rest // T1, rest % T1
             kk = torch.arange(K, device=dev)[:, None].expand(K, n)
             nn = torch.arange(n, device=dev)[None, :].expand(K, n)
-            pn = self._pnull(nul, lreal, badn) if nul is not None else None
+            pn = self._pnull(nul, lreal, badn, idx) if nul is not None else None
             ll.zero_()
             ll[ty_, kk * R + r_, nn, tx_] = cpost if pn is None else cpost * (1 - pn)[None]
             wts = ll
@@ -974,7 +976,7 @@ class Classifier2D:
             wts = ll.sub_(lse[None, None, :, None]).exp_()                            # posterior, in place
             best = best[:, 0]
             sw = torch.exp(top - lse[:, None])
-            pn = self._pnull(nul, lse, badn) if nul is not None else None
+            pn = self._pnull(nul, lse, badn, idx) if nul is not None else None
             if pn is not None:
                 wts.mul_((1 - pn)[None, None, :, None])
 

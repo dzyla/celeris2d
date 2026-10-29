@@ -46,6 +46,15 @@ def main():
                  f"{(null * good).sum() / G * 100:.1f}% of good")
         f1, p, r, nc, ap = oracle(cls, good, ~null, G)
         line += f" | null rejected + classes: F1 {f1:.3f} (P {p:.2f} R {r:.2f}, {nc} cls) AP {ap:.3f}"
+    ev_path = os.path.join(os.path.dirname(os.path.abspath(res)), "log_evidence.npy")
+    if os.path.exists(ev_path):  # how well the per-particle evidence alone ranks good above junk
+        ev = np.load(ev_path)
+        g = good > 0
+        r = np.argsort(np.argsort(ev))
+        auc = (r[g].mean() - (g.sum() - 1) / 2) / (~g).sum()
+        q = np.percentile
+        line += (f" | evidence AUC {auc:.3f}, median good {q(ev[g], 50):.1f} [{q(ev[g], 10):.1f}..{q(ev[g], 90):.1f}]"
+                 f" junk {q(ev[~g], 50):.1f} [{q(ev[~g], 10):.1f}..{q(ev[~g], 90):.1f}]")
     print(line)
 
 
