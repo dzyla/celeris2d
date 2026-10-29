@@ -1153,6 +1153,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
 
     vols_cls, Ak, cc, (maps, A, t, z, fs, res, vols) = consensus(prm.sym)
     relaxed_from = None
+    fit_c1 = float(refine_particles.last_score.mean())
     if prm.sym.upper() == "C1" and prm.relax_sym:
         _, g_sym, _ = detect_symmetry(maps[0], box_a / b, diam)
         if g_sym != "C1":
@@ -1161,6 +1162,8 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
             log(f"[3d] the C1 map looks {g_sym}: ab initio with {g_sym} imposed, then refined in C1 from it")
             for v in vols[0]:
                 v.free_acc()
+            c1_result = (maps, A, t, z, fs, res, vols)
+            c1_weights = (refine_particles.last_weights, refine_particles.last_score)
             _, Ak_g, _, (m_g, A_g, t_g, _, _, r_g, v_g) = consensus(g_sym, quiet=True)
             log(f"[3d] {g_sym} map: {r_g[0]:.1f} A; refining in C1")
             for v in v_g[0]:
@@ -1174,8 +1177,22 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
                                                             drop_frac=prm.drop_frac, rebalance=prm.rebalance, log=log)
             torch.cuda.synchronize()
             timing["particles"] += time.time() - t0
-            Ak = _class_poses(A, kp, psi_p, len(Ak_g))
-            relaxed_from = g_sym
+            fit_rel = float(refine_particles.last_score.mean())
+            # the symmetry score of a C1 map can be a false positive (an asymmetric particle can come out slightly
+            # symmetric-looking), so the particles decide. Mean fit alone is blunt: beta-gal (truly D2) fits the
+            # relaxed and the direct C1 map within 0.5% (relaxed: better half-map resolution, and 5.0 vs 10 A FSC 0.5
+            # against RELION's map); an asymmetric test particle forced into C2 fits 2.7% worse. Keep the relaxed
+            # map if it fits clearly better, or about as well (within 1%) at a better half-map resolution.
+            res_c1 = c1_result[5][0]
+            if fit_rel > fit_c1 or (fit_rel > 0.99 * fit_c1 and res[0] < res_c1):
+                log(f"[3d] relaxed map kept: particle fit {fit_rel:.4f} vs {fit_c1:.4f}, {res[0]:.1f} vs {res_c1:.1f} A")
+                Ak = _class_poses(A, kp, psi_p, len(Ak_g))
+                relaxed_from = g_sym
+            else:
+                log(f"[3d] direct C1 map kept: particle fit {fit_c1:.4f} vs {fit_rel:.4f} (relaxed), "
+                    f"{res_c1:.1f} vs {res[0]:.1f} A")
+                maps, A, t, z, fs, res, vols = c1_result
+                refine_particles.last_weights, refine_particles.last_score = c1_weights
     used = refine_particles.last_weights > 0
     consensus_map = maps[0]
     unmasked_res = resolution_from_fsc(fsc(vols[0][0], vols[0][1]), box_a)   # comparable to RELION's "without masking"
@@ -1367,8 +1384,9 @@ def detect_symmetry(vmap: torch.Tensor, apix: float, diameter_a: float, res_a: f
     out = [(g, x, (x - base[g]) / max(1 - base[g], 1e-6)) for g, x in rows]
     out.sort(key=lambda r: -r[2])
     order = lambda g: (2 if g[0] == "D" else 1) * int(g[1:])
-    # largest group that scores clearly (>= 0.4) and close to the best one (a Dn score is the weaker of two axes)
-    good = [g for g, x, sc in out if sc >= max(0.4, 0.75 * out[0][2])]
+    # largest group that scores clearly (>= 0.4) and close to the best one (a Dn score is the weaker of two axes:
+    # beta-gal C2 0.51 / D2 0.42; a C3 object with a near-2-fold scores C3 0.99 / D3 0.83 and is C3)
+    good = [g for g, x, sc in out if sc >= max(0.4, out[0][2] - 0.12)]
     sugg = max(good, key=order) if good else "C1"
     ops = torch.eye(3, device=dev)[None]
     if sugg != "C1":

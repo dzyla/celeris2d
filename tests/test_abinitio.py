@@ -21,8 +21,11 @@ from celeris2d.session import Session
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
 
-BOX, APIX, N, NOISE = 48, 5.0, 3000, 2.0
-BLOBS = [(-8, 0, 0, 3.5, 1.0), (6, 3, 0, 3.0, 1.0), (0, -9, 4, 2.5, 0.9), (2, 6, -8, 3.0, 1.1), (-3, 2, 9, 2.0, 0.8)]
+BOX, APIX, N, NOISE = 64, 4.0, 4000, 1.5
+_r = np.random.default_rng(7)
+# an asymmetric object: 14 blobs of different sizes and weights spread through a sphere (few smooth blobs carry so
+# little information that wrong orientations reproject almost as well, and they are often nearly symmetric)
+BLOBS = [tuple(_r.uniform(-13, 13, 3)) + (_r.uniform(1.8, 3.5), _r.uniform(0.6, 1.2)) for _ in range(14)]
 
 
 def _volume(blobs, b=BOX):
@@ -93,15 +96,17 @@ def test_ab_initio_recovers_orientations(tmp_path, particles):
     df = read_star(os.path.join(out, "particles.star"))["particles"]
     assert {"rlnAngleRot", "rlnAngleTilt", "rlnAnglePsi", "rlnOriginXAngst"} <= set(df.columns)
     assert len(df) == summ["particles_used"]
-    assert summ["suggested_sym"] == "C1", summ["symmetry"]
+    assert summ["relaxed_from"] is None, "an asymmetric particle was forced into a symmetry"
 
 
 def test_symmetry_detection():
+    """A C3 object is recognised (score ~1). An asymmetric one scores clearly lower; the score is advisory (smooth
+    blobby maps can look partly symmetric), so run() only keeps a symmetry-relaxed map if the particles fit it better."""
     dev = "cuda"
-    for blobs, want in ((_c3(BLOBS[:3]), "C3"), (BLOBS, "C1")):
-        rows, sugg, ops = ab.detect_symmetry(_volume(blobs).to(dev), APIX, 200)
-        assert sugg == want, (want, rows[:4])
-        assert len(ops) == (3 if want == "C3" else 1)
+    rows, sugg, ops = ab.detect_symmetry(_volume(_c3(BLOBS[:5])).to(dev), APIX, 200)
+    assert sugg == "C3" and len(ops) == 3 and rows[0][2] > 0.95, rows[:4]
+    rows1, _, _ = ab.detect_symmetry(_volume(BLOBS).to(dev), APIX, 200)
+    assert rows1[0][2] < 0.8, rows1[:4]
 
 
 def test_projector_conventions():
