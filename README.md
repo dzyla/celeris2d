@@ -67,6 +67,11 @@ cryoSPARC pose/shift by rebuilding J43's class averages (correlation 0.82 vs ≤
   classification starts after the first ~20k. GPUs pull batches from a shared queue.
 * **Big data**: cryoSPARC-style online EM (500 particles / class / iteration) then full passes;
   ≥ 100k particles use hard pose + uniform class prior automatically.
+* **Memory**: the whole dataset is kept as Fourier-cropped spectra (working box set by `--max-res`; fp16
+  complex = 4 bytes per pixel of half the box², e.g. 64 px → 8 kB, 146 px → 43 kB per particle). It lives on the
+  first GPU if it fits, otherwise in pinned host RAM (batches are copied to every GPU over PCIe, a few seconds per
+  pass), otherwise in a disk-backed file in `$TMPDIR` (`--param spill_dir=/fast/ssd`) read through the page cache.
+  GPU memory therefore limits the batch size, not the dataset size; 3M particles at 64 px need ~27 GB.
 * Options for clean, high-SNR data: `--march-margin 5-10` (align further), `--polish` (final pass aligns to
   the reconstruction limit with classes locked; sharper on β-gal, harmful on low-SNR data).
 
@@ -160,4 +165,5 @@ texture at ~20 Å) — junk-like classes that do not always look like junk; use 
 ## Validation scripts
 `validate.py` (ψ consistency vs 3D angles) · `evaluate_frc.py` (star) / `evaluate_cs.py` (cs) half-set
 FRC per class · `evaluate_selection.py`, `separation_eval.py` (precision/recall vs a curated set) ·
-`compare.py` (side-by-side galleries).
+`compare.py` (side-by-side galleries) · `junk_eval.py` (good/junk separation of a cryoSPARC result against a
+curated Select 2D job).

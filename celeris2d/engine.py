@@ -18,6 +18,8 @@ tau2_fudge), masked, and re-centred on their centre of mass each iteration.
 from __future__ import annotations
 
 import math
+import os
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -104,6 +106,18 @@ class Optics:
     def wavelength(self) -> float:
         v = self.voltage_kv * 1e3
         return 12.2643247 / math.sqrt(v * (1 + v * 0.978466e-6))
+
+
+def _host_available() -> float:
+    """Bytes of host RAM available for new allocations (Linux MemAvailable; unknown -> unlimited)."""
+    try:
+        with open("/proc/meminfo") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return float(line.split()[1]) * 1024
+    except OSError:
+        pass
+    return float("inf")
 
 
 def ctf_2d(p: torch.Tensor, optics: Optics, fy: torch.Tensor, fx: torch.Tensor, box_a: float,
@@ -194,6 +208,8 @@ class Params:
     noise_model: str = "coloured"   # "coloured": per-Fourier-pixel noise in the particle frame (down-weights
                                     # detector/extraction artefacts); "radial": one value per shell
     init_classes: str = ""          # optional .mrc/.mrcs of starting class images (reference-based start)
+    spill_dir: str = ""             # where spectra go when they fit neither on the GPU nor in host RAM (a disk-backed
+                                    # file read through the page cache; "" = $TMPDIR); a fast local SSD is best
     hard_pose: bool | None = None   # best pose per class, soft over classes (cryoSPARC 'force max'); None = auto
     class_prior: bool | None = None # class populations as prior (False = uniform); None = auto
     # auto: >= 100k particles -> hard pose + uniform prior (resists noise attractors on big low-SNR sets);
@@ -299,15 +315,28 @@ class Classifier2D:
             self.half, where = True, torch.device("cpu")
         self.store_scale = float(B)  # forward-FFT coefficients ~ 1/B for unit-variance images: keeps fp16 O(1)
         shape = (self.N, bm, bh, 2) if self.half else (self.N, bm, bh)
-        self.data = torch.empty(shape, dtype=torch.float16 if self.half else torch.complex64, device=where,
-                                pin_memory=where.type == "cpu" and self.dev.type == "cuda")
+        self._spill = None
+        if where.type == "cpu" and c64 / 2 > 0.6 * _host_available():
+            # too big for RAM as well: a disk-backed array (the OS keeps what fits in its page cache)
+            d = self.p.spill_dir or tempfile.gettempdir()
+            fd, self._spill = tempfile.mkstemp(prefix="celeris2d_", suffix=".f16", dir=d)
+            os.close(fd)
+            arr = np.memmap(self._spill, dtype=np.float16, mode="w+", shape=shape)
+            os.unlink(self._spill)  # space is freed when the array is (the open mapping keeps the file alive)
+            self.data = torch.from_numpy(arr)
+            self._spill_arr = arr
+        else:
+            self.data = torch.empty(shape, dtype=torch.float16 if self.half else torch.complex64, device=where,
+                                    pin_memory=where.type == "cpu" and self.dev.type == "cuda")
         self.flip = False
         self._loaded = []                 # list of host index arrays, in load order
         self._n_loaded = 0
         self._load_lock = threading.Lock()
         self._load_err = None
         self._load_t0 = time.time()
-        kind = ("fp16 " if self.half else "") + ("on " + str(where) if where.type == "cuda" else "in pinned host RAM")
+        kind = ("fp16 " if self.half else "") + ("on " + str(where) if where.type == "cuda" else
+                                                 f"in a disk-backed file in {os.path.dirname(self._spill)} (larger "
+                                                 f"than RAM; slower passes)" if self._spill else "in pinned host RAM")
         self.log(f"[load] streaming {self.N} particles, box {B} -> working box {bm} ({self.apix_max:.3f} A/px), "
                  f"spectra {kind} ({c64 / (2e9 if self.half else 1e9):.1f} GB)")
         self._loader = threading.Thread(target=self._load_worker, args=(source,), daemon=True)
