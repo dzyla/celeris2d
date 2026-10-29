@@ -50,6 +50,8 @@ def main():
     if a.only_2d:
         return
     s.select(name, good)
+    import torch
+    torch.cuda.reset_peak_memory_stats()        # report the 3D stage's own peak, not the 2D classification's
     for sym in a.sym.split(","):
         summ = s.abinitio(f"{name}_good_{sym.lower()}" + (f"_k{a.models}" if a.models > 1 else ""), f"{name}:good",
                           sym=sym, n_models=a.models)

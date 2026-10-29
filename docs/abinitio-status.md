@@ -35,8 +35,13 @@ lacking 5.4 % of the density): 2 3D classes, 99.5 % correct.
    refinement at the full 218 px box (61–100 s) and SGD (21–34 s). Leads: run early refinement iterations on a
    smaller box (Nyquist ~2× the current resolution; `_fetch` already crops), scale SGD rounds/batch with the
    number of particles (30 × 2000 is more than the whole set here), skip the candidate-start check when SGD is on.
-3. **J341 at 4 Å did not finish in 40 min** (C1 with relaxation, ~20k particles, ~212 px box, 36 % GPU utilisation
-   while running) — something is CPU/transfer bound at that size; profile before scaling up. The 8 Å run
-   (16.5k particles, 108 px) took 23 s.
+3. ~~J341 at 4 Å did not finish in 40 min~~ fixed: global searches used 1.2M orientations per particle for a
+   300 Å particle; capped at 200k (step >= 4.2 deg). J341 C3 (21,899 particles, 210 px): 3 min, 6.7 A (sphere).
+   J68 (816k picks, 2D K=50, 14 classes -> 250,559 particles, 62 px @ 5.45 A): 4.3 min to 12 A (Nyquist 10.9 A),
+   3D peak 13.5 GB; the symmetry-relaxation trial runs on 25k particles above 30k (was 9.5 min on all).
+5. **Narrow views.** J68's 14 good classes are one view rotated in plane (busiest 10 % of directions hold 82 % of
+   particles): the map is smeared along z. The run now warns (`view_coverage` in summary.json, dashboard tile).
+   The 2D class suggestion picked a carbon-edge class (confidence 0.99) on J68 — the 2D `suggest` needs a
+   line/edge filter.
 4. Not done: cryoSPARC `.cs` export of 3D poses (only RELION `.star`), MCP tool for ab initio, view rebalancing is
    implemented (`rebalance`) but not evaluated, J341 C3 comparison against cryoSPARC.
