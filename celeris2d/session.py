@@ -30,6 +30,14 @@ from .sources import open_source
 from .stability import match_to_reference
 
 
+def history_rows(history):
+    """Compact per-iteration statistics (for the dashboard charts and the saved result)."""
+    keys = ("it", "res", "est_res", "changed", "maxprob", "enc", "time", "n")
+    def num(v):
+        return (round(float(v), 4) if np.isfinite(v) else None) if isinstance(v, float) else v
+    return [{k: num(h[k]) for k in keys if k in h} for h in history]
+
+
 @dataclass
 class Result:
     name: str
@@ -67,6 +75,12 @@ class Session:
         if 0 < subset < src.N:
             src.subset(np.sort(np.random.default_rng(seed).choice(src.N, subset, replace=False)))
         prm = Params(diameter_a=diameter, max_res_a=max_res, seed=seed, **params)
+        self.load_args = dict(diameter=diameter, max_res=max_res, gpus=gpus, subset=subset, project_dir=project_dir,
+                              seed=seed, **params)
+        if self.clf is not None:  # replacing a loaded dataset: free its GPU memory first
+            self.clf = None
+            import torch
+            torch.cuda.empty_cache()
         self.src, self.path = src, path
         self.clf = Classifier2D(src, prm, devices=pick_devices(gpus, src.N, src.box, src.apix, max_res), log=self.log)
         self.results.clear()
@@ -92,43 +106,82 @@ class Session:
     # ---------------------------------------------------------- classification
     def classify(self, name, K=50, seeds=1, on="all", init_from=None, free_classes=0, **params):
         """K-class classification of `on`, repeated with `seeds` independent starts (posteriors of later runs are
-        matched to run 0, so P(good) and votes can be computed after select())."""
+        matched to run 0, so P(good) and votes can be computed after select()). If clf.stop_requested is set while
+        it runs, the classes so far are stored with info["stopped"] = True and resume(name) carries on."""
         self._need()
         idx = self._particles(on)
         for k, v in params.items():
             setattr(self.clf.p, k, v)
+        self._pending = dict(name=name, K=K, seeds=seeds, on=on, init_from=init_from, idx=idx, runs=[], base=None,
+                             table=None, s=0, seconds=0.0, resume=False)
+        return self._advance()
+
+    def resume(self, name):
+        """Continue the stopped run `name` (only the most recent run can be continued: the engine holds its state)."""
+        pd = getattr(self, "_pending", None)
+        if not pd or pd["name"] != name:
+            raise ValueError(f"'{name}' cannot be continued (only the last stopped run can)")
+        pd["resume"] = True
+        return self._advance()
+
+    def _advance(self):
+        pd, c = self._pending, self.clf
+        name, K, idx, init_from = pd["name"], pd["K"], pd["idx"], pd["init_from"]
+        c.stop_requested = False
         t0 = time.time()
-        runs, seeded = [], None
-        for s in range(seeds):
-            if init_from is not None:
-                self.clf.init_images = init_from
-            self.clf.run(active=idx, n_classes=K, seed=self.clf.p.seed + 1000 * s + 7)
-            if s == 0:
-                t, imgs = class_table(self.clf, self.clf.p.diameter_a)
-                base = self._snap(idx)
-            lab = self.clf.cls.numpy()[idx]
-            cp = self.clf.cpost.numpy()[idx].astype(np.float32)
-            if s > 0 and init_from is None:  # independent starts: renumber classes to run 0 by shared members
-                from scipy.optimize import linear_sum_assignment
-                C = np.zeros((K, K), dtype=np.int64)
-                np.add.at(C, (lab, base["labels"]), 1)
-                r_, c_ = linear_sum_assignment(-C)
-                perm = np.arange(K)
-                perm[r_] = c_
-                cp2 = np.zeros_like(cp)
-                cp2[:, perm] = cp
-                cp = cp2
-            runs.append(cp)
-        if init_from is not None:
-            seeded = np.r_[np.arange(len(init_from)), np.full(K - len(init_from), -1)]
+        while pd["s"] < pd["seeds"]:
+            s = pd["s"]
+            if pd["resume"]:
+                pd["resume"] = False
+                c.run(resume=True)
+            else:
+                if init_from is not None:
+                    c.init_images = init_from
+                c.run(active=idx, n_classes=K, seed=c.p.seed + 1000 * s + 7)
+            if c.stopped:
+                break
+            self._collect(pd, s)
+            pd["s"] += 1
+        stopped = pd["s"] < pd["seeds"]
+        if stopped and pd["s"] == 0:   # first start not finished: show its classes as they are now
+            self._collect(pd, 0, partial=True)
+        pd["seconds"] += time.time() - t0
+        t, imgs, base = pd["table"][0], pd["table"][1], pd["base"]
+        seeded = None if init_from is None else np.r_[np.arange(len(init_from)), np.full(K - len(init_from), -1)]
         res = Result(name, "classify" if init_from is None else "assign", idx, imgs, t.particles.to_numpy(),
                      t.conf.to_numpy(), t.res_A.to_numpy(), base["labels"], base["psi"], base["offsets"],
-                     base["maxprob"], base["loglik"], runs, seeded_from=seeded,
-                     info=dict(K=K, seeds=seeds, on=on, seconds=round(time.time() - t0, 1),
-                               mode=("hard" if self.clf.p.hard_pose else "soft") + " pose",
-                               iterations=len(self.clf.history), params=self._params()))
+                     base["maxprob"], base["loglik"], pd["runs"], seeded_from=seeded,
+                     info=dict(K=K, seeds=pd["seeds"], on=pd["on"], seconds=round(pd["seconds"], 1),
+                               mode=("hard" if c.p.hard_pose else "soft") + " pose",
+                               iterations=len(c.history), params=self._params(), stopped=stopped,
+                               history=history_rows(c.history),
+                               unclassified=int((~c.seen.numpy()[idx]).sum()) if stopped else 0))
+        if not stopped:
+            self._pending = None
+        elif pd["s"] == 0:
+            pd["runs"], pd["table"], pd["base"] = [], None, None   # partial: recomputed when the run finishes
         self._store(res)
         return self.summary(name)
+
+    def _collect(self, pd, s, partial=False):
+        """Per-start bookkeeping: run 0 defines the classes; later starts are renumbered to run 0's classes."""
+        c, K, idx = self.clf, pd["K"], pd["idx"]
+        if s == 0:
+            pd["table"] = class_table(c, c.p.diameter_a)
+            pd["base"] = self._snap(idx)
+        lab = c.cls.numpy()[idx]
+        cp = c.cpost.numpy()[idx].astype(np.float32)
+        if s > 0 and pd["init_from"] is None:  # independent starts: renumber classes to run 0 by shared members
+            from scipy.optimize import linear_sum_assignment
+            C = np.zeros((K, K), dtype=np.int64)
+            np.add.at(C, (lab, pd["base"]["labels"]), 1)
+            r_, c_ = linear_sum_assignment(-C)
+            perm = np.arange(K)
+            perm[r_] = c_
+            cp2 = np.zeros_like(cp)
+            cp2[:, perm] = cp
+            cp = cp2
+        pd["runs"].append(cp)
 
     def _snap(self, idx):
         c = self.clf

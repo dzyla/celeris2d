@@ -265,6 +265,8 @@ class Classifier2D:
         self.nsig = torch.zeros(self.N, dtype=torch.long)
         self.seen = torch.zeros(self.N, dtype=torch.bool)
         self._polarity_done = False
+        self.stop_requested = False  # set from another thread: finish the current iteration, then return
+        self.stopped = False
         self.init_images = None  # optional (k, bmax, bmax) starting classes for the next run()
         self.notch = None        # (bmax, bmax//2+1) 0/1 mask of fixed-frame artefact pixels
         self._set_active(None)
@@ -660,16 +662,23 @@ class Classifier2D:
         else:
             self._wait_loaded(self.N)
             idx_all = self.active
-        if p.batch_size > 0:
-            bn = p.batch_size
-        else:  # keep the per-batch posterior tensor (T x M x Bn x T) around ~0.4 GB
-            bn = int(np.clip(0.4e9 / (M * T1 * T1 * 4), 4, 1024))
+        bn = p.batch_size if p.batch_size > 0 else self._batch_budget(b, b_al, M, T1, len(refs_h))
         ctx["mc"] = max(16, int(0.4e9 / (b * bn * T1 * 8)))  # reference chunk for the GEMMs
         old_cls = self.cls[idx_all].clone()
         old_psi, old_off = self.psi[idx_all].clone(), self.offsets[idx_all].clone()
         seen_before = self.seen[idx_all].clone()
 
-        halves, sumx2, pop = self._run_pass(idx_all, ctx, bn)
+        def finish(h, numer, dm2):
+            """Half-set h done: its share of the expected residual power (noise model), then its sums rotated
+            into the class frame, so the large per-rotation accumulators of one half are freed before the next."""
+            refs_m = refs_h[min(h, len(refs_h) - 1)].permute(1, 0, 2)
+            dm1 = ft_resize(dm2.view(M, 2 * b, b + 1)[:, ::2, ::2], b_al)               # (M, b_al, bh_a)
+            cross = (refs_m * torch.conj(ft_resize(numer.permute(1, 0, 2), b_al))).real.sum(0)
+            r = (refs_m.abs() ** 2 * dm1).sum(0) - 2 * cross
+            del dm1, cross
+            return r, self._rotate_back(numer, dm2, s["psi"], b)
+
+        halves, sumx2, pop = self._run_pass(idx_all, ctx, bn, finish)
         if self._last_nbad > 0.5 * n_sub:
             # a pass in which most likelihoods are non-finite carries no information; rebuilding the classes from it
             # would leave K identical empty classes that never separate again (NS J75 seed 2, it 36). Keep the state.
@@ -690,13 +699,7 @@ class Classifier2D:
             return
 
         # ---- noise model (exact expected residual power per frequency)
-        res2 = sumx2.clone()
-        for h in (0, 1):  # each half-set against the references it was aligned to
-            refs_m = refs_h[min(h, len(refs_h) - 1)].permute(1, 0, 2)
-            dm1 = ft_resize(halves[h][1].view(M, 2 * b, b + 1)[:, ::2, ::2], b_al)     # (M, b_al, bh_a)
-            cross = (refs_m * torch.conj(ft_resize(halves[h][0].permute(1, 0, 2), b_al))).real.sum(0)
-            res2 += (refs_m.abs() ** 2 * dm1).sum(0) - 2 * cross
-        res2 /= n_sub
+        res2 = (sumx2 + halves[0][0] + halves[1][0]) / n_sub
         sig_new = self._shell_mean(res2, shell_a, fmask_a)
         upd = torch.zeros(self.nsh, dtype=torch.bool, device=self.dev)
         upd[torch.unique(shell_a[fmask_a > 0])] = True
@@ -706,11 +709,10 @@ class Classifier2D:
         old = self.noise2d[rows_a][:, :bh_a]
         ok = (fmask_a > 0) & (res2 > 0)
         self.noise2d[rows_a, :bh_a] = torch.where(ok, lam_s * old + (1 - lam_s) * res2, old)
-        del refs_h, refs_m, ctx, cross, dm1
+        del refs_h, ctx
 
         # ---- reconstruction from (running) sufficient statistics in the class frame
-        num0, den0 = self._rotate_back(halves[0][0], halves[0][1], s["psi"], b)
-        num1, den1 = self._rotate_back(halves[1][0], halves[1][1], s["psi"], b)
+        (num0, den0), (num1, den1) = halves[0][1], halves[1][1]
         num_k, den_k = num0 + num1, den0 + den1
         del halves
         lam = 0.0 if (n_sub == self.Na or self.S_num is None) else p.online_decay
@@ -818,50 +820,90 @@ class Classifier2D:
                  f"{' reseed ' + str(reseeded) if reseeded else ''} | {dt:6.2f}s")
 
     # ------------------------------------------------------- E/M pass (multi-GPU)
-    def _run_pass(self, idx_all, ctx, bn):
-        """E-step + M-step accumulation over idx_all. Batches are pulled from a shared queue by one
-        thread per GPU (dynamic load balancing across GPUs of different speed); accumulators are
-        summed on the master device."""
-        if ctx["refs"].shape[0] == 2:  # gold standard: every batch holds one half-set only
-            par = idx_all % 2
-            batches = [g[i:i + bn] for g in (idx_all[par == 0], idx_all[par == 1]) for i in range(0, len(g), bn)]
-        else:
-            batches = [idx_all[i:i + bn] for i in range(0, len(idx_all), bn)]
-        lock = threading.Lock()
-        queue = iter(batches)
+    def _run_pass(self, idx_all, ctx, bn, finish):
+        """E-step + M-step accumulation over idx_all, one odd/even half-set after the other: the per-rotation
+        accumulators (the largest arrays, ~ K x rotations x box^2) exist for one half only, and finish(h, numer,
+        dm2) reduces them before the next half starts. Batches are pulled from a shared queue by one thread per
+        GPU (dynamic load balancing across GPUs of different speed); accumulators are summed on the master.
+        Returns ([finish(0, ...), finish(1, ...)], sum |x|^2, class populations)."""
+        c_dev = {}
+        stats = []
         self._bad_logged = False
+        out = []
+        par = idx_all % 2
+        for h in (0, 1):
+            g = idx_all[par == h]
+            lock = threading.Lock()
+            queue = iter([g[i:i + bn] for i in range(0, len(g), bn)])
 
-        def worker(dev):
-            with torch.cuda.device(dev):
-                c = {k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in ctx.items()}
-                b, M, bh = c["b"], c["M"], c["b"] // 2 + 1
-                acc = dict(numer0=torch.zeros((b, M, 2 * bh), device=dev),
-                           numer1=torch.zeros((b, M, 2 * bh), device=dev),
-                           dm2_0=torch.zeros((M, 2 * b * (b + 1)), device=dev),
-                           dm2_1=torch.zeros((M, 2 * b * (b + 1)), device=dev),
-                           sumx2=torch.zeros((c["b_al"], c["b_al"] // 2 + 1), device=dev),
-                           pop=torch.zeros(self.p.n_classes, device=dev), enc=torch.zeros((), device=dev),
-                           nbad=torch.zeros((), device=dev))
-                while True:
-                    with lock:
-                        idx = next(queue, None)
-                    if idx is None:
-                        break
-                    self._batch(dev, c, idx, acc)
-                return acc
+            def worker(dev):
+                with torch.cuda.device(dev):
+                    if dev not in c_dev:
+                        c_dev[dev] = {k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in ctx.items()}
+                    c = c_dev[dev]
+                    b, M, bh = c["b"], c["M"], c["b"] // 2 + 1
+                    acc = dict(numer=torch.zeros((b, M, 2 * bh), device=dev),
+                               dm2=torch.zeros((M, 2 * b * (b + 1)), device=dev),
+                               sumx2=torch.zeros((c["b_al"], c["b_al"] // 2 + 1), device=dev),
+                               pop=torch.zeros(self.p.n_classes, device=dev), enc=torch.zeros((), device=dev),
+                               nbad=torch.zeros((), device=dev))
+                    while True:
+                        with lock:
+                            idx = next(queue, None)
+                        if idx is None:
+                            break
+                        self._batch(dev, c, idx, acc)
+                    return acc
 
-        if len(self.devs) == 1:
-            accs = [worker(self.dev)]
-        else:
-            with ThreadPoolExecutor(len(self.devs)) as ex:
-                accs = list(ex.map(worker, self.devs))
-        tot = {k: sum(a[k].to(self.dev) for a in accs) for k in accs[0]}
-        self._last_enc = float(tot["enc"]) / max(len(idx_all), 1)
-        self._last_nbad = int(tot["nbad"])
-        bh = ctx["b"] // 2 + 1
-        halves = [(torch.complex(tot[f"numer{h}"][..., :bh], tot[f"numer{h}"][..., bh:]), tot[f"dm2_{h}"])
-                  for h in (0, 1)]
-        return halves, tot["sumx2"], tot["pop"]
+            if len(self.devs) == 1:
+                accs = [worker(self.dev)]
+            else:
+                with ThreadPoolExecutor(len(self.devs)) as ex:
+                    accs = list(ex.map(worker, self.devs))
+            tot = {}
+            for k in accs[0]:  # sum on the master, freeing each GPU's copy as it is added
+                tot[k] = accs[0][k].to(self.dev)
+                for a in accs[1:]:
+                    tot[k] += a[k].to(self.dev)
+                    a[k] = None
+            del accs
+            bh = ctx["b"] // 2 + 1
+            nr = tot.pop("numer")
+            numer = torch.complex(nr[..., :bh], nr[..., bh:])
+            del nr
+            out.append(finish(h, numer, tot.pop("dm2")))
+            del numer
+            stats.append(tot)
+        self._last_enc = float(stats[0]["enc"] + stats[1]["enc"]) / max(len(idx_all), 1)
+        self._last_nbad = int(stats[0]["nbad"] + stats[1]["nbad"])
+        return out, stats[0]["sumx2"] + stats[1]["sumx2"], stats[0]["pop"] + stats[1]["pop"]
+
+    def _batch_budget(self, b, b_al, M, T1, H) -> int:
+        """Particles per batch that fit the GPU memory that is actually free (the slowest-to-fit GPU decides).
+        Fixed per pass: one half-set's per-rotation accumulators and the rotated references; per particle: the
+        posterior tensor (T x M x T, plus a working copy) and a few spectra. Windows/WSL drivers do not fail when
+        memory runs out but swap to system RAM (several times slower), so the budget leaves headroom."""
+        bh, bh_a = b // 2 + 1, b_al // 2 + 1
+        fixed = 4 * (b * M * 2 * bh + M * 2 * b * (b + 1))         # numer + dm2 (one half-set)
+        fixed += H * M * b_al * bh_a * 12                          # rotated references (complex) + |ref|^2
+        per = 3 * 4 * M * T1 * T1 + 40 * (2 * b) * (b + 1) * 8     # posterior + copies, spectra / ramps / CTFs
+        free = []
+        for d in self.devs:
+            if d.type != "cuda":
+                return int(np.clip(0.4e9 / (M * T1 * T1 * 4), 4, 1024))
+            torch.cuda.empty_cache()  # cached blocks of the previous (smaller-box) iteration
+            with torch.cuda.device(d):
+                torch.cuda.empty_cache()
+            free.append(torch.cuda.mem_get_info(d)[0])
+        avail = 0.75 * min(free) - fixed
+        bn = int(np.clip(min(avail / per, 0.4e9 / (M * T1 * T1 * 4)), 4, 1024))
+        need = fixed + bn * per
+        if need > 0.9 * min(free) and not getattr(self, "_mem_warned", False):
+            self._mem_warned = True
+            self.log(f"[mem] warning: this iteration needs ~{need / 1e9:.1f} GB but only {min(free) / 1e9:.1f} GB "
+                     f"of GPU memory is free; expect a slowdown (or an out-of-memory error). Fewer classes, a lower "
+                     f"max resolution or more GPUs reduce it.")
+        return bn
 
     def _precenter(self, x_a, ctf_a, blob, b_al):
         """Offsets (n, 2) (x, y) [A] that best match a centred, rotationally symmetric blob within precenter_a,
@@ -993,24 +1035,18 @@ class Classifier2D:
         self.cpost[idx] = cp.T.to(torch.float16).cpu()
         acc["enc"] += (1.0 / (cp * cp).sum(0).clamp_min(1e-12)).sum()                 # effective no. of classes
         c2all = ctf_2d(ctfp, self.optics, fy2, fx2, 2 * self.box_a) ** 2              # (n, 2b, b+1), 2x oversampled
-        half = (idx % 2).to(dev)
-        for hv in (0, 1):  # odd/even half-sets (fixed per particle) -> FRC regulariser
-            sel = torch.nonzero(half == hv).flatten()
-            nh = len(sel)
-            if nh == 0:
-                continue
-            yh = y[sel]
-            g = (yh.permute(1, 0, 2)[:, :, None, :] * torch.conj(c["Exr"]).T[None, None]).reshape(b, nh * T1, bh)
-            g1 = torch.cat([g.real, g.imag], -1).to(self._mdt)                        # (b, nT, 2bh)
-            g2 = torch.cat([-g.imag, g.real], -1).to(self._mdt)
-            numer = acc[f"numer{hv}"]
-            wh = wts[:, :, sel]                                                       # (T1, M, nh, T1)
-            for m0 in range(0, M, mc):
-                m1 = min(M, m0 + mc)
-                h = (E2 @ wh[:, m0:m1].reshape(T1, -1).to(self._mdt)).view(2, b, m1 - m0, nh * T1)  # sum over ty
-                numer[:, m0:m1] += (torch.bmm(h[0], g1) + torch.bmm(h[1], g2)).float() / self.store_scale
-                del h
-            acc[f"dm2_{hv}"] += (wnm[:, sel].to(self._mdt) @ c2all[sel].reshape(nh, -1).to(self._mdt)).float()
+        # batches hold one odd/even half-set only (FRC regulariser); _run_pass keeps the halves apart
+        g = (y.permute(1, 0, 2)[:, :, None, :] * torch.conj(c["Exr"]).T[None, None]).reshape(b, n * T1, bh)
+        g1 = torch.cat([g.real, g.imag], -1).to(self._mdt)                            # (b, nT, 2bh)
+        g2 = torch.cat([-g.imag, g.real], -1).to(self._mdt)
+        del g
+        numer = acc["numer"]
+        for m0 in range(0, M, mc):
+            m1 = min(M, m0 + mc)
+            h = (E2 @ wts[:, m0:m1].reshape(T1, -1).to(self._mdt)).view(2, b, m1 - m0, n * T1)  # sum over ty
+            numer[:, m0:m1] += (torch.bmm(h[0], g1) + torch.bmm(h[1], g2)).float() / self.store_scale
+            del h
+        acc["dm2"] += (wnm.to(self._mdt) @ c2all.reshape(n, -1).to(self._mdt)).float()
         acc["sumx2"] += x2.sum(0)
         acc["pop"] += wnm.view(K, R, n).sum((1, 2))
 
@@ -1108,33 +1144,56 @@ class Classifier2D:
         return n
 
     # --------------------------------------------------------------------
-    def run(self, active=None, n_classes=None, seed=None):
-        """Classify the particles `active` (None = all) into n_classes (None = Params value)."""
-        if n_classes is not None:
-            self.p.n_classes = n_classes
-        if seed is not None:
-            self.rng.manual_seed(seed)
-        self._set_active(active)
-        t0 = time.time()
-        self.init_classes()
+    def run(self, active=None, n_classes=None, seed=None, resume=False):
+        """Classify the particles `active` (None = all) into n_classes (None = Params value).
+        stop_requested (set from another thread) ends the run after the current iteration (self.stopped = True);
+        run(resume=True) then continues the same run where it stopped, without re-initialising."""
         p = self.p
-        n_iter0, n_full0 = p.n_iter, p.n_full_iter
-        for it in range(p.n_iter):
+        t0 = time.time()
+        if resume and self.history:
+            it0 = len(self.history)
+            n_iter0, n_full0 = self._run_plan
+            self.log(f"[continue] from iteration {it0 + 1}")
+        else:
+            if n_classes is not None:
+                p.n_classes = n_classes
+            if seed is not None:
+                self.rng.manual_seed(seed)
+            self._set_active(active)
+            self._elapsed = 0.0
+            self.init_classes()
+            it0 = 0
+            n_iter0, n_full0 = p.n_iter, p.n_full_iter
+            self._run_plan = (n_iter0, n_full0)
+        # iterations beyond the plan (convergence full passes) are counted in the plan when resuming
+        p.n_iter = max(n_iter0, it0)
+        p.n_full_iter = n_full0 + max(0, it0 - n_iter0)
+        self.stopped = False
+        for it in range(it0, p.n_iter):
+            if self.stop_requested:
+                break
             self.iterate(it)
         # big data sets: one online-EM visit per particle is not enough, so keep doing full passes until the
         # assignments settle (cryoSPARC users typically run 5-10 full iterations on 0.5-1M particles)
-        while (self._auto_full and p.batch_per_class > 0 and p.n_full_iter < p.max_full_iter
-               and self.history and self.history[-1]["changed"] > p.full_converge):
+        while (not self.stop_requested and self._auto_full and p.batch_per_class > 0
+               and p.n_full_iter < p.max_full_iter and self.history and self.history[-1]["changed"] > p.full_converge):
             p.n_iter += 1
             p.n_full_iter += 1
             self.log(f"[converge] {self.history[-1]['changed'] * 100:.0f}% changed class -> full pass {p.n_full_iter}")
             self.iterate(p.n_iter - 1)
-        n_done = p.n_iter
+        n_done = len(self.history)
+        self.stopped = bool(self.stop_requested)
         p.n_iter, p.n_full_iter = n_iter0, n_full0
         for d in self.devs:
             torch.cuda.synchronize(d)
-        self.total_time = time.time() - t0
-        self.log(f"[done] {n_done} iterations in {self.total_time:.1f}s")
+        self._elapsed = getattr(self, "_elapsed", 0.0) + time.time() - t0
+        self.total_time = self._elapsed
+        if self.stopped:
+            unseen = int((~self.seen[self.active]).sum())
+            self.log(f"[stop] stopped after {n_done} iterations ({self.total_time:.1f}s)"
+                     + (f"; {unseen} particles not classified yet" if unseen else ""))
+        else:
+            self.log(f"[done] {n_done} iterations in {self.total_time:.1f}s")
 
     def average(self, idx, labels, n_groups, psi=None, offsets=None, wiener=0.1, batch=512) -> np.ndarray:
         """CTF-Wiener averages of particles `idx` grouped by `labels` (0..n_groups-1), using the given

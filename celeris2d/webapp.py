@@ -39,10 +39,14 @@ RUN_KEYS = tuple(k for k in _RUN_KEYS if k in _FIELDS)
 GROUPS = [
     dict(id="load_basic", title="Dataset", stage="load", basic=True,
          help="Used when you press Load. To change them for a loaded dataset, press Load again."),
+    dict(id="load_more", title="Loading", stage="load", basic=False,
+         help="Which GPUs, a random subset for quick tests, and the sampling preset. Applied at Load."),
     dict(id="load_adv", title="Advanced dataset settings", stage="load", basic=False,
          help="Sampling and preprocessing fixed at Load time. The defaults suit most data sets."),
     dict(id="run_basic", title="Classification", stage="run", basic=True,
          help="Used every time you press Run (no reloading needed)."),
+    dict(id="run_more", title="Run options", stage="run", basic=False,
+         help="Repeated independent starts (for per-particle P(good))."),
     dict(id="run_schedule", title="Iterations", stage="run", basic=False,
          help="How long the run is and how many particles each iteration sees. -1 means automatic."),
     dict(id="run_align", title="Alignment", stage="run", basic=False,
@@ -63,14 +67,14 @@ SETTINGS = {
                       help="Final resolution limit for alignment and class averages. Particles are Fourier-cropped to this "
                            "limit when loaded, so a coarser value (e.g. 8-12 Å) loads and runs faster. Values closer than "
                            "2.2 × the pixel size to Nyquist are raised to 2.2 × pixel size."),
-    "gpus": dict(group="load_basic", label="GPUs", unit="", type="text", default="auto", important=True,
+    "gpus": dict(group="load_more", label="GPUs", unit="", type="text", default="auto", important=True,
                  help="'auto', or nvidia-smi GPU indices such as 0,2,3. Auto: the GPU with the most memory for small "
                       "jobs, all GPUs once the work (particles × working box²) is worth splitting (about 100k particles "
                       "at a 64 px working box)."),
-    "subset": dict(group="load_basic", label="Random subset", unit="particles", type="int", default=0, important=True,
+    "subset": dict(group="load_more", label="Random subset", unit="particles", type="int", default=0, important=True,
                    help="Load only this many randomly chosen particles (0 = all). Useful for quick tests of settings; "
                         "the choice is reproducible through the random seed."),
-    "speed": dict(group="load_basic", label="Speed preset", unit="", type="choice", default="balanced", important=True,
+    "speed": dict(group="load_more", label="Speed preset", unit="", type="choice", default="balanced", important=True,
                   choices=["fast", "balanced", "accurate"],
                   help="Angular and translational sampling. fast: in-plane step × 1.5 and translation step = "
                        "resolution / 2.5; balanced: step × 1, translation = resolution / 3; accurate: step × 1, "
@@ -103,7 +107,7 @@ SETTINGS = {
     "K": dict(group="run_basic", label="Number of classes (K)", unit="", type="int", default=50, important=True,
               help="More classes separate more views and more kinds of junk, but each class gets fewer particles and a "
                    "noisier average. Run time grows roughly with K."),
-    "seeds": dict(group="run_basic", label="Independent starts (seeds)", unit="", type="int", default=1, important=True,
+    "seeds": dict(group="run_more", label="Independent starts (seeds)", unit="", type="int", default=1, important=True,
                   help="Above 1, the same classification is repeated from different random starts and the classes are "
                        "matched by shared particles. After you select good classes every particle gets P(good) = the "
                        "fraction of starts that put it in a good class. Costs about seeds × one run."),
@@ -780,6 +784,38 @@ def create(workdir):
                 p[k] = None if p[k] == "auto" else p[k] in ("on", "true")
         return p
 
+    set_cache = {}
+
+    def set_counts(s, name, r):
+        """good / ambiguous / bad particle counts of a result with a selection (cached per selection)."""
+        if r.good is None:
+            return None
+        key = (name, id(r), r.good.tobytes())
+        if key not in set_cache:
+            set_cache.clear() if len(set_cache) > 64 else None
+            set_cache[key] = {kk: int(len(v)) for kk, v in s.sets(name).items()}
+        return set_cache[key]
+
+    def load_kwargs(body):
+        """Session.load() arguments from the page's load-stage settings."""
+        kw = {k: body[k] for k in LOAD_KEYS if k in body and body[k] not in (None, "")}
+        return dict(diameter=float(kw.pop("diameter_a", 200)), max_res=float(kw.pop("max_res_a", 6)),
+                    gpus=str(body.get("gpus") or "auto").strip() or "auto", subset=int(body.get("subset") or 0),
+                    project_dir=body.get("project_dir") or None, **kw)
+
+    def load_changes(s, kw):
+        """Load-stage settings that differ from the loaded dataset's (they need the particles loaded again)."""
+        old = getattr(s, "load_args", None) or {}
+        out = []
+        for k, v in kw.items():
+            if k == "seed" and not kw.get("subset"):
+                continue           # the seed only picks the subset at load; runs take it from the settings below
+            o = old[k] if k in old else getattr(s.clf.p, k, v)
+            same = (float(o) == float(v)) if isinstance(v, (int, float)) and isinstance(o, (int, float)) else o == v
+            if not same:
+                out.append(f"{k} {o} -> {v}")
+        return out
+
     def submit(kind, name, fn, **info):
         try:
             st.submit(kind, name, fn, **info)
@@ -840,12 +876,13 @@ def create(workdir):
 
         def job():
             st.tiles.clear()
+            old = st.session
+            if old is not None and old.clf is not None:  # free the previous dataset's GPU memory
+                old.clf = None
+                import torch
+                torch.cuda.empty_cache()
             st.session = Session(wd, log=st._log)
-            kw = {k: body[k] for k in LOAD_KEYS if k in body and body[k] not in (None, "")}
-            info = st.session.load(path, diameter=float(kw.pop("diameter_a", 200)), max_res=float(kw.pop("max_res_a", 6)),
-                                   gpus=str(body.get("gpus") or "auto").strip() or "auto",
-                                   subset=int(body.get("subset") or 0),
-                                   project_dir=body.get("project_dir") or None, **kw)
+            info = st.session.load(path, **load_kwargs(body))
             st._log(f"[load] {info}")
             st.recent.add(path, project_dir=body.get("project_dir"), count=info.get("particles"),
                           format=info.get("source"))
@@ -858,8 +895,16 @@ def create(workdir):
         name = body.get("name") or f"run{len(s.results) + 1}"
         K, seeds, on = int(body.get("K", 50)), int(body.get("seeds", 1)), body.get("on", "all")
         params = run_params(body)
+        lkw = load_kwargs(body) if any(k in body for k in LOAD_KEYS) else None
+        changed = load_changes(s, lkw) if lkw else []
 
         def job():
+            if changed:  # mask, resolution, sampling, GPUs ...: applied when particles are loaded
+                st._log(f"[reload] load-time settings changed ({', '.join(changed)}): loading the particles again")
+                st.tiles.clear()
+                s.load(s.path, **lkw)
+            elif lkw and "seed" in lkw:
+                s.clf.p.seed = int(lkw["seed"])
             c = s.clf
             for k in ("hard_pose", "class_prior"):
                 if k in params:
@@ -873,7 +918,29 @@ def create(workdir):
             if "max_offset_a" in params and float(params["max_offset_a"]) < 0:
                 params["max_offset_a"] = c.p.diameter_a / 4   # -1 = diameter / 4 (the engine resolves it only at load)
             s.classify(name, K=K, seeds=seeds, on=on, **{k: v for k, v in params.items() if v is not None})
-        submit("classify", name, job, K=K, seeds=seeds, on=on)
+        submit("classify", name, job, K=K, seeds=seeds, on=on, reload=bool(changed))
+        return dict(ok=True, name=name, reload=changed)
+
+    @app.post("/api/stop")
+    def stop():
+        """Ask the running classification to stop after its current iteration (its classes so far are kept)."""
+        j = st.job
+        if not j or j.get("done") or j.get("kind") != "classify":
+            raise HTTPException(409, "no classification is running")
+        sess().clf.stop_requested = True
+        j["stopping"] = True
+        st._log(f"[stop] {j['name']}: stopping after the current iteration")
+        return dict(ok=True)
+
+    @app.post("/api/continue")
+    def cont(body: dict = Body(...)):
+        """Continue a stopped classification where it stopped (only the most recent run can be continued)."""
+        s = sess()
+        name = body.get("name")
+        pd = getattr(s, "_pending", None)
+        if not pd or pd["name"] != name:
+            raise HTTPException(409, f"'{name}' cannot be continued (only the last stopped run can)")
+        submit("classify", name, lambda: s.resume(name), K=pd["K"], seeds=pd["seeds"], on=pd["on"], resumed=True)
         return dict(ok=True, name=name)
 
     @app.post("/api/optimize")
@@ -902,8 +969,14 @@ def create(workdir):
                        box=c.B_full, apix=round(c.apix_full, 4), working_box=c.bmax, workdir=s.workdir,
                        results=[dict(name=k, kind=r.kind, particles=int(len(r.idx)), classes=int(len(r.images)),
                                      selected=None if r.good is None else int(r.good.sum()),
-                                     on=r.info.get("on", "all"), seconds=r.info.get("seconds"))
+                                     on=r.info.get("on", "all"), seconds=r.info.get("seconds"),
+                                     stopped=bool(r.info.get("stopped")), K=r.info.get("K"),
+                                     iterations=r.info.get("iterations"), params=r.info.get("params"),
+                                     sets=set_counts(s, k, r))
                                 for k, r in s.results.items()],
+                       load_args={k: v for k, v in (getattr(s, "load_args", None) or {}).items()
+                                  if isinstance(v, (int, float, str, bool)) or v is None},
+                       resumable=(getattr(s, "_pending", None) or {}).get("name"),
                        settings={k: getattr(c.p, k) for k in RUN_KEYS + LOAD_KEYS})
             if st.job and not st.job["done"] and c.history:
                 out["progress"] = _progress(c, st.job)
@@ -921,7 +994,8 @@ def create(workdir):
         if not c.history or getattr(c, "pop_live", None) is None:
             return dict(running=True, job=j, progress=None)
         prog = _progress(c, j)
-        out = dict(running=True, job=j, progress=prog)
+        from .session import history_rows
+        out = dict(running=True, job=j, progress=prog, history=history_rows(c.history))
         if prog["it"] != since:
             imgs = c.class_images()
             pops = c.pop_live.numpy()
