@@ -47,7 +47,9 @@ Rules:
 5. **Per-micrograph files keep the movie's name and its sub-directory** relative to the import root (sessions or
    grids with the same file names cannot collide; no folder of 20,000 files).
 6. **Control figures on demand**: statistics for every micrograph, figures only for the first micrograph and the
-   outliers (> 4 MAD) when a job finishes; any other is drawn when asked (~2 s; `draw_figure`, MCP `job_report`).
+   outliers (> 4 MAD) when a job finishes; any other is drawn when asked (`draw_figure`, MCP `job_report`): ~3 s per
+   figure in a running process (movie read, motion + CTF again, drawing), 7-18 s for the first one in a new process
+   (CUDA start-up, gain orientation check).
    Per-micrograph figures for everything would be ~2 MB per movie (45 MB on 20 movies vs 84 KB of statistics).
 7. **Writes are atomic** (temporary file + rename) and a catalog row is written only after its files exist, so a
    crash leaves either a complete output or none; a job resumes where it stopped.

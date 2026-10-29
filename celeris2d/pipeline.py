@@ -9,7 +9,7 @@ jobs can run again with other settings (a new job each time), continue as movies
     run(project, [mc, pk, ex])            all three over the movies, overlapped (the live / fast path)
     sel = project.select(ex, good_uids)                       jobs/006_select_...
     extract_job(project, pk, ExtractSettings(..., select=sel.id))   only the selected particles, another box
-    draw_figure(project, job, movie_id)   control figure of one micrograph (made again: 2 s), on demand
+    draw_figure(project, job, movie_id)   control figure of one micrograph (made again: ~3 s), on demand
     purge(job) / rebuild(project, job)    drop / remake a job's micrographs or particle stacks
 
 The fast path keeps the current micrograph and picks in GPU memory between jobs, decodes the next movies in
@@ -409,7 +409,7 @@ def run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thre
 
 def draw_figure(project: Project, job, movie_id: int) -> str:
     """Control figure of one micrograph of a MotionCtf or Pick job (jobs/<job>/figures/<stem>.png), drawn now if
-    it is not there: motion + CTF are computed again from the movie (~2 s), picks from the stored micrograph."""
+    it is not there: motion + CTF are computed again from the movie (~3 s warm), picks from the stored micrograph."""
     job = project.job(job)
     mv = project.movie(movie_id)
     path = job.figure(mv)

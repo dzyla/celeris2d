@@ -286,7 +286,7 @@ def job_status(job: str = "") -> str:
 def job_report(job: str, movies: list[str] | None = None, max_figures: int = 3) -> list:
     """A job's parameters, inputs and key numbers; for MotionCtf jobs per-micrograph statistics with outliers
     (> 4 MAD). For MotionCtf / Pick jobs also control figures: of the named movie stems (drawn now if needed,
-    ~2 s each), else of the outliers and the first micrograph, at most max_figures."""
+    ~3 s each in a running server), else of the outliers and the first micrograph, at most max_figures."""
     import glob
     from .pipeline import draw_figure
     prj = _p()
