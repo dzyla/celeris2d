@@ -148,6 +148,11 @@ class Params:
     max_shift_a: float = 16.0       # local translation search radius around previous offset
     max_trans_half: int = 4         # cap on translation grid half-width (4 -> 9 x 9 positions)
     max_offset_a: float = -1.0      # cap on accumulated offset (-1 = diameter / 4)
+    precenter_a: float = 0.0        # first visit of a particle: centre it within this radius on the rotational
+                                    # average of the mean class before the local search (-1 = 0.15 x diameter, 0 = off).
+                                    # The local window (max_shift_a) cannot reach off-centre picks: on NS J75 an
+                                    # exhaustive E-step vs cryoSPARC's final classes drops F1 0.61 -> 0.42 at +-19 A
+    # (+-38 A: 0.635; rotation step, alignment resolution and particle mask cost little)
     tau2_fudge: float = 2.0
     batch_per_class: int = 500      # online-EM subset size per class for the early iterations (cryoSPARC-like)
     n_full_iter: int = -1           # final iterations over all particles (-1 = auto from N, then extended)
@@ -221,6 +226,8 @@ class Classifier2D:
         self.radius_a = prm.diameter_a / 2
         if prm.max_offset_a < 0:
             prm.max_offset_a = prm.diameter_a / 4
+        if prm.precenter_a < 0:
+            prm.precenter_a = min(0.15 * prm.diameter_a, prm.max_offset_a)
         self._mdt = torch.float16 if prm.mstep_fp16 else torch.float32
         # per-particle metadata/state lives on the host; batches are shipped to whichever GPU is free
         self.ctf_p = torch.as_tensor(np.asarray(source.ctf), dtype=torch.float32)
@@ -607,6 +614,11 @@ class Classifier2D:
                    E2=torch.cat([torch.cos(ang), torch.sin(ang)], 0).to(self._mdt),           # (2b, T1): conj(Ey)
                    logprior=torch.log(self.prior.clamp_min(1e-8)).repeat_interleave(R),       # (M,)
                    b=b, b_al=b_al, R=R, M=M, T1=T1, temp=s["temp"], lock_class=s["polish"])
+        if p.precenter_a > 0:  # rotationally averaged mean class, noise-weighted (no half-plane weights: irfft2)
+            mc_ = ft_resize(self.classes, b_al).mean(0).real
+            rad = torch.zeros(self.nsh, device=self.dev).index_add_(0, shell_a.flatten(), mc_.flatten())
+            cnt = torch.zeros(self.nsh, device=self.dev).index_add_(0, shell_a.flatten(), torch.ones_like(mc_).flatten())
+            ctx["blob"] = (rad / cnt.clamp_min(1))[shell_a] * w8 / hw[None, :]
 
         n_sub = s["n_sub"]
         if n_sub < self.Na:
@@ -795,6 +807,17 @@ class Classifier2D:
                   for h in (0, 1)]
         return halves, tot["sumx2"], tot["pop"]
 
+    def _precenter(self, x_a, ctf_a, blob, b_al):
+        """Offsets (n, 2) (x, y) [A] that best match a centred, rotationally symmetric blob within precenter_a,
+        on a 2x finer grid. irfft2 gives sum_f z exp(+2 pi i f.d / 2b), the E-step ramp exp(-2 pi i f.t / box_a),
+        so t = -d * pixel."""
+        b2 = 2 * b_al
+        cc = torch.fft.irfft2(ft_resize(torch.conj(x_a) * ctf_a * blob, b2), s=(b2, b2)).flatten(1)
+        t = -torch.fft.fftfreq(b2, d=1.0 / b2, device=x_a.device) * (self.box_a / b2)
+        inside = (t[:, None] ** 2 + t[None, :] ** 2 <= self.p.precenter_a ** 2).flatten()
+        a = cc.masked_fill(~inside[None], float("-inf")).argmax(1)
+        return torch.stack([t[a % b2], t[a // b2]], 1)
+
     def _report_bad(self, idx, badn, x):
         bad = badn.nonzero()[:, 0]
         fin = torch.isfinite(x[bad]).flatten(1).all(1)
@@ -819,6 +842,9 @@ class Classifier2D:
         ctf = ctf_2d(ctfp, self.optics, fy, fx, self.box_a)
         ctf_a = ctf_2d(ctfp, self.optics, fy_a, fx_a, self.box_a)
         t0 = self.offsets[idx].to(dev)  # (n, 2) (x, y)
+        new = ~self.seen[idx]
+        if "blob" in c and new.any():
+            t0[new.to(dev)] = self._precenter(x_a[new.to(dev)], ctf_a[new.to(dev)], c["blob"], b_al)
 
         def ramp(fy_, fx_):
             return torch.exp(-1j * ph * (fy_[None, :, None] * t0[:, 1, None, None]
