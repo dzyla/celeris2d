@@ -79,7 +79,7 @@
       await flushSave();                                   // the selection must be on the server first
       const on = sel.size ? `${current}:good` : current;
       const p = cfgValues();
-      const name = `${current}${sel.size ? "_good" : ""}_3d${p.sym !== "C1" ? "_" + p.sym.toLowerCase() : ""}`;
+      const name = `${current}${sel.size ? "_good" : ""}_3d${p.sym !== "C1" ? "_" + p.sym.toLowerCase() : ""}${p.n_models > 1 ? "_k" + p.n_models : ""}`;
       const r = await api("/api/abinitio", Object.assign({on, name}, p));
       runningFor = r.name;
       toast(`ab initio ${r.name} started (${sel.size ? sel.size + " selected classes" : "all classes"}, ${p.sym})`);
@@ -96,7 +96,7 @@
     lastMaps = key;
     bar.classList.toggle("has", maps.length > 0 || !!running);
     bar.innerHTML = `<span class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.6px">3D maps</span>` +
-      maps.map(m => `<span class="chip map ${shown === m.name ? "on" : ""}" data-m="${esc(m.name)}" title="${esc(`${m.name}: from ${m.on}, ${m.classes} classes, ${fmtN(m.particles)} particles, ${m.sym}, took ${fmtDur(m.seconds || 0)}`)}">◆ ${esc(m.name)} · ${m.resolution_a} Å · ${esc(m.sym || "C1")} · ${fmtDur(m.seconds || 0)}</span>`).join("") +
+      maps.map(m => `<span class="chip map ${shown === m.name ? "on" : ""}" data-m="${esc(m.name)}" title="${esc(`${m.name}: from ${m.on}, ${m.classes} classes, ${fmtN(m.particles)} particles, ${m.sym}, took ${fmtDur(m.seconds || 0)}`)}">◆ ${esc(m.name)} · ${m.models > 1 ? m.models + " 3D classes" : m.resolution_a + " Å"} · ${esc(m.sym || "C1")} · ${fmtDur(m.seconds || 0)}</span>`).join("") +
       (running ? `<span class="chip live">● ${esc(running)} running</span>` : "");
     bar.querySelectorAll(".chip[data-m]").forEach(c => c.onclick = () => showMap(c.dataset.m));
   }
@@ -122,13 +122,14 @@
     panel.innerHTML = `<div class="head"><b>${esc(name)}</b> · from ${esc(summ.on || m.on || "?")} · ${summ.classes ?? "?"} classes · ${fmtN(summ.particles)} particles ·
         ${esc(p.sym || "C1")} · <b>${summ.resolution_a ?? "?"} Å</b> (half-map FSC 0.143) · classes ${summ.seconds_classes ?? "?"} s + particles ${summ.seconds_particles ?? "?"} s ·
         box ${summ.box} @ ${summ.apix} Å</div>
+      ${modelsHTML(summ)}${symHTML(summ)}
       <div class="grid">
         <div>
           <div id="ab3dView"></div>
           <div class="ctl">
             <label>threshold <input type="range" id="ab3dIso" min="0.5" max="6" step="0.05" value="${store.get("ab3dIso", 2.0)}"> <span id="ab3dIsoV"></span> σ</label>
             <label><input type="checkbox" id="ab3dSpin"> spin</label>
-            <label>map <select id="ab3dWhich"><option value="map.mrc">final</option><option value="from_classes.mrc">from classes</option><option value="half1_unfil.mrc">half 1 (unfiltered)</option><option value="half2_unfil.mrc">half 2 (unfiltered)</option></select></label>
+            <label>map <select id="ab3dWhich">${mapOptions(summ)}</select></label>
             <a href="${u("map.mrc")}" download="${esc(name)}.mrc">download map.mrc</a>
           </div>
           <figure><img src="${u("map_views.png")}" alt="projections of the map"><figcaption>projections of the map along z, y, x</figcaption></figure>
@@ -140,6 +141,8 @@
         </div>
       </div>`;
     renderChips(lastStatus || {});
+    const rs = $("ab3dReSym");
+    if (rs) rs.onclick = () => rerun(summ, rs.dataset.sym);
     const iso = $("ab3dIso"), isoV = $("ab3dIsoV");
     isoV.textContent = Number(iso.value).toFixed(2);
     try {
@@ -153,7 +156,7 @@
         comp.addRepresentation("surface", {isolevelType: "sigma", isolevel: Number(iso.value), color: "#9fb7ff", smooth: 1});
         comp.autoView();
       };
-      await load("map.mrc");
+      await load($("ab3dWhich").value);
       iso.oninput = () => { isoV.textContent = Number(iso.value).toFixed(2); store.set("ab3dIso", Number(iso.value));
         if (comp) comp.reprList.forEach(r => r.setParameters({isolevel: Number(iso.value)})); };
       $("ab3dSpin").onchange = (e) => stage.setSpin(e.target.checked);
@@ -162,6 +165,40 @@
     } catch (e) {
       $("ab3dView").innerHTML = `<div class="muted" style="padding:20px">${esc(e.message)} — the figures below still show the map; download map.mrc to view it in ChimeraX.</div>`;
     }
+  }
+
+  function mapOptions(summ) {
+    const ms = summ.models || [];
+    if (ms.length > 1)
+      return ms.map(m => `<option value="map_${m.model}.mrc">3D class ${m.model} · ${fmtN(m.particles)} · ${m.resolution_a ?? "merged"} Å</option>`).join("") +
+        `<option value="consensus.mrc">consensus (all particles)</option>`;
+    return `<option value="map.mrc">final</option><option value="from_classes.mrc">from classes</option><option value="half1_unfil.mrc">half 1 (unfiltered)</option><option value="half2_unfil.mrc">half 2 (unfiltered)</option>`;
+  }
+  function modelsHTML(summ) {
+    const ms = summ.models || [];
+    if (ms.length < 2) return "";
+    const tot = ms.reduce((a, m) => a + m.particles, 0) || 1;
+    return `<div class="head">3D classes: ${ms.map(m => `<b>${m.model}</b> ${fmtN(m.particles)} (${(100 * m.particles / tot).toFixed(0)}%) · ${m.resolution_a ?? "merged"} Å`).join(" &nbsp;|&nbsp; ")}</div>`;
+  }
+
+  // symmetry check of the map (C1 runs): scores 1 = perfect, ~0.3 or less = an arbitrary axis
+  function symHTML(summ) {
+    const rows = summ.symmetry || [];
+    if (!rows.length) return "";
+    const cur = (summ.params || {}).sym || "C1", sug = summ.suggested_sym || "C1";
+    const list = rows.slice(0, 5).map(r => `${r.group === sug ? "<b>" : ""}${esc(r.group)} ${r.score.toFixed(2)}${r.group === sug ? "</b>" : ""}`).join(" · ");
+    const act = sug !== "C1" && sug !== cur
+      ? ` → looks like <b>${esc(sug)}</b> <button id="ab3dReSym" data-sym="${esc(sug)}" title="Run ab initio again on the same particles with ${esc(sug)} imposed">Re-run with ${esc(sug)}</button>`
+      : sug === "C1" ? " → no symmetry found" : "";
+    return `<div class="head" title="How well the map matches itself after rotation about the best axis for each group (1 = perfect; an arbitrary axis scores 0). Subgroups of the true group also score high.">symmetry check: ${list}${act}</div>`;
+  }
+  async function rerun(summ, sym) {
+    const p = Object.assign(cfgValues(), {sym});
+    const on = summ.on, name = `${String(on).replace(":", "_")}_3d_${sym.toLowerCase()}`;
+    try {
+      const r = await api("/api/abinitio", Object.assign({on, name}, p));
+      runningFor = r.name; toast(`ab initio ${r.name} started (${sym})`); poll();
+    } catch (e) { toast(e.message, true); }
   }
 
   function hideMap() {

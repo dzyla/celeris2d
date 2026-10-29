@@ -992,6 +992,7 @@ def create(workdir):
                                   if isinstance(v, (int, float, str, bool)) or v is None},
                        resumable=(getattr(s, "_pending", None) or {}).get("name"),
                        maps=[dict(name=k, on=m.get("on"), resolution_a=m.get("resolution_a"), particles=m.get("particles"),
+                                  models=len(m.get("models") or [1]),
                                   classes=m.get("classes"), sym=(m.get("params") or {}).get("sym"),
                                   seconds=round((m.get("seconds_classes") or 0) + (m.get("seconds_particles") or 0), 1),
                                   apix=m.get("apix"), box=m.get("box"))
@@ -1072,6 +1073,10 @@ def create(workdir):
         n_iter="Particle-stage iterations: local search of orientation and shift around the pose inherited from 2D.",
         res_start="Particle stage: first alignment resolution (A); after that it follows the half-map FSC.",
         n_local="Local search width: (2n+1)^2 out-of-plane tilts x (2n+1) in-plane angles x 9 shifts per particle.",
+        n_models="3D classes. 1 = one map. More: after the consensus map, the particles are classified into this many "
+                 "3D classes at their consensus poses (if the consensus looks symmetric, over its symmetry-related poses).",
+        class3d_res="3D classification compares the classes at this resolution (A), or the consensus one if worse.",
+        class3d_iter="3D classification: at most this many iterations (it stops when < 0.5% of particles change).",
         seed="Random seed of the class-stage starts.")
 
     @app.get("/api/abinitio/defaults")
@@ -1102,9 +1107,10 @@ def create(workdir):
     @app.get("/api/map/{name}/{fn}")
     def map_file(name: str, fn: str):
         s = sess()
-        ok = {"map.mrc", "from_classes.mrc", "half1_unfil.mrc", "half2_unfil.mrc", "reprojections.png", "views.png",
-              "fsc.png", "map_views.png", "summary.json"}
-        if name not in s.maps or fn not in ok:
+        ok = {"map.mrc", "from_classes.mrc", "half1_unfil.mrc", "half2_unfil.mrc", "consensus.mrc", "reprojections.png",
+              "views.png", "fsc.png", "map_views.png", "summary.json"}
+        import re
+        if name not in s.maps or not (fn in ok or re.fullmatch(r"(map|half[12]_unfil|from_classes)_\d+\.mrc", fn)):
             raise HTTPException(404, f"{name}/{fn}")
         path = os.path.join(s.workdir, name, fn)
         if not os.path.isfile(path):
