@@ -267,7 +267,7 @@ class Session:
             classes = m
         prm = ab.AbinitioParams(**params)
         out = os.path.join(self.workdir, name)
-        summ = ab.run(self.clf, r, out, prm, classes=classes, log=self.log)
+        summ = ab.run(self.clf, r, out, prm, classes=classes, log=self.log, src=self.src)
         summ.update(name=name, on=on, input=self.path, n=self.clf.N)
         with open(os.path.join(out, "summary.json"), "w") as fh:
             json.dump(summ, fh, indent=1)

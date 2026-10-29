@@ -1107,10 +1107,10 @@ def create(workdir):
     @app.get("/api/map/{name}/{fn}")
     def map_file(name: str, fn: str):
         s = sess()
-        ok = {"map.mrc", "from_classes.mrc", "half1_unfil.mrc", "half2_unfil.mrc", "consensus.mrc", "reprojections.png",
-              "views.png", "fsc.png", "map_views.png", "summary.json"}
+        ok = {"map.mrc", "map_nomask.mrc", "mask.mrc", "from_classes.mrc", "half1_unfil.mrc", "half2_unfil.mrc",
+              "consensus.mrc", "reprojections.png", "views.png", "fsc.png", "map_views.png", "summary.json"}
         import re
-        if name not in s.maps or not (fn in ok or re.fullmatch(r"(map|half[12]_unfil|from_classes)_\d+\.mrc", fn)):
+        if name not in s.maps or not (fn in ok or re.fullmatch(r"(map|map_nomask|mask|half[12]_unfil|from_classes)_\d+\.mrc", fn)):
             raise HTTPException(404, f"{name}/{fn}")
         path = os.path.join(s.workdir, name, fn)
         if not os.path.isfile(path):

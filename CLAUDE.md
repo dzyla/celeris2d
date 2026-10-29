@@ -19,7 +19,8 @@ pip install -e .        # installs entry points celeris2d, celeris2d-web, celeri
 - Dashboard: `celeris2d-web --port 8765` (restart it after code changes).
 - MCP server: `celeris2d-mcp` (stdio).
 
-`pytest -q tests` runs synthetic end-to-end checks (known classes and angles; needs a CUDA GPU, ~10 s). If the
+`pytest -q tests` runs synthetic end-to-end checks (2D: known classes and angles, stop/continue, dashboard API;
+3D: ab initio orientations, symmetry detection, projector conventions; needs a CUDA GPU, ~2 min). If the
 `celeris2d` env is an editable install of another checkout, prefix `PYTHONPATH=.`. There is no linter config or
 CI. Algorithm changes are validated on real datasets with the scripts in
 `scripts/` (run as `python scripts/<name>.py ...`, usage in each docstring): `validate.py` (ψ consistency
@@ -58,9 +59,14 @@ Layers, bottom to top:
    to run 0 by Hungarian assignment on shared membership → per-particle P(good)), `deep2d.py`
    (iterative good/bad sorting against a fixed round-0 "standard"), `isac.py` (generations of
    multi-seed runs, soft stability), `optimize.py` (small settings grid scored by reproducibility).
+   `abinitio.py` (3D from a 2D result: class-average stage, particle SGD, local refinement with gold-standard
+   halves, symmetry detection / relaxation, 3D classification; `Volume` = 2x-padded Fourier volume in the units
+   of the 2D particle spectra; RELION Euler convention, image = A @ volume, checked against Refine3D) and
+   `plots3d.py` (its figures). It only reads a finished 2D `Result` — the 2D engine does not know about it.
 4. **Front ends**: `cli.py` (one-shot runs, output writers, `pick_devices`), `session.py` (stateful
    `Session`), and `webapp.py` (FastAPI + `web/index.html`) and `mcp_server.py`, both thin wrappers
-   around one `Session`, running one GPU job at a time.
+   around one `Session`, running one GPU job at a time. The 3D part of the page is `web/abinitio3d.js`, loaded
+   by index.html, which only emits `celeris:status` / `celeris:result` events for it — keep the two independent.
 
 ### Cross-cutting conventions
 

@@ -82,6 +82,42 @@ cryoSPARC pose/shift by rebuilding J43's class averages (correlation 0.82 vs ≤
 | deep2D | round 0 defines a fixed standard (confidence / resolution / not-a-dot cut-offs + template bank); each round re-classifies good alone (purge) and bad + purged seeded with good templates (rescue); jumpers (≥ 3 good↔bad moves) set aside | ~10 runs |
 | ISAC-style | generations of multi-seed runs; groups whose members keep landing together (soft posterior agreement) are accepted, the rest goes back to the pool; stops when a generation adds < 2 % | ~16 runs |
 
+## Ab initio 3D (from 2D classes)
+After 2D classification and selecting good classes, Celeris builds a 3D map from them in about a minute on one
+GPU. A 2D class is one viewing direction, so the expensive search is done on the class averages, and each particle
+inherits its pose from its class (class orientation + its own in-plane angle and shift):
+
+1. **Class stage** — every class average is matched against projections of the current map over the whole sphere
+   and all in-plane angles (one GEMM), the map is rebuilt from the classes, 40 → 15 Å, from several random starts.
+   The best starts are each refined briefly on the particles and the one the particles fit best is kept.
+2. **Particle SGD** — rounds of a random batch of particles searched globally against the map, which moves part
+   of the way towards each batch's reconstruction (30 → 12 Å). Thousands of particles constrain the structure far
+   more than a few dozen averages, and batch noise lets it leave a wrong start.
+3. **Refinement** — gold-standard half sets, CTF, local search of orientation and shift around each particle's
+   pose, global re-searches in the first iterations (particles from mixed 2D classes can change view), the
+   worst-fitting 10 % of particles left out of each reconstruction, resolution from the half-map FSC (soft sphere
+   mask), alignment slightly beyond the current resolution so it can keep improving.
+4. **Symmetry** — Cn / Dn can be imposed (RELION axis convention). A C1 run checks its map for symmetry (best axis
+   per group, scored against an arbitrary axis); if the particle looks symmetric it is solved with that symmetry
+   and then refined in C1 from it (symmetry relaxation — C1 matching of a pseudo-symmetric particle has several
+   near-equivalent wrong answers).
+5. **3D classes** (`n_models` > 1) — after the consensus, a 3D classification at the consensus poses: random-subset
+   start, annealed posteriors, all classes filtered alike; for a (pseudo-)symmetric consensus it runs over the
+   symmetry-related poses of each particle (a difference that breaks the symmetry is found wherever it is).
+
+Memory: the 3D working box is the largest that fits the free GPU memory (logged when it is smaller than the 2D
+one); search batches are sized from free memory, so a run never spills into host RAM.
+
+Outputs (`<workdir>/<name>/`): `map.mrc` (FSC-weighted, automatic solvent mask), `map_nomask.mrc`, `mask.mrc`,
+`half1/2_unfil.mrc`, `from_classes.mrc`, `particles.star` (3D poses, RELION convention, this map's frame and
+hand — ready for Refine3D), `particles_dropped.star`, `poses.npz`, `summary.json` (resolutions, timings, FSC
+curves, symmetry scores) and figures (`fsc.png`, `views.png`, `reprojections.png`, `map_views.png`). The hand of
+an ab initio map is arbitrary.
+
+Dashboard: open a 2D result, select good classes, **Ab initio 3D** (symmetry field and **3D settings** next to it);
+maps appear as chips with a 3D viewer, the FSC chart and the figures. Python: `Session.abinitio(name,
+"run1:good", sym="C1", n_models=1)`; script: `scripts/abinitio_workflow.py`.
+
 ## Web dashboard
 ```bash
 celeris2d-web --port 8765                  # on the GPU machine; open http://localhost:8765
@@ -163,8 +199,25 @@ changing class, so full passes continue until < 10 % change, but at most 3: scor
 Known weakness: small, round, low-information particles still form noise-attractor classes (starburst
 texture at ~20 Å) — junk-like classes that do not always look like junk; use per-class confidence / seeds.
 
+**Ab initio 3D, RELION β-gal tutorial (Extract/job018, 4,452 particles, 256 px @ 1.245 Å; 2D K=20 →
+15 suggested classes, 3,559 particles; working box 218 px @ 1.46 Å; one RTX 5080)**
+
+| run | time | half-map FSC 0.143 (no mask / sphere / solvent mask) | vs RELION Refine3D map (FSC 0.5 / 0.143) |
+|---|---|---|---|
+| D2 imposed | 1 min | 4.0 / 3.7 / 3.4 Å | 4.1 / 3.3 Å |
+| C1 (detects D2, solves in D2, refines in C1) | 2.4 min | 6.5 / 4.2 / 3.9 Å | 5.0 / 3.6 Å |
+| RELION InitialModel (C1, 4 GPUs) | 2 min 23 s | — | — |
+| RELION Refine3D D2, all 4,452 particles, 256 px | — | 3.79 Å unmasked, 3.15 Å PostProcess | (reference) |
+
+Without the particle SGD and symmetry relaxation the C1 map was self-consistent but distorted (vs RELION 0.5 at
+15.9 Å) — half-map FSC alone does not catch a wrong basin, because both halves inherit the same class poses.
+Simulated two-state β-gal (12,000 particles, one state lacking a domain of 5.4 % of the density; 2D classes do not
+separate the states): two 3D classes put 99.5 % of particles in the right state (oracle 100 %).
+
 ## Validation scripts
 `validate.py` (ψ consistency vs 3D angles) · `evaluate_frc.py` (star) / `evaluate_cs.py` (cs) half-set
 FRC per class · `evaluate_selection.py`, `separation_eval.py` (precision/recall vs a curated set) ·
 `compare.py` (side-by-side galleries) · `junk_eval.py` (good/junk separation of a cryoSPARC result against a
-curated Select 2D job).
+curated Select 2D job) · `compare_maps.py` (align a map to a reference — rotation, hand, translation — and their
+FSC) · `abinitio_workflow.py` (2D → class selection → ab initio) · `simulate_heterogeneity.py` (two-state test
+set).
