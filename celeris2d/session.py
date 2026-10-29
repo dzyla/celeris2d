@@ -12,6 +12,7 @@ select() (a person or an agent looking at the gallery) - suggest() only proposes
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import time
@@ -124,7 +125,8 @@ class Session:
                      t.conf.to_numpy(), t.res_A.to_numpy(), base["labels"], base["psi"], base["offsets"],
                      base["maxprob"], base["loglik"], runs, seeded_from=seeded,
                      info=dict(K=K, seeds=seeds, on=on, seconds=round(time.time() - t0, 1),
-                               mode=("hard" if self.clf.p.hard_pose else "soft") + " pose"))
+                               mode=("hard" if self.clf.p.hard_pose else "soft") + " pose",
+                               iterations=len(self.clf.history), params=self._params()))
         self._store(res)
         return self.summary(name)
 
@@ -224,6 +226,10 @@ class Session:
         return dict(good=good, bad=bad, ambiguous=amb)
 
     # ---------------------------------------------------------------- output
+    def _params(self):
+        """Scalar settings in effect for the last run (saved with each result)."""
+        return {k: v for k, v in dataclasses.asdict(self.clf.p).items() if isinstance(v, (bool, int, float, str)) or v is None}
+
     def summary(self, name):
         r = self.results[name]
         d = dict(name=name, kind=r.kind, particles=int(len(r.idx)), classes=int(len(r.images)),

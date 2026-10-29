@@ -8,6 +8,7 @@ run one at a time on a worker thread; the page polls /api/status for progress an
 from __future__ import annotations
 
 import argparse
+import base64
 import collections
 import dataclasses
 import io
@@ -730,6 +731,22 @@ class App:
         threading.Thread(target=run, daemon=True).start()
 
 
+def _progress(c, job):
+    """Iteration statistics of the running classification, with elapsed time and a rough time left."""
+    h = c.history[-1]
+    n_iter = max(int(c.p.n_iter), h["it"])
+    first_full = n_iter - max(int(c.p.n_full_iter), 0)          # iterations after this one are full passes
+    n_full = int(getattr(c, "Na", h["n"]))
+    recent = c.history[-3:]
+    per_particle = sum(x["time"] for x in recent) / max(sum(x["n"] for x in recent), 1)
+    batch = h["n"] if h["it"] <= first_full else c.history[0]["n"]
+    eta = sum(per_particle * (n_full if it > first_full else batch) for it in range(h["it"] + 1, n_iter + 1))
+    return dict(it=h["it"], n_iter=n_iter, res=round(h["res"], 1), est_res=round(h["est_res"], 1),
+                n=int(h["n"]), changed=round(100 * float(h["changed"]), 1), maxprob=round(float(h["maxprob"]), 3),
+                iter_s=round(float(h["time"]), 2), elapsed=round(time.time() - job["started"], 1), eta=round(eta),
+                full=h["it"] > first_full, n_rot=int(h["n_rot"]), n_trans=int(h["n_trans"]))
+
+
 def tile_png(img, size=192):
     from PIL import Image
     im = img.astype(np.float32)
@@ -889,8 +906,33 @@ def create(workdir):
                                 for k, r in s.results.items()],
                        settings={k: getattr(c.p, k) for k in RUN_KEYS + LOAD_KEYS})
             if st.job and not st.job["done"] and c.history:
-                h = c.history[-1]
-                out["progress"] = dict(it=h["it"], n_iter=c.p.n_iter, res=round(h["res"], 1), est_res=round(h["est_res"], 1))
+                out["progress"] = _progress(c, st.job)
+        return out
+
+    @app.get("/api/live")
+    def live(since: int = -1, size: int = 128):
+        """The running classification as it is now: current class averages (only when the iteration differs from
+        `since`), class sizes and per-iteration statistics. Polled by the page while a job runs."""
+        s = st.session
+        j = st.job
+        if s is None or s.clf is None or not j or j.get("kind") != "classify" or j.get("done"):
+            return dict(running=False, job=j)
+        c = s.clf
+        if not c.history or getattr(c, "pop_live", None) is None:
+            return dict(running=True, job=j, progress=None)
+        prog = _progress(c, j)
+        out = dict(running=True, job=j, progress=prog)
+        if prog["it"] != since:
+            imgs = c.class_images()
+            pops = c.pop_live.numpy()
+            if len(pops) != len(imgs):     # a new run started between the two reads; next poll catches up
+                return out
+            res = c.class_res.numpy() if getattr(c, "class_res", None) is not None else np.full(len(imgs), np.nan)
+            order = np.argsort(-pops)
+            out["classes"] = [dict(cls=int(k) + 1, particles=float(pops[k]),
+                                   res_A=None if not np.isfinite(res[k]) else round(float(res[k]), 1),
+                                   png="data:image/png;base64," + base64.b64encode(tile_png(imgs[k], size)).decode())
+                              for k in order]
         return out
 
     @app.get("/api/result/{name}")

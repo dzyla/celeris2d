@@ -18,7 +18,7 @@
   #ds b { color: var(--ink); font-weight: 600; }
   .wrap { display: grid; grid-template-columns: 400px 1fr; height: calc(100vh - 46px); }
   aside { overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); padding: 6px 14px 40px; }
-  main { display: grid; grid-template-rows: auto auto 1fr 200px; min-width: 0; min-height: 0; }
+  main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .8px; color: var(--ink); margin: 18px 0 6px; display: flex; align-items: center; gap: 8px; }
   h2 .num { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 11px; letter-spacing: 0; }
   h2 .sp { flex: 1; }
@@ -40,18 +40,25 @@
   /* settings fields */
   .field { padding: 5px 0; border-bottom: 1px dashed transparent; }
   .frow { display: grid; grid-template-columns: 1fr auto 118px; gap: 6px; align-items: center; }
+  .frow label { display: flex; align-items: center; flex-wrap: wrap; }
   .frow label { color: var(--ink); cursor: default; }
   .frow label .unit { color: var(--ink3); font-size: 11.5px; margin-left: 3px; }
   .frow .ctl { display: flex; justify-content: flex-end; }
   .field .tools { display: flex; gap: 2px; align-items: center; }
-  .info { width: 18px; height: 18px; padding: 0; border-radius: 50%; font-size: 11px; font-weight: 700; font-style: italic; font-family: Georgia, serif; color: var(--ink2); line-height: 16px; }
+  .info { width: 15px; height: 15px; padding: 0; margin-left: 5px; border-radius: 50%; font-size: 10px; font-weight: 700; font-style: italic; font-family: Georgia, serif; color: var(--ink3); line-height: 13px; vertical-align: 1px; flex: none; }
+  .info:hover { color: var(--ink); }
+  .key { color: var(--ink3); font: 10.5px ui-monospace, Menlo, Consolas, monospace; margin-left: 6px; }
+  #find { margin: 10px 0 2px; }
+  aside.searching .field:not(.hit), aside.searching .nohit { display: none; }
+  aside.searching .gdesc, aside.searching .hint { display: none; }
+  .found { color: var(--ink3); font-size: 11.5px; min-height: 16px; }
   .info.on { background: var(--accent2); border-color: var(--accent); color: #fff; }
   .fr { visibility: hidden; padding: 0 4px; border: none; background: none; color: var(--warn); font-size: 13px; }
   .field.mod .fr { visibility: visible; }
   .field.mod label::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); margin-right: 6px; vertical-align: middle; }
   .help { display: none; color: var(--ink2); font-size: 11.5px; margin: 3px 0 2px; padding: 5px 8px; background: var(--panel2); border-radius: 6px; border-left: 2px solid var(--accent); }
   .help.show { display: block; }
-  .help .def { color: var(--ink3); white-space: nowrap; }
+  .help .def { color: var(--ink3); }
   .help .auto { color: var(--ink); }
   body.allhelp .help { display: block; }
   details.grp { margin: 10px 0 0; border: 1px solid var(--line); border-radius: 8px; padding: 0 10px; background: rgba(255,255,255,.012); }
@@ -90,7 +97,16 @@
   #toolbar .tl { color: var(--ink3); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; margin-right: 2px; }
   #toolbar input { width: auto; }
   .vsep { width: 1px; height: 22px; background: var(--line); }
-  #gallery { overflow-y: auto; padding: 12px 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; align-content: start; min-height: 0; }
+  #ghead { padding: 7px 14px; border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--ink2); display: none; }
+  #ghead.show { display: block; }
+  #ghead b { color: var(--ink); }
+  #ghead .live { color: var(--warn); font-weight: 700; }
+  #ghead .prog { margin: 5px 0 0; }
+  #ghead .mods { color: var(--ink3); font-size: 11.5px; margin-top: 2px; }
+  .chip.live { border-color: var(--warn); color: var(--warn); }
+  .chip.live.on { background: #3a2f12; color: #fff; }
+  .tile.livetile { cursor: default; }
+  #gallery { flex: 1; overflow-y: auto; padding: 12px 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); grid-auto-rows: max-content; gap: 10px; align-content: start; min-height: 0; }
   .tile { position: relative; border-radius: 10px; overflow: hidden; background: #000; cursor: pointer; outline: 3px solid transparent; transition: outline-color .1s, opacity .1s; }
   .tile img { display: block; width: 100%; aspect-ratio: 1; }
   .tile.good { outline-color: var(--good); }
@@ -103,7 +119,10 @@
   .empty { color: var(--ink2); padding: 40px 20px; grid-column: 1/-1; max-width: 640px; margin: 0 auto; }
   .empty h3 { color: var(--ink); margin: 0 0 10px; font-size: 15px; }
   .empty ol { padding-left: 20px; } .empty li { margin: 6px 0; }
-  #bottom { border-top: 1px solid var(--line); display: grid; grid-template-columns: 1fr 340px; min-height: 0; }
+  #resizer { height: 6px; cursor: ns-resize; background: var(--line); flex: none; }
+  #resizer:hover { background: var(--accent); }
+  #bottom { display: grid; grid-template-columns: 1fr 380px; min-height: 60px; height: 240px; flex: none; }
+  .stats td:first-child { color: var(--ink3); white-space: nowrap; }
   #log { margin: 0; padding: 8px 14px; overflow-y: auto; font: 11.5px/1.45 ui-monospace, Menlo, Consolas, monospace; color: #c7c9d1; white-space: pre-wrap; }
   #jobpanel { border-left: 1px solid var(--line); padding: 10px 12px; overflow-y: auto; }
   .prog { height: 6px; border-radius: 3px; background: var(--panel2); overflow: hidden; margin: 6px 0; }
@@ -174,34 +193,45 @@
 </header>
 <div class="wrap">
 <aside>
+  <input id="find" placeholder="Find a setting: shift, solvent, margin, pose…" spellcheck="false" autocomplete="off" title="Searches every setting by name, command-line name and description, including the advanced ones">
+  <div class="found" id="found"></div>
   <!-- step 1 -->
-  <h2><span class="num">1</span>Particles<span class="sp"></span><button class="link" data-reset="load_basic" title="Reset the dataset settings below to their defaults">reset</button></h2>
-  <div class="gdesc">Pick a RELION <code>.star</code>, cryoSPARC <code>.csg</code>/<code>.cs</code>, or an <code>.mrcs</code> stack.</div>
-  <div class="pathrow">
+  <h2 class="nohit"><span class="num">1</span>Particles<button class="info" data-help="h_s1" title="What is this?">i</button><span class="sp"></span><button class="link" data-reset="load_basic" title="Reset the dataset settings below to their defaults">reset</button></h2>
+  <div class="help" id="h_s1">Pick a RELION <code>.star</code>, cryoSPARC <code>.csg</code>/<code>.cs</code>, or an <code>.mrcs</code> stack. Load reads the particles once and keeps them on the GPU, so every run afterwards starts immediately. Loading again replaces the current dataset (its results stay saved and come back when you load the same file).</div>
+  <div class="pathrow nohit">
     <input id="path" placeholder="/path/to/particles.star or J75/J75_particles.csg" spellcheck="false" autocomplete="off">
     <button id="btnBrowse" title="Browse folders; cryoSPARC and RELION projects list their particle outputs automatically">Browse…</button>
   </div>
-  <div id="peek" class="peek"></div>
-  <div id="recent" class="recent"></div>
+  <div id="peek" class="peek nohit"></div>
+  <div id="recent" class="recent nohit"></div>
   <div id="g_load_basic"></div>
   <details class="grp" id="d_load_adv"><summary>Advanced dataset settings <span class="cnt"></span><span class="grow"></span><button class="link" data-reset="load_adv">reset</button></summary>
     <div class="gdesc" data-gdesc="load_adv"></div><div id="g_load_adv"></div></details>
-  <div class="actions">
+  <div class="actions nohit">
     <button class="primary" id="btnLoad">Load particles</button>
     <span class="why" id="whyLoad"></span>
   </div>
-  <div class="hint">Reads the particles once and keeps them on the GPU, so every run afterwards starts immediately. Loading again replaces the current dataset (its results stay saved and come back when you load the same file).</div>
 
   <!-- step 2 -->
-  <h2><span class="num">2</span>Classify<span class="sp"></span><button class="link" data-reset="run_basic" title="Reset K and seeds to their defaults">reset</button></h2>
-  <div class="gdesc">Used every time you press Run; no reloading needed.</div>
+  <h2 class="nohit"><span class="num">2</span>Classify<button class="info" data-help="h_s2" title="What is this?">i</button><span class="sp"></span><button class="link" data-reset="run_basic" title="Reset K and seeds to their defaults">reset</button></h2>
+  <div class="help" id="h_s2">These settings are used every time you press Run; no reloading needed. Classifies the chosen particles into K classes. Classes appear on the right while the run is going and are replaced by the final result when it finishes; every result is kept.</div>
+  <div class="row nohit" style="margin:4px 0 2px">
+    <select id="preset" class="grow" title="Fill in a tested combination of settings (you can change them afterwards)">
+      <option value="">Presets…</option>
+      <option value="defaults">Defaults (cryo-EM)</option>
+      <option value="ns_loose">Negative stain: loose solvent mask (best on J75)</option>
+      <option value="ns_wide">Negative stain: loose mask + wide shift search (slower)</option>
+    </select>
+    <button class="info" data-help="h_preset" title="What is this?">i</button>
+  </div>
+  <div class="help" id="h_preset">Fills in settings that worked on a test dataset; the changed fields are marked ●. <b>Negative stain, loose solvent mask</b>: solvent flattening on, envelope threshold 0.03, padding 60 Å, alignment margin 8 shells (on the J75 stain set this gave the cleanest classes). <b>+ wide shift search</b> also sets the translation search range to 45 Å (applied at Load, so press Load again): about 2.5× slower, separated particles best on J75. Particle mask diameter is dataset-specific: set it yourself (J75: 260 Å).</div>
   <div class="field" data-fixed="1">
-    <div class="frow"><label for="on">Particles to classify</label><span class="tools"><button class="info" data-help="h_on" title="What is this?">i</button></span><span class="ctl"><select id="on"><option value="all">all loaded</option></select></span></div>
+    <div class="frow"><label for="on">Particles to classify<button class="info" data-help="h_on" title="What is this?">i</button></label><span class="tools"></span><span class="ctl"><select id="on"><option value="all">all loaded</option></select></span></div>
     <div class="help" id="h_on">All loaded particles, or the good / bad / ambiguous particles of an earlier result once you have selected classes in it.</div>
   </div>
   <div id="g_run_basic"></div>
   <div class="field" data-fixed="1">
-    <div class="frow"><label for="name">Result name</label><span class="tools"><button class="info" data-help="h_name" title="What is this?">i</button></span><span class="ctl"><input id="name" placeholder="auto (run1, run2…)" spellcheck="false"></span></div>
+    <div class="frow"><label for="name">Result name<button class="info" data-help="h_name" title="What is this?">i</button></label><span class="tools"></span><span class="ctl"><input id="name" placeholder="auto (run1, run2…)" spellcheck="false"></span></div>
     <div class="help" id="h_name">Name shown on the result chip and used for the files saved in the work folder. Leave empty for run1, run2, …</div>
   </div>
   <details class="grp" id="d_run_adv"><summary>Advanced classification settings <span class="cnt"></span></summary>
@@ -209,14 +239,13 @@
     <div class="subh">Alignment<span class="sp"></span><button class="link" data-reset="run_align">reset</button></div><div class="gdesc" data-gdesc="run_align"></div><div id="g_run_align"></div>
     <div class="subh">Class averages<span class="sp"></span><button class="link" data-reset="run_classes">reset</button></div><div class="gdesc" data-gdesc="run_classes"></div><div id="g_run_classes"></div>
   </details>
-  <div class="actions">
+  <div class="actions nohit">
     <button class="primary" id="btnRun">Run classification</button>
     <span class="why" id="whyRun"></span>
   </div>
-  <div class="hint">Classifies the chosen particles into K classes. Results appear as class tiles on the right; every result is kept.</div>
 
   <!-- optimizer -->
-  <details class="grp" id="d_opt"><summary>Settings optimizer (optional)</summary>
+  <details class="grp nohit" id="d_opt"><summary>Settings optimizer (optional)</summary>
     <div class="gdesc" data-gdesc="opt"></div>
     <div id="g_opt"></div>
     <div class="actions"><button id="btnOpt">Optimize &amp; apply</button><span class="why" id="whyOpt"></span></div>
@@ -224,12 +253,12 @@
     <div id="opt"></div>
   </details>
 
-  <hr class="sep">
-  <div class="actions" style="margin-top:8px">
+  <hr class="sep nohit">
+  <div class="actions nohit" style="margin-top:8px">
     <button id="btnResetAll" title="Restore every setting on this page to the server defaults (the particle file path is kept)">Reset all settings to defaults</button>
     <span class="hint" id="modCount" style="margin:0"></span>
   </div>
-  <div class="hint">Your settings are remembered in this browser. Changed settings are marked <span style="color:var(--warn)">●</span>; click ↺ next to one to reset just that setting.</div>
+  <div class="hint nohit">Your settings are remembered in this browser. Changed settings are marked <span style="color:var(--warn)">●</span>; click ↺ next to one to reset just that setting.</div>
 </aside>
 <main>
   <div id="banner"><b id="bannerTitle">Error</b><span id="bannerText"></span><button class="bx" id="bannerX" title="dismiss">✕</button></div>
@@ -237,7 +266,7 @@
     <div class="bar" id="results"><span class="muted">Results appear here after a run.</span></div>
     <div class="bar" id="toolbar">
       <div class="row">
-        <span class="tl">Select</span>
+        <span class="tl">Select</span><button class="info" data-help="h_tools" title="What is this?">i</button>
         <button id="selAll" title="Mark every class as good">All</button><button id="selNone" title="Clear the selection">None</button><button id="selInv" title="Swap selected and unselected classes">Invert</button>
         <button id="selSuggest" title="Automatic 2-cluster proposal on confidence / resolution. It always splits, so review it (on clean data every class may be good).">Suggest</button>
         <span class="muted" id="selInfo"></span>
@@ -253,10 +282,12 @@
         <button class="primary" id="btnExport" title="Write good / ambiguous / bad particle files (.star for RELION input, .cs/.csg for cryoSPARC input) with these alignments">Export</button>
         <span class="why" id="whyTools"></span>
       </div>
-      <div class="hint" style="margin:0">Click tiles to mark good classes (green). <b>Re-run selected</b> classifies only the particles in green classes, <b>Re-run unselected</b> only the rest (both reuse the loaded data, settings from the left panel). <b>Export</b> writes good / ambiguous / bad particle files for RELION or cryoSPARC.</div>
+      <div class="help" id="h_tools" style="margin:0">Click tiles to mark good classes (green). <b>Re-run selected</b> classifies only the particles in green classes, <b>Re-run unselected</b> only the rest (both reuse the loaded data, settings from the left panel). <b>Export</b> writes good / ambiguous / bad particle files for RELION or cryoSPARC.</div>
     </div>
   </div>
+  <div id="ghead"></div>
   <div id="gallery"></div>
+  <div id="resizer" title="Drag to resize the log panel"></div>
   <div id="bottom">
     <pre id="log"></pre>
     <div id="jobpanel"><div class="muted">idle</div></div>
@@ -327,7 +358,9 @@ $("bannerX").onclick = () => { $("banner").classList.remove("show"); errShownFor
 let D = null;            // /api/defaults
 let META = {};           // key -> meta
 let lastStatus = null, current = null, currentRes = null, sel = new Set(), resultsSeen = new Set(), errShownFor = null;
-let peekInfo = null, recent = {paths: []};
+const LIVE = "\u0000live";   // `current` while the running classification is shown
+let liveFor = null, liveIt = -1, liveBusy = false, firstPoll = true;
+let peekInfo = null, recent = {paths: []}, PARAM_KEYS = new Set();
 
 // ------------------------------------------------------------------ settings fields
 function fmtVal(m, v) {
@@ -347,11 +380,12 @@ function fieldHTML(m) {
   const unit = m.unit ? `<span class="unit">${esc(m.unit)}</span>` : "";
   const auto = m.auto ? (m.type === "tri" ? ` <span class="auto">auto = ${esc(m.auto)}.</span>` : "") : "";
   const tip = `${m.help}${m.auto && m.type === "tri" ? " auto = " + m.auto + "." : ""} Default: ${fmtVal(m, m.value)}.`;
+  const flag = PARAM_KEYS.has(m.key) ? m.key : "";
   return `<div class="field" data-key="${m.key}">
-    <div class="frow"><label for="${id}" title="${esc(tip)}">${esc(m.label)}${unit}</label>
-      <span class="tools"><button class="fr" data-freset="${m.key}" title="Reset to default (${esc(fmtVal(m, m.value))})">↺</button><button class="info" data-help="h_${m.key}" title="What is this?">i</button></span>
+    <div class="frow"><label for="${id}" title="${esc(tip)}">${esc(m.label)}${unit}<button class="info" data-help="h_${m.key}" title="What is this?">i</button></label>
+      <span class="tools"><button class="fr" data-freset="${m.key}" title="Reset to default (${esc(fmtVal(m, m.value))})">↺</button></span>
       <span class="ctl">${ctl}</span></div>
-    <div class="help${m.important ? " show" : ""}" id="h_${m.key}">${esc(m.help)}${auto} <span class="def">Default: ${esc(fmtVal(m, m.value))}${m.stage === "load" ? " · applied at Load" : ""}</span></div>
+    <div class="help" id="h_${m.key}">${esc(m.help)}${auto} <span class="def">Default: ${esc(fmtVal(m, m.value))}${m.stage === "load" ? " · applied at Load" : ""}${flag ? ` · <span class="key">${esc(flag)}</span> (command line: --param ${esc(flag)}=…)` : ""}</span></div>
   </div>`;
 }
 function getVal(k) {
@@ -402,15 +436,24 @@ function resetKeys(keys) {
 function resetGroup(g) { resetKeys(Object.keys(META).filter(k => META[k].group === g)); toast(`${(D.groups.find(x => x.id === g) || {}).title || g}: defaults restored`); }
 
 function buildSettings() {
+  PARAM_KEYS = new Set([...Object.keys(D.load || {}), ...Object.keys(D.run || {})]);
   for (const g of D.groups) {
     const box = $("g_" + g.id);
     if (box) box.innerHTML = Object.values(META).filter(m => m.group === g.id).map(fieldHTML).join("");
-    document.querySelectorAll(`[data-gdesc="${g.id}"]`).forEach(e => e.textContent = g.help);
+    document.querySelectorAll(`[data-gdesc="${g.id}"]`).forEach(e => {   // group description: behind an i button
+      e.textContent = g.help; e.className = "help"; e.id = "hg_" + g.id;
+      const head = e.previousElementSibling;
+      if (head && !head.querySelector(".info")) {
+        const b = document.createElement("button"); b.className = "info"; b.dataset.help = e.id; b.title = "What is this?"; b.textContent = "i";
+        const anchor = head.querySelector(".sp, .grow, .cnt");
+        anchor ? head.insertBefore(b, anchor) : head.appendChild(b);
+      }
+    });
   }
   const saved = store.get("settings", {});
   for (const k in META) setVal(k, k in saved && saved[k] !== null ? saved[k] : META[k].value);
   document.querySelectorAll("aside input, aside select").forEach(e => {
-    if (e.id === "path" || e.id === "name" || e.id === "on") return;
+    if (["path", "name", "on", "find", "preset"].includes(e.id)) return;
     e.addEventListener("input", () => { saveSettings(); refreshMods(); updateButtons(); });
     e.addEventListener("change", () => { saveSettings(); refreshMods(); updateButtons(); });
   });
@@ -438,6 +481,47 @@ $("allHelp").onchange = () => { document.body.classList.toggle("allhelp", $("all
   const d = $(id); d.open = store.get("open." + id, false);
   d.addEventListener("toggle", () => store.set("open." + id, d.open));
 });
+
+// ------------------------------------------------------------------ settings search + presets
+function findSettings() {
+  const q = $("find").value.trim().toLowerCase();
+  const aside = document.querySelector("aside");
+  aside.classList.toggle("searching", !!q);
+  document.querySelectorAll(".field[data-key]").forEach(f => {
+    const m = META[f.dataset.key];
+    const hay = `${m.label} ${m.key} ${m.key.replace(/_/g, " ")} ${m.unit || ""} ${m.help}`.toLowerCase();
+    f.classList.toggle("hit", !!q && q.split(/\s+/).every(w => hay.includes(w)));
+  });
+  const hits = document.querySelectorAll(".field.hit").length;
+  // open the groups holding matches; hide headings of groups without any
+  document.querySelectorAll("details.grp").forEach(d => {
+    if (d.id === "d_opt") return;
+    if (q) { if (d.dataset.wasOpen === undefined) d.dataset.wasOpen = d.open ? "1" : ""; d.open = true; }
+    else if (d.dataset.wasOpen !== undefined) { d.open = !!d.dataset.wasOpen; delete d.dataset.wasOpen; }
+    d.style.display = q && !d.querySelector(".field.hit") ? "none" : "";
+  });
+  document.querySelectorAll(".subh").forEach(h => {
+    const box = h.nextElementSibling && h.nextElementSibling.nextElementSibling;
+    h.style.display = q && box && !box.querySelector(".field.hit") ? "none" : "";
+  });
+  $("found").textContent = q ? (hits ? `${hits} setting${hits > 1 ? "s" : ""} match “${q}” (clear the box to see everything)` : `no setting matches “${q}”`) : "";
+}
+$("find").addEventListener("input", findSettings);
+$("find").addEventListener("keydown", (e) => { if (e.key === "Escape") { $("find").value = ""; findSettings(); } });
+const PRESETS = {
+  ns_loose: {solvent_flatten: true, solvent_thresh: 0.03, solvent_dilate_a: 60, march_margin: 8},
+  ns_wide: {solvent_flatten: true, solvent_thresh: 0.03, solvent_dilate_a: 60, march_margin: 8, max_shift_a: 45},
+};
+$("preset").onchange = () => {
+  const v = $("preset").value; $("preset").value = "";
+  if (!v) return;
+  if (v === "defaults") { resetKeys(Object.keys(META).filter(k => k !== "diameter_a" && k !== "max_res_a" && k !== "gpus")); toast("settings reset to defaults (diameter, resolution and GPUs kept)"); return; }
+  const p = PRESETS[v];
+  Object.entries(p).forEach(([k, x]) => { if (META[k]) setVal(k, x); });
+  saveSettings(); refreshMods(); updateButtons();
+  const needLoad = Object.keys(p).some(k => META[k] && META[k].stage === "load");
+  toast(`preset applied: ${Object.entries(p).map(([k, x]) => `${META[k] ? META[k].label : k} = ${x === true ? "on" : x}`).join(", ")}${needLoad ? " — press Load particles again for the translation range" : ""}`);
+};
 
 // ------------------------------------------------------------------ particle file: peek + recent
 let peekTimer = null, peekSeq = 0;
@@ -751,17 +835,21 @@ async function poll() {
   // job panel
   const j = s.job;
   if (j) {
-    const el = (j.done ? j.seconds : (s.now - j.started)) || 0;
+    const el = (j.done ? j.seconds : (s.now - j.started)) || 0, pg = s.progress;
     let pct = 100, cls = j.done ? (j.error ? "fail" : "done") : "", line;
     if (!j.done) {
-      if (s.progress) { pct = Math.round(100 * s.progress.it / Math.max(1, s.progress.n_iter)); line = `iteration ${s.progress.it} of ${s.progress.n_iter} · alignment limit ${s.progress.res} Å · estimated ${s.progress.est_res} Å`; }
+      if (pg) { pct = Math.round(100 * pg.it / Math.max(1, pg.n_iter)); line = `iteration ${pg.it} of ${pg.n_iter}${pg.full ? " (full pass)" : ""}`; }
       else { cls = "ind"; line = j.kind === "load" ? "reading metadata, starting GPU streaming…" : "preparing…"; }
       if (j.info && j.info.seeds > 1) line += ` · ${j.info.seeds} starts in total`;
     } else line = j.error ? `<span class="err">failed: ${esc(j.error)}</span>` : `<span class="ok">finished</span>`;
     const what = {load: "Loading", classify: "Classifying", optimize: "Optimizing settings"}[j.kind] || j.kind;
     const extra = j.info && j.kind === "classify" ? ` <span class="muted">K=${j.info.K} · ${esc(j.info.on)}</span>` : "";
+    const rows = [[j.done ? "took" : "running for", fmtDur(el)]];
+    if (!j.done && pg) rows.push(["time left", pg.eta > 0 ? `≈ ${fmtDur(pg.eta)}` : "finishing"], ["last iteration", `${pg.iter_s.toFixed(1)} s · ${fmtN(pg.n)} particles`],
+      ["alignment / estimated", `${pg.res} Å / ${pg.est_res} Å`], ["changed class", `${pg.changed}%`], ["mean max. probability", pg.maxprob],
+      ["search", `${pg.n_rot} angles × ${pg.n_trans} shifts`]);
     $("jobpanel").innerHTML = `<b>${what}</b> · ${esc(j.name)}${extra}<div class="prog ${cls}"><div style="width:${pct}%"></div></div>` +
-      `<div class="muted">${line}</div><div class="muted" style="margin-top:2px">${j.done ? "took" : "running for"} ${fmtDur(el)}</div>` +
+      `<div class="muted">${line}</div><table class="stats" style="margin-top:4px">${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")}</table>` +
       (s.loaded && s.loaded_particles < s.particles ? `<div style="margin-top:8px" class="muted">particles on GPU: ${fmtN(s.loaded_particles)} / ${fmtN(s.particles)} (classification starts before all are in; full passes wait for the rest)</div><div class="prog"><div style="width:${Math.round(100 * s.loaded_particles / s.particles)}%"></div></div>` : "") +
       (s.optimizer ? optTable(s.optimizer) : "");
     if (j.done && j.error && errShownFor !== j.started) { errShownFor = j.started; showError(`${what} failed`, j.error + " (see the log below for details)"); }
@@ -770,19 +858,27 @@ async function poll() {
   }
   // results chips + particle-set choices
   const res = s.loaded ? (s.results || []) : [];
-  $("results").innerHTML = res.length ? `<span class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.6px">Results</span>` + res.map(r =>
-    `<span class="chip ${current === r.name ? "on" : ""}" data-n="${esc(r.name)}" title="${esc(`${r.name}: ${r.classes} classes, ${fmtN(r.particles)} particles (${r.on})${r.seconds != null ? `, ${r.seconds} s` : ""}${r.selected != null ? `, ${r.selected} classes selected` : ""} — click to show`)}">${esc(r.name)} · ${r.classes} cl · ${fmtN(r.particles)}${r.selected != null ? " · " + r.selected + " good" : ""}</span>`).join("")
+  const running = s.busy && j && j.kind === "classify" ? j.name : null;
+  const liveChip = running ? `<span class="chip live ${current === LIVE ? "on" : ""}" data-n="${LIVE}" title="The classification that is running now: class averages update every iteration">● ${esc(running)} running${s.progress ? ` · it ${s.progress.it}/${s.progress.n_iter}` : ""}</span>` : "";
+  $("results").innerHTML = res.length || running ? `<span class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.6px">Results</span>` + res.map(r =>
+    `<span class="chip ${current === r.name ? "on" : ""}" data-n="${esc(r.name)}" title="${esc(`${r.name}: ${r.classes} classes, ${fmtN(r.particles)} particles (${r.on})${r.seconds != null ? `, took ${fmtDur(r.seconds)}` : ""}${r.selected != null ? `, ${r.selected} classes selected` : ""} — click to show`)}">${esc(r.name)} · ${r.classes} cl · ${fmtN(r.particles)}${r.seconds != null ? " · " + fmtDur(r.seconds) : ""}${r.selected != null ? " · " + r.selected + " good" : ""}</span>`).join("") + liveChip
     : `<span class="muted">${s.loaded ? "No results yet: press Run classification." : "Results appear here after a run."}</span>`;
-  document.querySelectorAll(".chip").forEach(c => c.onclick = () => openResult(c.dataset.n));
+  document.querySelectorAll(".chip").forEach(c => c.onclick = () => c.dataset.n === LIVE ? showLive() : openResult(c.dataset.n));
   const opts = [["all", "all loaded particles"]];
   res.forEach(r => { if (r.selected != null) opts.push([`${r.name}:good`, `${r.name}: good particles`], [`${r.name}:bad`, `${r.name}: bad particles`], [`${r.name}:ambiguous`, `${r.name}: ambiguous particles`]); });
   const o = $("on"), keep = o.value;
   if (o.options.length !== opts.length) { o.innerHTML = opts.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join(""); o.value = opts.some(x => x[0] === keep) ? keep : "all"; }
   if (!s.loaded && current) { current = null; currentRes = null; renderGallery(); }
-  const fresh = res.find(r => !resultsSeen.has(r.name));
-  res.forEach(r => resultsSeen.add(r.name));
-  if (fresh && !s.busy) openResult(fresh.name);
+  // a run that just started is shown live; a run that just finished is opened
+  if (running && running !== liveFor) { liveFor = running; showLive(); }
+  else if (!running && liveFor) {
+    const fin = liveFor; liveFor = null;
+    if (res.some(r => r.name === fin)) { openResult(fin); if (j && !j.error) toast(`${fin} finished in ${fmtDur(j.seconds || 0)}`); }
+    else if (current === LIVE) { current = null; renderGallery(); }
+  } else if (current === LIVE && running) pollLive();
+  else if (firstPoll && res.length && !current) openResult(res[res.length - 1].name);
   else if (!current) renderGallery();
+  firstPoll = false;
   updateButtons();
   pollTimer = setTimeout(poll, s.busy ? 1200 : 2500);
 }
@@ -796,6 +892,7 @@ function optTable(o) {
 function renderGallery() {
   if (current) return;
   $("toolbar").style.display = "none";
+  $("ghead").classList.remove("show");
   const s = lastStatus || {};
   $("gallery").innerHTML = `<div class="empty"><h3>${s.loaded ? "Dataset loaded — ready to classify" : "Getting started"}</h3><ol>
     <li><b>Choose particles</b>: Browse… opens a file browser; inside a cryoSPARC or RELION project it lists every job with particle outputs and their particle counts. You can also paste a path.</li>
@@ -804,12 +901,59 @@ function renderGallery() {
     <li><b>Click class tiles</b> to mark good classes (green). Then <b>Re-run selected</b> to re-classify only those particles, or <b>Export</b> good / ambiguous / bad particle files for RELION or cryoSPARC.</li>
   </ol><div class="muted">Every setting has an <b>i</b> button with an explanation; changed settings are marked ● and can be reset.</div></div>`;
 }
+// ------------------------------------------------------------------ live view of the running classification
+function showLive() {
+  current = LIVE; currentRes = null; liveIt = -1;
+  $("toolbar").style.display = "none";
+  document.querySelectorAll(".chip").forEach(c => c.classList.toggle("on", c.dataset.n === LIVE));
+  $("ghead").classList.add("show");
+  $("ghead").innerHTML = `<span class="live">● ${esc(liveFor || "")}</span> starting…`;
+  $("gallery").innerHTML = `<div class="empty"><h3>Starting ${esc(liveFor || "")}…</h3><div class="muted">Class averages appear here after the first iteration and update every iteration.</div></div>`;
+  pollLive();
+}
+async function pollLive() {
+  if (liveBusy || current !== LIVE) return;
+  liveBusy = true;
+  let d;
+  try { d = await api(`/api/live?since=${liveIt}`); } catch (e) { d = null; } finally { liveBusy = false; }
+  if (!d || current !== LIVE || !d.running) return;
+  const pg = d.progress, j = d.job;
+  const el = lastStatus ? lastStatus.now - j.started : 0;
+  const info = j.info || {};
+  if (!pg) { $("ghead").innerHTML = `<span class="live">● ${esc(j.name)}</span> · K=${info.K} · ${esc(info.on || "all")} · preparing… · ${fmtDur(el)}`; return; }
+  $("ghead").innerHTML = `<span class="live">● ${esc(j.name)} running</span> · iteration <b>${pg.it}</b> of ${pg.n_iter}${pg.full ? " (full pass)" : ""} · K=${info.K} · ${esc(info.on || "all")}` +
+    ` · elapsed <b>${fmtDur(pg.elapsed)}</b>${pg.eta > 0 ? ` · ≈ ${fmtDur(pg.eta)} left` : ""} · ${pg.iter_s.toFixed(1)} s/iteration on ${fmtN(pg.n)} particles` +
+    ` · alignment ${pg.res} Å, estimated ${pg.est_res} Å · ${pg.changed}% changed class` +
+    `<div class="prog"><div style="width:${Math.round(100 * pg.it / Math.max(1, pg.n_iter))}%"></div></div>` +
+    `<div class="mods">Live preview: particle counts are from the last iteration${pg.full ? "" : " (an online-EM batch, not all particles)"}. Tiles are not selectable until the run finishes; it opens automatically.</div>`;
+  if (!d.classes) return;
+  liveIt = pg.it;
+  const tot = d.classes.reduce((a, t) => a + t.particles, 0) || 1;
+  $("gallery").innerHTML = d.classes.map(t => `<div class="tile livetile" title="class ${t.cls}: ${fmtN(Math.round(t.particles))} particles in iteration ${pg.it}${t.res_A ? ", ~" + t.res_A + " Å" : ""}">
+      <img alt="class ${t.cls}" src="${t.png}"><div class="k">${t.cls}</div>${t.res_A ? `<div class="c">${t.res_A}Å</div>` : ""}
+      <div class="f"><b>${fmtN(Math.round(t.particles))}</b><span>${(100 * t.particles / tot).toFixed(1)}%</span></div></div>`).join("");
+}
+
+function resultHead(r) {
+  const p = r.params || {}, defs = Object.assign({}, D.load || {}, D.run || {});
+  const mods = Object.keys(p).filter(k => k in defs && defs[k] !== null && p[k] !== defs[k] && !(typeof defs[k] === "number" && Number(p[k]) === Number(defs[k])))
+    .filter(k => !["n_iter", "n_full_iter", "max_offset_a", "max_res_a", "hard_pose", "class_prior"].includes(k))   // resolved per run
+    .map(k => `${META[k] ? META[k].label : k} = ${p[k] === true ? "on" : p[k] === false ? "off" : p[k]}`);
+  const bits = [`<b>${esc(r.name)}</b>`, `${r.classes} classes`, `${fmtN(r.particles)} particles${r.on && r.on !== "all" ? ` from ${esc(r.on)}` : ""}`];
+  if (r.seconds != null) bits.push(`took <b>${fmtDur(r.seconds)}</b>${r.iterations ? ` (${r.iterations} iterations)` : ""}`);
+  if (r.seeds > 1) bits.push(`${r.seeds} starts`);
+  if (r.mode) bits.push(esc(r.mode));
+  return bits.join(" · ") + (r.params ? `<div class="mods">${mods.length ? "changed from defaults: " + esc(mods.join(", ")) : "all settings at defaults"}</div>`
+    : `<div class="mods">settings were not recorded for this result (made before this dashboard version)</div>`);
+}
+
 async function openResult(name) {
   current = name;
   let r;
   try { r = await api(`/api/result/${encodeURIComponent(name)}`); } catch (e) { toast(e.message, true); return; }
   if (current !== name) return;
   currentRes = r;
+  $("ghead").innerHTML = resultHead(r); $("ghead").classList.add("show");
   sel = new Set(r.table.filter(t => t.good).map(t => t.cls));
   const byCls = Object.fromEntries(r.table.map(t => [t.cls, t]));
   const tot = r.table.reduce((a, t) => a + t.particles, 0) || 1;
@@ -875,6 +1019,16 @@ $("btnExport").onclick = async () => {
     toast(`exported ${w || "nothing"} to ${r.outdir}`);
   } catch (e) { showError("Export failed", e.message); }
 };
+
+// ------------------------------------------------------------------ log panel height (drag the bar above it)
+(() => {
+  const set = (h) => { $("bottom").style.height = Math.max(60, Math.min(window.innerHeight - 200, h)) + "px"; };
+  set(store.get("logHeight", 240));
+  let y0 = null, h0 = 0;
+  $("resizer").addEventListener("mousedown", (e) => { y0 = e.clientY; h0 = $("bottom").offsetHeight; e.preventDefault(); });
+  window.addEventListener("mousemove", (e) => { if (y0 !== null) set(h0 + (y0 - e.clientY)); });
+  window.addEventListener("mouseup", () => { if (y0 !== null) { y0 = null; store.set("logHeight", $("bottom").offsetHeight); } });
+})();
 
 // ------------------------------------------------------------------ init
 function fallbackMeta(d) {

@@ -759,6 +759,7 @@ class Classifier2D:
                     est_res=self.est_res, maxprob=self.maxprob[idx_all].mean().item(), changed=changed,
                     min_pop=int(pop.min().item()), max_pop=int(pop.max().item()), reseeded=reseeded, enc=self._last_enc)
         self.history.append(info)
+        self.pop_live = pop.detach().float().cpu()    # class sizes of this iteration (dashboard live view)
         self.log(f"[it {it + 1:3d}] align {s['res']:5.1f}A rec {s['res_rec']:5.1f}A box {b_al:3d}/{b:3d} rot {R:3d} ({360 / R:4.1f}deg) "
                  f"trans {T1}x{T1} n={n_sub:7d} | estRes {self.est_res:5.1f}A <Pmax> {info['maxprob']:.3f} ENC {self._last_enc:4.2f} "
                  f"changed {changed * 100:5.1f}% pop[{info['min_pop']},{info['max_pop']}]"
