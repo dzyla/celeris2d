@@ -832,6 +832,15 @@ def create(workdir):
         with open(os.path.join(os.path.dirname(__file__), "web", "index.html")) as fh:
             return HTMLResponse(fh.read(), headers={"Cache-Control": "no-store"})
 
+    @app.get("/web/{fn}")
+    def web_module(fn: str):
+        """Add-on page modules (e.g. abinitio3d.js), kept out of index.html so each can change on its own."""
+        path = os.path.join(os.path.dirname(__file__), "web", os.path.basename(fn))
+        if not fn.endswith(".js") or not os.path.isfile(path):
+            raise HTTPException(404, fn)
+        with open(path) as fh:
+            return Response(fh.read(), media_type="text/javascript", headers={"Cache-Control": "no-cache"})
+
     @app.get("/api/defaults")
     def defaults():
         """load/run: plain default values (as before); meta: label, unit, help, group, type per setting."""
@@ -982,6 +991,11 @@ def create(workdir):
                        load_args={k: v for k, v in (getattr(s, "load_args", None) or {}).items()
                                   if isinstance(v, (int, float, str, bool)) or v is None},
                        resumable=(getattr(s, "_pending", None) or {}).get("name"),
+                       maps=[dict(name=k, on=m.get("on"), resolution_a=m.get("resolution_a"), particles=m.get("particles"),
+                                  classes=m.get("classes"), sym=(m.get("params") or {}).get("sym"),
+                                  seconds=round((m.get("seconds_classes") or 0) + (m.get("seconds_particles") or 0), 1),
+                                  apix=m.get("apix"), box=m.get("box"))
+                             for k, m in getattr(s, "maps", {}).items()],
                        settings={k: getattr(c.p, k) for k in RUN_KEYS + LOAD_KEYS})
             if st.job and not st.job["done"] and c.history:
                 out["progress"] = _progress(c, st.job)
@@ -1047,6 +1061,58 @@ def create(workdir):
     @app.get("/api/sets/{name}")
     def sets(name: str, min_p: float = 0.5):
         return {k: int(len(v)) for k, v in sess().sets(name, min_p).items()}
+
+    # ------------------------------------------------------------------ ab initio 3D
+    AB_HELP = dict(
+        sym="Point group imposed from the start: C1 (none), Cn, Dn (e.g. C3, D2). RELION axis convention.",
+        n_starts="Random starts of the class stage; the start whose projections agree best with the classes is kept.",
+        class_res_start="Class stage starts at this resolution (A) ...",
+        class_res_end="... and ends at this one (A). Class averages rarely support better than ~12-15 A here.",
+        class_iter="Class-stage iterations per start.",
+        n_iter="Particle-stage iterations: local search of orientation and shift around the pose inherited from 2D.",
+        res_start="Particle stage: first alignment resolution (A); after that it follows the half-map FSC.",
+        n_local="Local search width: (2n+1)^2 out-of-plane tilts x (2n+1) in-plane angles x 9 shifts per particle.",
+        seed="Random seed of the class-stage starts.")
+
+    @app.get("/api/abinitio/defaults")
+    def ab_defaults():
+        from dataclasses import asdict
+        from .abinitio import AbinitioParams
+        return dict(values=asdict(AbinitioParams()), help=AB_HELP)
+
+    @app.post("/api/abinitio")
+    def abinitio_ep(body: dict = Body(...)):
+        from dataclasses import fields
+        from .abinitio import AbinitioParams
+        s = sess()
+        on = str(body.get("on") or "").strip()
+        if not on:
+            raise HTTPException(400, "no result given (on = '<result>' or '<result>:good')")
+        name = body.get("name") or f"{on.replace(':', '_')}_3d"
+        types = {f.name: f.type for f in fields(AbinitioParams)}
+        prm = {}
+        for k in types:
+            v = body.get(k)
+            if v is None or v == "":
+                continue
+            prm[k] = str(v).strip().upper() if k == "sym" else (int(v) if types[k] in (int, "int") else float(v))
+        submit("abinitio", name, lambda: s.abinitio(name, on, **prm), on=on, **prm)
+        return dict(ok=True, name=name)
+
+    @app.get("/api/map/{name}/{fn}")
+    def map_file(name: str, fn: str):
+        s = sess()
+        ok = {"map.mrc", "from_classes.mrc", "half1_unfil.mrc", "half2_unfil.mrc", "reprojections.png", "views.png",
+              "fsc.png", "map_views.png", "summary.json"}
+        if name not in s.maps or fn not in ok:
+            raise HTTPException(404, f"{name}/{fn}")
+        path = os.path.join(s.workdir, name, fn)
+        if not os.path.isfile(path):
+            raise HTTPException(404, fn)
+        with open(path, "rb") as fh:
+            data = fh.read()
+        mt = "image/png" if fn.endswith(".png") else "application/json" if fn.endswith(".json") else "application/octet-stream"
+        return Response(data, media_type=mt, headers={"Cache-Control": "no-cache"})
 
     @app.post("/api/export")
     def export(body: dict = Body(...)):

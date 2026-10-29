@@ -18,4 +18,4 @@ celeris2d-web = "celeris2d.webapp:main"
 packages = ["celeris2d"]
 
 [tool.setuptools.package-data]
-celeris2d = ["web/*.html"]
+celeris2d = ["web/*.html", "web/*.js"]

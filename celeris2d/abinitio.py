@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import math
 import time
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -146,10 +147,15 @@ class Volume:
             out.append(torch.complex(s[0], s[1]) * self.checker)
         return torch.cat(out) if out else torch.zeros((0, self.b, self.b // 2 + 1), dtype=torch.complex64, device=self.dev)
 
-    def insert(self, x: torch.Tensor, w: torch.Tensor, A: torch.Tensor, kmax: float):
+    def insert(self, x: torch.Tensor, w: torch.Tensor, A: torch.Tensor, kmax: float, ops: torch.Tensor | None = None):
         """Accumulate spectra x (n, b, bh) (already CTF-multiplied: x*ctf) with weights w (n, b, bh) (e.g. ctf^2)
-        at orientations A, trilinear, plus their Friedel mates; frequencies beyond kmax (cycles/box) are skipped."""
+        at orientations A, trilinear, plus their Friedel mates; frequencies beyond kmax (cycles/box) are skipped.
+        ops: symmetry operators S (each image is also inserted at A @ S)."""
         G = self.G
+        if ops is not None and len(ops) > 1:
+            S = len(ops)
+            A = (A[:, None] @ ops[None]).reshape(-1, 3, 3)
+            x, w = x.repeat_interleave(S, 0), w.repeat_interleave(S, 0)
         keep = self.kr <= kmax
         q = self._coords(A)[:, keep]                        # (n, P, 3)
         v = (x * self.checker)[:, keep]
@@ -299,9 +305,8 @@ def classes_to_volume(cls_ft: torch.Tensor, pops: torch.Tensor, box_a: float, di
         vol = Volume(b1, dev)
         A0 = euler_to_matrix(torch.rand(K, generator=g) * 360, torch.rand(K, generator=g) * 180,
                              torch.rand(K, generator=g) * 360).to(dev)
-        for S in ops:
-            vol.insert(X * w_cls[:, None, None], w_cls[:, None, None].expand(K, b1, b1 // 2 + 1).contiguous(),
-                       A0 @ S, kmax=box_a / res_start)
+        vol.insert(X * w_cls[:, None, None], w_cls[:, None, None].expand(K, b1, b1 // 2 + 1).contiguous(),
+                   A0, kmax=box_a / res_start, ops=ops)
         _regularise_solve(vol)
         lowpass(vol, res_start, box_a)
         _real_space_constraints(vol, mask, positive=True, center=True)
@@ -334,8 +339,7 @@ def classes_to_volume(cls_ft: torch.Tensor, pops: torch.Tensor, box_a: float, di
             sel = w > 1e-3
             imgs = Xr[kk[sel], r_i[sel]]
             ww = (w[sel] * w_cls[kk[sel]])[:, None, None]
-            for S in ops:
-                vol.insert(imgs * ww, ww.expand(-1, b1, b1 // 2 + 1).contiguous(), Ad[d_i[sel]] @ S, kmax=box_a / res)
+            vol.insert(imgs * ww, ww.expand(-1, b1, b1 // 2 + 1).contiguous(), Ad[d_i[sel]], kmax=box_a / res, ops=ops)
             _regularise_solve(vol)
             lowpass(vol, res, box_a)
             _real_space_constraints(vol, mask, positive=it < n_iter // 2, center=True)
@@ -344,14 +348,14 @@ def classes_to_volume(cls_ft: torch.Tensor, pops: torch.Tensor, box_a: float, di
         if best is None or score > best[0]:
             Ak = rotz(-angles[r_i[:, 0].cpu()]).to(dev) @ Ad[d_i[:, 0]]   # class = rot_{-a}(P(Ad)) = P(rotz(-a) Ad)
             best = (score, vol, Ak, top[:, 0].clone())
-    log(f"[3d] best start: class agreement {best[0]:.3f}; per class {np.round(best[3].cpu().numpy(), 2).tolist()}")
+    log(f"[3d] best start: class agreement {best[0]:.3f} (per class {' '.join(f'{x:.2f}' for x in best[3].tolist())})")
     return best[1], best[2], best[3]
 
 
 # --------------------------------------------------------------------------- stage 2: particles
 def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, init: Volume, sym: str = "C1",
                      n_iter: int = 8, res_start: float = 15.0, step_start: float | None = None, batch: int = 256,
-                     log=print):
+                     n_local: int = 1, step_scale: float | None = None, log=print):
     """Local refinement of particle orientations A (n, 3, 3) and shifts t (n, 2) (A, model shift) against
     CTF-modulated projections, gold-standard halves. Returns (volume real map, A, t, fsc, resolution)."""
     dev = clf.dev
@@ -400,8 +404,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             for h in (0, 1):
                 m = hh == h
                 if m.any():
-                    for S in ops:
-                        vols[h].insert((xs * ctf)[m], (ctf * ctf)[m], A[i:i + 2048][m] @ S, kmax=kmax)
+                    vols[h].insert((xs * ctf)[m], (ctf * ctf)[m], A[i:i + 2048][m], kmax=kmax, ops=ops)
 
     for it in range(n_iter + 1):
         # ---- reconstruct halves, FSC, filter
@@ -431,8 +434,10 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
         # ---- local search
         kal = box_a / al_res
         band = (kr >= 1) & (kr <= kal)
-        Rl = local_rotations(step, 1).to(dev)                     # (9, 3, 3) out-of-plane
-        dpsi = torch.tensor([-step, 0.0, step])
+        if step_scale is not None:
+            step = max(0.5, step_scale * math.degrees(al_res / diam))
+        Rl = local_rotations(step, n_local).to(dev)               # ((2n+1)^2, 3, 3) out-of-plane
+        dpsi = torch.arange(-n_local, n_local + 1, dtype=torch.float32) * step
         Rz = rotz(dpsi).to(dev)
         Rc = (Rz[:, None] @ Rl[None]).reshape(-1, 3, 3)           # (J, 3, 3) applied on the left: A' = Rc @ A
         J = len(Rc)
@@ -484,7 +489,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
         sigma2[res_cnt == 0] = sigma2[res_cnt > 0][-1] if (res_cnt > 0).any() else 1.0
         log(f"[3d] particles it {it + 1}/{n_iter}: align {al_res:.1f} A, step {step:.2f} deg, "
             f"{changed / n * 100:.0f}% moved ({time.time() - t0:.1f}s)")
-        if changed / n < 0.3:
+        if step_scale is None and changed / n < 0.3:
             step = max(0.5, step / 2)
     # final map: average of halves, FSC-weighted
     out = Volume(b, dev)
@@ -499,3 +504,146 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
 def particle_poses(cls_A: torch.Tensor, labels: torch.Tensor, psi: torch.Tensor) -> torch.Tensor:
     """Particle orientation from its class orientation and 2D in-plane angle: particle = rot_psi(class)."""
     return rotz(psi.float()).to(cls_A.device) @ cls_A[labels.to(cls_A.device)]
+
+
+# --------------------------------------------------------------------------- driver + report
+def _save_mrc(path, v, apix):
+    import mrcfile
+    with mrcfile.new(path, overwrite=True) as m:
+        m.set_data(v.detach().cpu().numpy().astype(np.float32))
+        m.voxel_size = apix
+
+
+@dataclass
+class AbinitioParams:
+    sym: str = "C1"                 # point group imposed from the start (Cn, Dn)
+    n_starts: int = 8               # random starts of the class stage; the best-agreeing one is kept
+    class_res_start: float = 40.0   # class stage: resolution schedule (A) ...
+    class_res_end: float = 15.0
+    class_iter: int = 30            # ... over this many iterations
+    n_iter: int = 12                # particle stage: local-refinement iterations
+    res_start: float = 15.0         # particle stage: starting alignment resolution (A); then from the half-map FSC
+    n_local: int = 1                # local search half-width (grid of (2n+1)^2 tilts x (2n+1) in-plane angles)
+    seed: int = 0
+
+
+def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=None, log=print) -> dict:
+    """Ab initio from a Session result: its class averages (all populated classes, or the boolean mask `classes`)
+    and the particles in those classes. Writes maps, figures, poses and summary.json to outdir."""
+    import json
+    import os
+    prm = prm or AbinitioParams()
+    os.makedirs(outdir, exist_ok=True)
+    dev = clf.dev
+    b, box_a, diam = clf.bmax, clf.box_a, clf.p.diameter_a
+    pops = torch.as_tensor(np.asarray(result.pops), device=dev, dtype=torch.float32)
+    keep = pops > 0
+    if classes is not None:
+        keep &= torch.as_tensor(np.asarray(classes), dtype=torch.bool, device=dev)
+    if int(keep.sum()) < 3:
+        raise ValueError("ab initio needs at least 3 populated classes")
+    cls_ft = torch.fft.rfft2(torch.as_tensor(np.asarray(result.images), device=dev, dtype=torch.float32), norm="forward")
+    log(f"[3d] ab initio from {int(keep.sum())} classes ({prm.sym}), working box {b} ({box_a / b:.2f} A/px)")
+    t0 = time.time()
+    vol, Ak, cc = classes_to_volume(cls_ft[keep], pops[keep], box_a, diam, sym=prm.sym, n_starts=prm.n_starts,
+                                    res_start=prm.class_res_start, res_end=prm.class_res_end, n_iter=prm.class_iter,
+                                    seed=prm.seed, log=log)
+    torch.cuda.synchronize()
+    t1 = time.time() - t0
+    kmap = torch.full((len(pops),), -1, dtype=torch.long)
+    kmap[keep.cpu()] = torch.arange(int(keep.sum()))
+    lab = torch.as_tensor(np.asarray(result.labels)).long()
+    ok = (lab >= 0) & (kmap[lab.clamp_min(0)] >= 0)
+    idx = torch.as_tensor(np.asarray(result.idx))[ok]
+    if clf._n_loaded < clf.N:   # the class stage needs no particles; it ran while they were still streaming in
+        log(f"[3d] waiting for particles to finish loading ({clf._n_loaded}/{clf.N})")
+    clf._wait_loaded(clf.N)
+    log(f"[3d] class stage {t1:.1f}s; refining {len(idx)} particles")
+    A0 = particle_poses(Ak, kmap[lab[ok]], torch.as_tensor(np.asarray(result.psi))[ok])
+    t0 = time.time()
+    vmap, A, t, fs, res, vols = refine_particles(clf, idx, A0, torch.as_tensor(np.asarray(result.offsets))[ok], vol,
+                                                 sym=prm.sym, n_iter=prm.n_iter, res_start=prm.res_start,
+                                                 n_local=prm.n_local, log=log)
+    torch.cuda.synchronize()
+    t2 = time.time() - t0
+    apix = box_a / b
+    _save_mrc(os.path.join(outdir, "map.mrc"), vmap, apix)
+    for h in (0, 1):
+        _save_mrc(os.path.join(outdir, f"half{h + 1}_unfil.mrc"), vols[h].real(), apix)
+    _save_mrc(os.path.join(outdir, "from_classes.mrc"), vol.real(), box_a / vol.b)
+    rot, tilt, psi = matrix_to_euler(A.cpu())
+    np.savez(os.path.join(outdir, "poses.npz"), idx=idx.numpy(), rot=rot.numpy(), tilt=tilt.numpy(), psi=psi.numpy(),
+             shift_a=t.cpu().numpy())
+    _figures(outdir, clf, result, keep, Ak, vmap, fs, res, A, box_a, b)
+    from dataclasses import asdict
+    summary = dict(params=asdict(prm), particles=int(len(idx)), classes=int(keep.sum()), seconds_classes=round(t1, 1),
+                   seconds_particles=round(t2, 1), resolution_a=round(res, 2), apix=round(apix, 3), box=b,
+                   fsc=[round(float(x), 4) for x in fs.cpu()], box_a=round(box_a, 2),
+                   class_agreement=[round(float(x), 3) for x in cc])
+    with open(os.path.join(outdir, "summary.json"), "w") as fh:
+        json.dump(summary, fh, indent=1)
+    log(f"[3d] wrote {outdir}: {summary['resolution_a']} A, {t1:.1f}s classes + {t2:.1f}s particles")
+    return summary
+
+
+def _figures(outdir, clf, result, keep, Ak, vmap, fs, res, A, box_a, b):
+    import os
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    dev = clf.dev
+    # class averages next to reprojections of the final map at the class orientations
+    V = Volume(b, dev)
+    V.set_real(vmap)
+    P = torch.fft.irfft2(V.project(Ak), s=(b, b), norm="forward").cpu().numpy()
+    imgs = np.asarray(result.images)[keep.cpu().numpy()]
+    pops = np.asarray(result.pops)[keep.cpu().numpy()]
+    order = np.argsort(-pops)
+    n = len(order)
+    cols = min(10, n)
+    rows = int(math.ceil(n / cols))
+    fig, ax = plt.subplots(2 * rows, cols, figsize=(1.3 * cols, 2.7 * rows), squeeze=False)
+    for a in ax.flat:
+        a.axis("off")
+    for j, k in enumerate(order):
+        r, c = divmod(j, cols)
+        ax[2 * r, c].imshow(imgs[k], cmap="gray")
+        ax[2 * r, c].set_title(f"{int(pops[k])}", fontsize=7)
+        ax[2 * r + 1, c].imshow(P[k], cmap="gray")
+    fig.suptitle("class averages (rows 1, 3, ..) vs reprojections of the 3D map at their orientations", fontsize=9)
+    plt.tight_layout()
+    plt.savefig(os.path.join(outdir, "reprojections.png"), dpi=90)
+    plt.close(fig)
+    # FSC
+    f = fs.cpu().numpy()
+    x = np.arange(len(f)) / box_a
+    fig, a = plt.subplots(figsize=(5, 3.2))
+    a.plot(x[1:], f[1:], lw=2)
+    a.axhline(0.143, color="0.5", lw=1, ls="--")
+    a.set_xlabel("spatial frequency (1/A)")
+    a.set_ylabel("half-map FSC")
+    a.set_title(f"FSC 0.143 at {res:.1f} A")
+    plt.tight_layout()
+    plt.savefig(os.path.join(outdir, "fsc.png"), dpi=90)
+    plt.close(fig)
+    # viewing directions
+    rot, tilt, _ = matrix_to_euler(A.cpu())
+    fig, a = plt.subplots(figsize=(6, 3.2))
+    h = a.hist2d(rot.numpy(), tilt.numpy(), bins=[72, 36], range=[[-180, 180], [0, 180]], cmap="viridis")
+    plt.colorbar(h[3], ax=a, label="particles")
+    a.set_xlabel("rot (deg)")
+    a.set_ylabel("tilt (deg)")
+    a.set_title("viewing directions")
+    plt.tight_layout()
+    plt.savefig(os.path.join(outdir, "views.png"), dpi=90)
+    plt.close(fig)
+    # central projections of the map
+    v = vmap.cpu().numpy()
+    fig, ax = plt.subplots(1, 3, figsize=(7.5, 2.7))
+    for j in range(3):
+        ax[j].imshow(v.sum(j), cmap="gray")
+        ax[j].axis("off")
+    ax[0].set_title("map: projections along z, y, x", fontsize=9, loc="left")
+    plt.tight_layout()
+    plt.savefig(os.path.join(outdir, "map_views.png"), dpi=90)
+    plt.close(fig)

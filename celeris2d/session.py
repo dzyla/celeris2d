@@ -66,6 +66,7 @@ class Session:
         self.log = log
         self.src = self.clf = None
         self.results: dict[str, Result] = {}
+        self.maps: dict[str, dict] = {}   # ab initio 3D maps: name -> summary (files in <workdir>/<name>/)
 
     # ------------------------------------------------------------------ data
     def load(self, path, diameter=200.0, max_res=6.0, gpus="auto", subset=0, project_dir=None, seed=0, **params):
@@ -84,6 +85,7 @@ class Session:
         self.src, self.path = src, path
         self.clf = Classifier2D(src, prm, devices=pick_devices(gpus, src.N, src.box, src.apix, max_res), log=self.log)
         self.results.clear()
+        self.maps.clear()
         restored = self._restore()
         return dict(restored_results=restored, particles=src.N, box=src.box, apix=src.apix, source=src.kind, ctf=not src.optics.no_ctf,
                     working_box=self.clf.bmax, gpus=[str(d) for d in self.clf.devs], seconds=round(time.time() - t0, 1))
@@ -246,6 +248,32 @@ class Session:
         inside = np.hypot(x, y) * self.clf.box_a / b < self.clf.p.diameter_a / 2
         return np.array([im[inside].max() / (im[inside].std() + 1e-12) for im in imgs])
 
+    def abinitio(self, name, on, classes=None, **params):
+        """3D initial model from result `on` ("<result>" = its populated classes, "<result>:good" = its selected
+        classes) and the particles in those classes. Files go to <workdir>/<name>/; returns the summary."""
+        from . import abinitio as ab
+        self._need()
+        rname, _, part = on.partition(":")
+        if rname not in self.results:
+            raise ValueError(f"no result named {rname}")
+        r = self.results[rname]
+        if classes is None and part == "good":
+            if r.good is None or not r.good.any():
+                raise ValueError(f"{rname} has no selected classes")
+            classes = r.good
+        elif classes is not None:          # 1-based class numbers
+            m = np.zeros(len(r.pops), bool)
+            m[np.asarray(classes, int) - 1] = True
+            classes = m
+        prm = ab.AbinitioParams(**params)
+        out = os.path.join(self.workdir, name)
+        summ = ab.run(self.clf, r, out, prm, classes=classes, log=self.log)
+        summ.update(name=name, on=on, input=self.path, n=self.clf.N)
+        with open(os.path.join(out, "summary.json"), "w") as fh:
+            json.dump(summ, fh, indent=1)
+        self.maps[name] = summ
+        return summ
+
     def select(self, name, good):
         """Mark classes (1-based) as good; all others bad."""
         r = self.results[name]
@@ -332,6 +360,13 @@ class Session:
             self.results[r.name] = r
             self._gallery(r)
             names.append(r.name)
+        for fn in sorted(os.listdir(self.workdir)):
+            sp = os.path.join(self.workdir, fn, "summary.json")
+            if os.path.isfile(sp):
+                meta = json.load(open(sp))
+                if meta.get("input") == self.path and meta.get("n") == self.clf.N:
+                    self.maps[fn] = meta
+                    names.append(fn)
         return names
 
     def _store(self, r):
