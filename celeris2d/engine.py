@@ -763,6 +763,14 @@ class Classifier2D:
         # raised-cosine roll-off over the last 3 shells instead of a hard cut (no ringing / lattice artefacts)
         taper = 0.5 + 0.5 * torch.cos(math.pi * ((kr - (klim_rec - 3)) / 3).clamp(0, 1))
         ft = num_k * tau2f / (den_k * tau2f + sig) * fmask * taper
+        # a class holding less than one particle's weight (late iterations, no more reseeding) has no average: its
+        # shell-mean data weight underflows (dm -> 1e-30), tau2 ~ 1e20 multiplies stray numerator values to |class|
+        # ~1e15, |ref|^2 overflows in the next E-step and every particle's likelihood is NaN (J1798 loose mask,
+        # NS J75 seed 2). It keeps its previous image instead: such classes often win particles back a few
+        # iterations later, which a zeroed class never does (J75: F1 0.428 when zeroed).
+        low = pop < 1.0
+        if low.any():
+            ft[low] = ft_resize(self.classes[low], b)
         # SSNR-based resolution estimate (population weighted)
         dmean = torch.zeros((K, nsh), device=self.dev).index_add_(1, sh_b, den_k.reshape(K, -1))
         cnt = torch.zeros(nsh, device=self.dev).index_add_(0, sh_b, torch.ones_like(sh_b, dtype=torch.float32))
@@ -788,6 +796,8 @@ class Classifier2D:
             for h in (0, 1):
                 nh, dh = ft_resize(self.S_numh[h], b), ft_resize(self.S_denh[h], b)
                 fth = torch.nan_to_num(nh * tau2f / (dh * tau2f + sig) * fmask * taper, nan=0.0, posinf=0.0, neginf=0.0)
+                if low.any():
+                    fth[low] = ft_resize(self.classes_h[h][low], b)
                 hs.append(self._postprocess(fth, b, center=p.center_classes, shifts=shifts)[0])
             self.classes_h = ft_resize(torch.stack(hs), self.bmax)
         if p.center_classes:  # keep running statistics and particles consistent with re-centred classes
