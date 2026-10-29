@@ -6,34 +6,91 @@
 <title>Celeris2D</title>
 <style>
   :root {
-    --bg: #0e0f13; --panel: #16181f; --panel2: #1d2029; --line: #2a2e3a; --ink: #f0efec; --ink2: #a0a3ad;
-    --accent: #3987e5; --good: #1baf7a; --bad: #e34948; --warn: #eda100;
+    --bg: #0e0f13; --panel: #16181f; --panel2: #1d2029; --panel3: #242833; --line: #2a2e3a; --ink: #f0efec; --ink2: #a0a3ad; --ink3: #767a86;
+    --accent: #3987e5; --accent2: #1c3350; --good: #1baf7a; --bad: #e34948; --warn: #eda100;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  header { display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
-  header h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
+  header { display: flex; align-items: center; gap: 14px; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel); min-height: 46px; }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .3px; white-space: nowrap; }
   header h1 span { color: var(--accent); }
-  #ds { color: var(--ink2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .wrap { display: grid; grid-template-columns: 310px 1fr; height: calc(100vh - 47px); }
-  aside { overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); padding: 10px 12px 40px; }
-  main { display: grid; grid-template-rows: auto 1fr 190px; min-width: 0; }
-  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--ink2); margin: 16px 0 8px; }
-  label { display: grid; grid-template-columns: 1fr 120px; align-items: center; gap: 8px; margin: 5px 0; color: var(--ink2); }
-  label.wide { grid-template-columns: 1fr; }
+  #ds { color: var(--ink2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+  #ds b { color: var(--ink); font-weight: 600; }
+  .wrap { display: grid; grid-template-columns: 400px 1fr; height: calc(100vh - 46px); }
+  aside { overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); padding: 6px 14px 40px; }
+  main { display: grid; grid-template-rows: auto auto 1fr 200px; min-width: 0; min-height: 0; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .8px; color: var(--ink); margin: 18px 0 6px; display: flex; align-items: center; gap: 8px; }
+  h2 .num { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 11px; letter-spacing: 0; }
+  h2 .sp { flex: 1; }
+  .gdesc { color: var(--ink3); font-size: 11.5px; margin: 0 0 6px; }
   input, select { width: 100%; background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; font: inherit; }
-  input[type=checkbox] { width: auto; justify-self: start; }
-  button { background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px 11px; font: inherit; cursor: pointer; }
-  button:hover { border-color: var(--accent); }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  input[type=checkbox] { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+  input.invalid { border-color: var(--bad); }
+  button { background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px 11px; font: inherit; cursor: pointer; white-space: nowrap; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  details { margin-top: 6px; } summary { cursor: pointer; color: var(--ink2); margin: 6px 0; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.link { background: none; border: none; color: var(--ink3); padding: 0 2px; font-size: 11px; text-transform: none; letter-spacing: 0; }
+  button.link:hover { color: var(--accent); }
   .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .grow { flex: 1; }
+  .muted { color: var(--ink2); }
+  .err { color: var(--bad); } .warn { color: var(--warn); } .ok { color: var(--good); }
+  /* settings fields */
+  .field { padding: 5px 0; border-bottom: 1px dashed transparent; }
+  .frow { display: grid; grid-template-columns: 1fr auto 118px; gap: 6px; align-items: center; }
+  .frow label { color: var(--ink); cursor: default; }
+  .frow label .unit { color: var(--ink3); font-size: 11.5px; margin-left: 3px; }
+  .frow .ctl { display: flex; justify-content: flex-end; }
+  .field .tools { display: flex; gap: 2px; align-items: center; }
+  .info { width: 18px; height: 18px; padding: 0; border-radius: 50%; font-size: 11px; font-weight: 700; font-style: italic; font-family: Georgia, serif; color: var(--ink2); line-height: 16px; }
+  .info.on { background: var(--accent2); border-color: var(--accent); color: #fff; }
+  .fr { visibility: hidden; padding: 0 4px; border: none; background: none; color: var(--warn); font-size: 13px; }
+  .field.mod .fr { visibility: visible; }
+  .field.mod label::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); margin-right: 6px; vertical-align: middle; }
+  .help { display: none; color: var(--ink2); font-size: 11.5px; margin: 3px 0 2px; padding: 5px 8px; background: var(--panel2); border-radius: 6px; border-left: 2px solid var(--accent); }
+  .help.show { display: block; }
+  .help .def { color: var(--ink3); white-space: nowrap; }
+  .help .auto { color: var(--ink); }
+  body.allhelp .help { display: block; }
+  details.grp { margin: 10px 0 0; border: 1px solid var(--line); border-radius: 8px; padding: 0 10px; background: rgba(255,255,255,.012); }
+  details.grp > summary { cursor: pointer; padding: 8px 0; color: var(--ink); font-weight: 600; display: flex; align-items: center; gap: 8px; list-style: none; }
+  details.grp > summary::-webkit-details-marker { display: none; }
+  details.grp > summary::before { content: "▸"; color: var(--ink3); transition: transform .15s; }
+  details.grp[open] > summary::before { transform: rotate(90deg); }
+  details.grp > summary .cnt { color: var(--warn); font-weight: 400; font-size: 11px; }
+  .subh { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--ink2); margin: 10px 0 2px; display: flex; gap: 8px; align-items: center; }
+  .subh .sp { flex: 1; }
+  .actions { margin-top: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .why { color: var(--warn); font-size: 11.5px; }
+  .hint { color: var(--ink3); font-size: 11.5px; margin-top: 4px; }
+  /* path box */
+  .pathrow { display: flex; gap: 6px; }
+  .peek { font-size: 12px; margin: 5px 0 0; min-height: 0; }
+  .peek .fmt { color: var(--ink2); }
+  .recent { margin-top: 6px; }
+  .recent .rh { color: var(--ink3); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
+  .recent .ri { display: flex; gap: 6px; align-items: center; padding: 3px 6px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  .recent .ri:hover { background: var(--panel2); }
+  .recent .ri .rn { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; color: var(--ink2); }
+  .recent .ri .rc { color: var(--ink3); font-size: 11px; }
+  .recent .ri .rx { visibility: hidden; border: none; background: none; padding: 0 3px; color: var(--ink3); }
+  .recent .ri:hover .rx { visibility: visible; }
+  hr.sep { border: none; border-top: 1px solid var(--line); margin: 18px 0 4px; }
+  /* main area */
+  #banner { display: none; padding: 8px 14px; background: #3a1517; border-bottom: 1px solid #6b2427; color: #ffd6d6; font-size: 12.5px; gap: 10px; align-items: flex-start; }
+  #banner.show { display: flex; }
+  #banner .bx { margin-left: auto; background: none; border: none; color: #ffd6d6; padding: 0 4px; }
   .bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--line); }
   .chip { padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel2); cursor: pointer; font-size: 12px; }
-  .chip.on { border-color: var(--accent); color: #fff; background: #1c3350; }
-  .muted { color: var(--ink2); }
-  #gallery { overflow-y: auto; padding: 12px 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; align-content: start; }
+  .chip.on { border-color: var(--accent); color: #fff; background: var(--accent2); }
+  #toolbar { display: none; flex-direction: column; align-items: stretch; gap: 6px; }
+  #toolbar .row { gap: 8px; }
+  #toolbar .tl { color: var(--ink3); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; margin-right: 2px; }
+  #toolbar input { width: auto; }
+  .vsep { width: 1px; height: 22px; background: var(--line); }
+  #gallery { overflow-y: auto; padding: 12px 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; align-content: start; min-height: 0; }
   .tile { position: relative; border-radius: 10px; overflow: hidden; background: #000; cursor: pointer; outline: 3px solid transparent; transition: outline-color .1s, opacity .1s; }
   .tile img { display: block; width: 100%; aspect-ratio: 1; }
   .tile.good { outline-color: var(--good); }
@@ -43,201 +100,815 @@
   .tile .f { position: absolute; left: 0; right: 0; bottom: 0; padding: 14px 8px 6px; background: linear-gradient(transparent, rgba(14,15,19,.92)); display: flex; justify-content: space-between; font-size: 12px; }
   .tile .f b { color: var(--ink); } .tile .f span { color: var(--ink2); }
   .tile .conf { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent); }
-  #bottom { border-top: 1px solid var(--line); display: grid; grid-template-columns: 1fr 330px; min-height: 0; }
+  .empty { color: var(--ink2); padding: 40px 20px; grid-column: 1/-1; max-width: 640px; margin: 0 auto; }
+  .empty h3 { color: var(--ink); margin: 0 0 10px; font-size: 15px; }
+  .empty ol { padding-left: 20px; } .empty li { margin: 6px 0; }
+  #bottom { border-top: 1px solid var(--line); display: grid; grid-template-columns: 1fr 340px; min-height: 0; }
   #log { margin: 0; padding: 8px 14px; overflow-y: auto; font: 11.5px/1.45 ui-monospace, Menlo, Consolas, monospace; color: #c7c9d1; white-space: pre-wrap; }
   #jobpanel { border-left: 1px solid var(--line); padding: 10px 12px; overflow-y: auto; }
   .prog { height: 6px; border-radius: 3px; background: var(--panel2); overflow: hidden; margin: 6px 0; }
   .prog > div { height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+  .prog.done > div { background: var(--good); } .prog.fail > div { background: var(--bad); }
+  .prog.ind > div { width: 30% !important; animation: ind 1.2s ease-in-out infinite; }
+  @keyframes ind { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }
   table { border-collapse: collapse; width: 100%; font-size: 11.5px; }
   td, th { padding: 2px 4px; border-bottom: 1px solid var(--line); text-align: left; }
   tr.best td { color: var(--good); }
-  .err { color: var(--bad); }
-  .empty { color: var(--ink2); padding: 40px; text-align: center; grid-column: 1/-1; }
+  /* toasts */
+  #toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 50; max-width: 420px; }
+  .toast { background: var(--panel3); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; padding: 8px 12px; box-shadow: 0 6px 24px rgba(0,0,0,.4); font-size: 12.5px; }
+  .toast.bad { border-left-color: var(--bad); }
+  /* file browser */
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none; align-items: center; justify-content: center; z-index: 40; }
+  .modal.show { display: flex; }
+  .fbox { width: min(1100px, 96vw); height: min(780px, 92vh); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; display: grid; grid-template-rows: auto auto auto 1fr auto; overflow: hidden; }
+  .fhead { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .fhead b { font-size: 14px; }
+  .fbar { display: flex; gap: 6px; padding: 8px 14px 4px; }
+  .crumbs { padding: 2px 14px 8px; font-size: 12px; color: var(--ink2); display: flex; flex-wrap: wrap; gap: 2px; align-items: center; border-bottom: 1px solid var(--line); }
+  .crumbs a { color: var(--ink2); cursor: pointer; padding: 1px 4px; border-radius: 4px; text-decoration: none; }
+  .crumbs a:hover { background: var(--panel2); color: var(--ink); }
+  .crumbs a:last-child { color: var(--ink); font-weight: 600; }
+  .fbody { display: grid; grid-template-columns: 230px 1fr; min-height: 0; }
+  .fside { border-right: 1px solid var(--line); overflow-y: auto; padding: 8px 10px; }
+  .fside .fsec { color: var(--ink3); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; margin: 8px 0 4px; }
+  .fside .sl { display: block; padding: 4px 6px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--ink2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fside .sl:hover { background: var(--panel2); color: var(--ink); }
+  .fmain { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  #fbProject { border-bottom: 1px solid var(--line); max-height: 48%; overflow-y: auto; flex-shrink: 0; }
+  #fbProject:empty { display: none; }
+  #fbProject .ph { position: sticky; top: 0; background: var(--panel); padding: 8px 12px 6px; display: flex; gap: 8px; align-items: center; z-index: 1; border-bottom: 1px solid var(--line); }
+  #fbProject .ph b { color: var(--good); }
+  .fopts { display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+  .fopts input[type=text], .fopts input:not([type]) { width: 220px; }
+  .fopts label { display: inline-flex; gap: 5px; align-items: center; color: var(--ink2); }
+  .flist { overflow-y: auto; flex: 1; min-height: 0; }
+  .ft { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .ft td, .ft th { padding: 4px 10px; border-bottom: 1px solid rgba(42,46,58,.6); white-space: nowrap; }
+  .ft th { position: sticky; top: 0; background: var(--panel); color: var(--ink3); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; z-index: 1; }
+  .ft tr.r { cursor: pointer; }
+  .ft tr.r:hover td { background: var(--panel2); }
+  .ft tr.sel td { background: var(--accent2) !important; }
+  .ft tr.dim td { color: var(--ink3); }
+  .ft td.n { overflow: hidden; text-overflow: ellipsis; max-width: 420px; }
+  .ft td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink2); }
+  .ft td.t { color: var(--ink3); font-size: 11.5px; }
+  .ico { display: inline-block; width: 14px; margin-right: 6px; color: var(--ink3); text-align: center; }
+  .ico.d { color: #d9b45a; }
+  .badge { display: inline-block; font-size: 10.5px; padding: 0 6px; border-radius: 999px; margin-left: 6px; border: 1px solid var(--line); color: var(--ink2); vertical-align: 1px; }
+  .badge.p { border-color: var(--good); color: var(--good); }
+  .badge.j { border-color: #5a6b8a; color: #9fb3d9; }
+  .badge.x { border-color: var(--ink3); color: var(--ink3); }
+  .st-completed { color: var(--good); } .st-failed, .st-killed { color: var(--bad); }
+  .ffoot { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); }
+  .ffoot #fbSel { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fnote { padding: 10px 12px; color: var(--ink2); }
 </style>
 </head>
 <body>
 <header>
   <h1><span>Celeris</span>2D</h1>
   <div id="ds">no dataset loaded</div>
+  <label class="row muted" style="gap:6px;white-space:nowrap" title="Show the explanation under every setting instead of only the main ones">
+    <input type="checkbox" id="allHelp"> explain every setting</label>
 </header>
 <div class="wrap">
 <aside>
-  <h2>Dataset</h2>
-  <label class="wide">particles (.star / .cs / .csg / .mrcs)<input id="path" placeholder="/path/to/particles.star"></label>
-  <label class="wide">project dir (optional)<input id="project_dir" placeholder="auto"></label>
-  <label>mask diameter (Å)<input id="diameter_a" type="number" value="200"></label>
-  <label>max resolution (Å)<input id="max_res_a" type="number" value="6"></label>
-  <label>GPUs<input id="gpus" value="auto" title="auto or nvidia-smi indices, e.g. 0,2,3"></label>
-  <label>random subset (0 = all)<input id="subset" type="number" value="0"></label>
-  <label>speed preset<select id="speed"><option value="balanced">balanced</option><option value="fast">fast</option><option value="accurate">accurate</option></select></label>
-  <details><summary>more dataset settings</summary><div id="loadAdv"></div></details>
-  <div class="row" style="margin-top:8px"><button class="primary" id="btnLoad">Load</button></div>
+  <!-- step 1 -->
+  <h2><span class="num">1</span>Particles<span class="sp"></span><button class="link" data-reset="load_basic" title="Reset the dataset settings below to their defaults">reset</button></h2>
+  <div class="gdesc">Pick a RELION <code>.star</code>, cryoSPARC <code>.csg</code>/<code>.cs</code>, or an <code>.mrcs</code> stack.</div>
+  <div class="pathrow">
+    <input id="path" placeholder="/path/to/particles.star or J75/J75_particles.csg" spellcheck="false" autocomplete="off">
+    <button id="btnBrowse" title="Browse folders; cryoSPARC and RELION projects list their particle outputs automatically">Browse…</button>
+  </div>
+  <div id="peek" class="peek"></div>
+  <div id="recent" class="recent"></div>
+  <div id="g_load_basic"></div>
+  <details class="grp" id="d_load_adv"><summary>Advanced dataset settings <span class="cnt"></span><span class="grow"></span><button class="link" data-reset="load_adv">reset</button></summary>
+    <div class="gdesc" data-gdesc="load_adv"></div><div id="g_load_adv"></div></details>
+  <div class="actions">
+    <button class="primary" id="btnLoad">Load particles</button>
+    <span class="why" id="whyLoad"></span>
+  </div>
+  <div class="hint">Reads the particles once and keeps them on the GPU, so every run afterwards starts immediately. Loading again replaces the current dataset (its results stay saved and come back when you load the same file).</div>
 
-  <h2>Classification</h2>
-  <label>name<input id="name" placeholder="auto"></label>
-  <label>classes (K)<input id="K" type="number" value="50"></label>
-  <label>seeds<input id="seeds" type="number" value="1" title="independent starts; >1 gives per-particle P(good)"></label>
-  <label>particles<select id="on"><option value="all">all</option></select></label>
-  <details><summary>advanced settings</summary><div id="runAdv"></div></details>
-  <div class="row" style="margin-top:8px"><button class="primary" id="btnRun">Run</button></div>
+  <!-- step 2 -->
+  <h2><span class="num">2</span>Classify<span class="sp"></span><button class="link" data-reset="run_basic" title="Reset K and seeds to their defaults">reset</button></h2>
+  <div class="gdesc">Used every time you press Run; no reloading needed.</div>
+  <div class="field" data-fixed="1">
+    <div class="frow"><label for="on">Particles to classify</label><span class="tools"><button class="info" data-help="h_on" title="What is this?">i</button></span><span class="ctl"><select id="on"><option value="all">all loaded</option></select></span></div>
+    <div class="help" id="h_on">All loaded particles, or the good / bad / ambiguous particles of an earlier result once you have selected classes in it.</div>
+  </div>
+  <div id="g_run_basic"></div>
+  <div class="field" data-fixed="1">
+    <div class="frow"><label for="name">Result name</label><span class="tools"><button class="info" data-help="h_name" title="What is this?">i</button></span><span class="ctl"><input id="name" placeholder="auto (run1, run2…)" spellcheck="false"></span></div>
+    <div class="help" id="h_name">Name shown on the result chip and used for the files saved in the work folder. Leave empty for run1, run2, …</div>
+  </div>
+  <details class="grp" id="d_run_adv"><summary>Advanced classification settings <span class="cnt"></span></summary>
+    <div class="subh">Iterations<span class="sp"></span><button class="link" data-reset="run_schedule">reset</button></div><div class="gdesc" data-gdesc="run_schedule"></div><div id="g_run_schedule"></div>
+    <div class="subh">Alignment<span class="sp"></span><button class="link" data-reset="run_align">reset</button></div><div class="gdesc" data-gdesc="run_align"></div><div id="g_run_align"></div>
+    <div class="subh">Class averages<span class="sp"></span><button class="link" data-reset="run_classes">reset</button></div><div class="gdesc" data-gdesc="run_classes"></div><div id="g_run_classes"></div>
+  </details>
+  <div class="actions">
+    <button class="primary" id="btnRun">Run classification</button>
+    <span class="why" id="whyRun"></span>
+  </div>
+  <div class="hint">Classifies the chosen particles into K classes. Results appear as class tiles on the right; every result is kept.</div>
 
-  <h2>Settings optimizer</h2>
-  <div class="muted" style="margin-bottom:6px">Tries a small grid on a subset; keeps the most reproducible settings (two independent starts agree most).</div>
-  <label>subset size<input id="optSubset" type="number" value="20000"></label>
-  <div class="row"><button id="btnOpt">Optimize &amp; apply</button></div>
-  <div id="opt"></div>
+  <!-- optimizer -->
+  <details class="grp" id="d_opt"><summary>Settings optimizer (optional)</summary>
+    <div class="gdesc" data-gdesc="opt"></div>
+    <div id="g_opt"></div>
+    <div class="actions"><button id="btnOpt">Optimize &amp; apply</button><span class="why" id="whyOpt"></span></div>
+    <div class="hint">Applied settings stay in effect for later runs on this dataset (they are not copied into the fields above).</div>
+    <div id="opt"></div>
+  </details>
+
+  <hr class="sep">
+  <div class="actions" style="margin-top:8px">
+    <button id="btnResetAll" title="Restore every setting on this page to the server defaults (the particle file path is kept)">Reset all settings to defaults</button>
+    <span class="hint" id="modCount" style="margin:0"></span>
+  </div>
+  <div class="hint">Your settings are remembered in this browser. Changed settings are marked <span style="color:var(--warn)">●</span>; click ↺ next to one to reset just that setting.</div>
 </aside>
 <main>
+  <div id="banner"><b id="bannerTitle">Error</b><span id="bannerText"></span><button class="bx" id="bannerX" title="dismiss">✕</button></div>
   <div>
-    <div class="bar" id="results"><span class="muted">results appear here</span></div>
-    <div class="bar" id="toolbar" style="display:none">
-      <button id="selAll">All</button><button id="selNone">None</button><button id="selInv">Invert</button>
-      <button id="selSuggest" title="automatic 2-cluster proposal on confidence/resolution - it always splits, so review it (on clean data every class may be good)">Suggest</button>
-      <span class="muted" id="selInfo"></span>
-      <span style="flex:1"></span>
-      <button id="rerunGood">Re-run selected</button><button id="rerunBad">Re-run unselected</button>
-      <input id="outdir" placeholder="export folder" style="width:220px">
-      <label style="display:inline-flex;gap:4px;margin:0;grid-template-columns:none">P(good) ≥<input id="minp" type="number" step="0.05" value="0.5" style="width:60px"></label>
-      <button class="primary" id="btnExport">Export</button>
+    <div class="bar" id="results"><span class="muted">Results appear here after a run.</span></div>
+    <div class="bar" id="toolbar">
+      <div class="row">
+        <span class="tl">Select</span>
+        <button id="selAll" title="Mark every class as good">All</button><button id="selNone" title="Clear the selection">None</button><button id="selInv" title="Swap selected and unselected classes">Invert</button>
+        <button id="selSuggest" title="Automatic 2-cluster proposal on confidence / resolution. It always splits, so review it (on clean data every class may be good).">Suggest</button>
+        <span class="muted" id="selInfo"></span>
+      </div>
+      <div class="row">
+        <span class="tl">Next</span>
+        <button id="rerunGood" title="Classify again using only the particles in the selected (green) classes; no reloading">Re-run selected</button>
+        <button id="rerunBad" title="Classify again using only the particles in the unselected classes (to rescue good particles from junk classes)">Re-run unselected</button>
+        <span class="vsep"></span>
+        <input id="outdir" placeholder="export folder" style="width:260px" spellcheck="false" title="Folder for the exported particle files (created if missing)">
+        <button id="btnOutdir" title="Choose the export folder">…</button>
+        <label class="row muted" style="gap:4px" title="With 1 seed P(good) is 0 or 1 (in a selected class or not). With several seeds it is the fraction of starts that put the particle in a selected class. Particles at or above this are 'good', below 1 - this are 'bad', the rest 'ambiguous'.">P(good) ≥ <input id="minp" type="number" step="0.05" min="0" max="1" value="0.5" style="width:62px"></label>
+        <button class="primary" id="btnExport" title="Write good / ambiguous / bad particle files (.star for RELION input, .cs/.csg for cryoSPARC input) with these alignments">Export</button>
+        <span class="why" id="whyTools"></span>
+      </div>
+      <div class="hint" style="margin:0">Click tiles to mark good classes (green). <b>Re-run selected</b> classifies only the particles in green classes, <b>Re-run unselected</b> only the rest (both reuse the loaded data, settings from the left panel). <b>Export</b> writes good / ambiguous / bad particle files for RELION or cryoSPARC.</div>
     </div>
   </div>
-  <div id="gallery"><div class="empty">Load a dataset and run a classification.</div></div>
+  <div id="gallery"></div>
   <div id="bottom">
     <pre id="log"></pre>
     <div id="jobpanel"><div class="muted">idle</div></div>
   </div>
 </main>
 </div>
+
+<!-- file browser -->
+<div class="modal" id="fb" role="dialog" aria-modal="true">
+  <div class="fbox">
+    <div class="fhead"><b id="fbTitle">Choose a particle file</b><span class="grow"></span><span class="muted" id="fbStat"></span><button id="fbClose" title="Close (Esc)">✕</button></div>
+    <div class="fbar">
+      <button id="fbUp" title="Parent folder">↑ Up</button>
+      <button id="fbHome" title="Home folder">Home</button>
+      <input id="fbPath" placeholder="type or paste a folder or file path, then Enter" spellcheck="false" autocomplete="off">
+      <button id="fbGo">Go</button>
+    </div>
+    <div class="crumbs" id="fbCrumbs"></div>
+    <div class="fbody">
+      <div class="fside">
+        <div class="fsec">Recent inputs</div><div id="fbRecent"><div class="muted" style="font-size:12px">none yet</div></div>
+        <div class="fsec">Places</div><div id="fbPlaces"></div>
+      </div>
+      <div class="fmain">
+        <div id="fbProject"></div>
+        <div class="fopts">
+          <input id="fbFilter" placeholder="filter by name" spellcheck="false" autocomplete="off">
+          <label title="Otherwise only folders and particle-type files (.star .cs .csg .mrcs .mrc) are listed"><input type="checkbox" id="fbAll"> show all files</label>
+          <label><input type="checkbox" id="fbHidden"> hidden</label>
+          <span class="grow"></span><span class="muted" id="fbCount"></span>
+        </div>
+        <div class="flist" id="fbList"></div>
+      </div>
+    </div>
+    <div class="ffoot">
+      <span id="fbSel" class="muted">Click a folder to open it. Click a particle file to select it, double-click to use it.</span>
+      <button id="fbCancel">Cancel</button>
+      <button class="primary" id="fbUse" disabled>Use this file</button>
+    </div>
+  </div>
+</div>
+<div id="toasts"></div>
+
 <script>
+"use strict";
 const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const fmtN = (n) => n == null ? "" : Number(n).toLocaleString();
 const api = async (path, body) => {
   const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.detail || r.statusText);
+  if (!r.ok) throw new Error(typeof j.detail === "string" ? j.detail : (j.detail ? JSON.stringify(j.detail) : `${r.status} ${r.statusText}`));
   return j;
 };
-const toast = (msg, bad) => { const l = $("log"); l.textContent += (bad ? "!! " : "") + msg + "\n"; l.scrollTop = l.scrollHeight; };
-let defaults = null, current = null, sel = new Set(), lastJob = null, resultsSeen = new Set();
-const PRESETS = {fast: {psi_factor: 1.5, trans_div: 2.5}, balanced: {psi_factor: 1.0, trans_div: 3.0}, accurate: {psi_factor: 1.0, trans_div: 4.0}};
-const HIDE = new Set(["diameter_a", "max_res_a", "psi_factor", "trans_div"]);
-const TRI = new Set(["hard_pose", "class_prior"]);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("celeris2d." + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem("celeris2d." + k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } },
+};
+function toast(msg, bad) {
+  const t = document.createElement("div");
+  t.className = "toast" + (bad ? " bad" : ""); t.textContent = msg;
+  $("toasts").appendChild(t);
+  setTimeout(() => t.remove(), bad ? 9000 : 4500);
+}
+function showError(title, text) { $("bannerTitle").textContent = title; $("bannerText").textContent = text; $("banner").classList.add("show"); }
+$("bannerX").onclick = () => { $("banner").classList.remove("show"); errShownFor = lastStatus && lastStatus.job ? lastStatus.job.started : errShownFor; };
 
-function field(k, v) {
-  const id = "p_" + k;
-  if (TRI.has(k)) return `<label>${k}<select id="${id}"><option value="auto">auto</option><option value="true">on</option><option value="false">off</option></select></label>`;
-  if (typeof v === "boolean") return `<label>${k}<input id="${id}" type="checkbox" ${v ? "checked" : ""}></label>`;
-  if (typeof v === "number") return `<label>${k}<input id="${id}" type="number" step="any" value="${v}"></label>`;
-  return `<label>${k}<input id="${id}" value="${v ?? ""}"></label>`;
+let D = null;            // /api/defaults
+let META = {};           // key -> meta
+let lastStatus = null, current = null, currentRes = null, sel = new Set(), resultsSeen = new Set(), errShownFor = null;
+let peekInfo = null, recent = {paths: []};
+
+// ------------------------------------------------------------------ settings fields
+function fmtVal(m, v) {
+  if (m.type === "bool") return v ? "on" : "off";
+  if (v === "" || v == null) return "empty";
+  return String(v);
 }
-function read(keys) {
-  const o = {};
-  for (const k of keys) {
-    const e = $("p_" + k); if (!e) continue;
-    if (TRI.has(k)) o[k] = e.value === "auto" ? "auto" : e.value === "true";
-    else if (e.type === "checkbox") o[k] = e.checked;
-    else if (e.type === "number") { if (e.value !== "") o[k] = Number(e.value); }
-    else o[k] = e.value;
+function fieldHTML(m) {
+  const id = "f_" + m.key;
+  let ctl;
+  if (m.type === "bool") ctl = `<input type="checkbox" id="${id}">`;
+  else if (m.type === "tri") ctl = `<select id="${id}"><option value="auto">auto</option><option value="on">on</option><option value="off">off</option></select>`;
+  else if (m.type === "choice") ctl = `<select id="${id}">${m.choices.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select>`;
+  else if (m.type === "int") ctl = `<input type="number" step="1" id="${id}">`;
+  else if (m.type === "number") ctl = `<input type="number" step="any" id="${id}">`;
+  else ctl = `<input id="${id}" spellcheck="false" placeholder="${m.key === "project_dir" ? "auto" : ""}">`;
+  const unit = m.unit ? `<span class="unit">${esc(m.unit)}</span>` : "";
+  const auto = m.auto ? (m.type === "tri" ? ` <span class="auto">auto = ${esc(m.auto)}.</span>` : "") : "";
+  const tip = `${m.help}${m.auto && m.type === "tri" ? " auto = " + m.auto + "." : ""} Default: ${fmtVal(m, m.value)}.`;
+  return `<div class="field" data-key="${m.key}">
+    <div class="frow"><label for="${id}" title="${esc(tip)}">${esc(m.label)}${unit}</label>
+      <span class="tools"><button class="fr" data-freset="${m.key}" title="Reset to default (${esc(fmtVal(m, m.value))})">↺</button><button class="info" data-help="h_${m.key}" title="What is this?">i</button></span>
+      <span class="ctl">${ctl}</span></div>
+    <div class="help${m.important ? " show" : ""}" id="h_${m.key}">${esc(m.help)}${auto} <span class="def">Default: ${esc(fmtVal(m, m.value))}${m.stage === "load" ? " · applied at Load" : ""}</span></div>
+  </div>`;
+}
+function getVal(k) {
+  const m = META[k], e = $("f_" + k);
+  if (!m || !e) return undefined;
+  if (m.type === "bool") return e.checked;
+  if (m.type === "int" || m.type === "number") return e.value.trim() === "" ? null : Number(e.value);
+  return e.value;
+}
+function setVal(k, v) {
+  const m = META[k], e = $("f_" + k);
+  if (!m || !e) return;
+  if (m.type === "bool") e.checked = !!v;
+  else if (m.type === "tri") e.value = v === true ? "on" : v === false ? "off" : (["auto", "on", "off"].includes(v) ? v : "auto");
+  else e.value = v ?? "";
+}
+function isDefault(k) {
+  const m = META[k], v = getVal(k);
+  if (m.type === "int" || m.type === "number") return v != null && Number(v) === Number(m.value);
+  return v === m.value;
+}
+function refreshMods() {
+  let total = 0;
+  const per = {};
+  for (const k in META) {
+    const mod = !isDefault(k);
+    const f = document.querySelector(`.field[data-key="${k}"]`);
+    if (f) f.classList.toggle("mod", mod);
+    if (mod) { total++; per[META[k].group] = (per[META[k].group] || 0) + 1; }
+    const e = $("f_" + k);
+    if (e && (META[k].type === "int" || META[k].type === "number")) e.classList.toggle("invalid", e.value.trim() === "" || !isFinite(Number(e.value)));
   }
-  return o;
+  const cnt = (ids) => ids.reduce((a, g) => a + (per[g] || 0), 0);
+  const setCnt = (det, n) => { const c = det.querySelector(".cnt"); if (c) c.textContent = n ? `● ${n} changed` : ""; };
+  setCnt($("d_load_adv"), cnt(["load_adv"]));
+  setCnt($("d_run_adv"), cnt(["run_schedule", "run_align", "run_classes"]));
+  $("modCount").textContent = total ? `${total} setting${total > 1 ? "s" : ""} changed from the defaults` : "all settings at defaults";
 }
-async function init() {
-  defaults = await api("/api/defaults");
-  $("loadAdv").innerHTML = Object.entries(defaults.load).filter(([k]) => !HIDE.has(k)).map(([k, v]) => field(k, v)).join("");
-  $("runAdv").innerHTML = Object.entries(defaults.run).map(([k, v]) => field(k, v)).join("");
-  poll(); setInterval(poll, 1500);
+function saveSettings() {
+  const o = {};
+  for (const k in META) o[k] = getVal(k);
+  store.set("settings", o);
+}
+function resetKeys(keys) {
+  keys.forEach(k => setVal(k, META[k].value));
+  saveSettings(); refreshMods(); updateButtons();
+}
+function resetGroup(g) { resetKeys(Object.keys(META).filter(k => META[k].group === g)); toast(`${(D.groups.find(x => x.id === g) || {}).title || g}: defaults restored`); }
+
+function buildSettings() {
+  for (const g of D.groups) {
+    const box = $("g_" + g.id);
+    if (box) box.innerHTML = Object.values(META).filter(m => m.group === g.id).map(fieldHTML).join("");
+    document.querySelectorAll(`[data-gdesc="${g.id}"]`).forEach(e => e.textContent = g.help);
+  }
+  const saved = store.get("settings", {});
+  for (const k in META) setVal(k, k in saved && saved[k] !== null ? saved[k] : META[k].value);
+  document.querySelectorAll("aside input, aside select").forEach(e => {
+    if (e.id === "path" || e.id === "name" || e.id === "on") return;
+    e.addEventListener("input", () => { saveSettings(); refreshMods(); updateButtons(); });
+    e.addEventListener("change", () => { saveSettings(); refreshMods(); updateButtons(); });
+  });
+  refreshMods();
+}
+document.addEventListener("click", (ev) => {
+  const b = ev.target.closest("button");
+  if (!b) return;
+  if (b.dataset.help) { ev.preventDefault(); const h = $(b.dataset.help); h.classList.toggle("show"); b.classList.toggle("on", h.classList.contains("show")); }
+  else if (b.dataset.freset) { ev.preventDefault(); resetKeys([b.dataset.freset]); }
+  else if (b.dataset.reset) {
+    ev.preventDefault(); ev.stopPropagation();
+    const g = b.dataset.reset;
+    resetGroup(g);
+  }
+});
+$("btnResetAll").onclick = () => {
+  if (!confirm("Reset every setting to the server defaults?\n(The particle file path and the export folder are kept.)")) return;
+  resetKeys(Object.keys(META)); toast("all settings reset to defaults");
+};
+$("allHelp").checked = store.get("allHelp", false);
+document.body.classList.toggle("allhelp", $("allHelp").checked);
+$("allHelp").onchange = () => { document.body.classList.toggle("allhelp", $("allHelp").checked); store.set("allHelp", $("allHelp").checked); };
+["d_load_adv", "d_run_adv", "d_opt"].forEach(id => {
+  const d = $(id); d.open = store.get("open." + id, false);
+  d.addEventListener("toggle", () => store.set("open." + id, d.open));
+});
+
+// ------------------------------------------------------------------ particle file: peek + recent
+let peekTimer = null, peekSeq = 0;
+function schedulePeek() { clearTimeout(peekTimer); peekTimer = setTimeout(doPeek, 350); }
+async function doPeek() {
+  const p = $("path").value.trim();
+  store.set("path", p);
+  const seq = ++peekSeq;
+  if (!p) { peekInfo = null; $("peek").innerHTML = ""; updateButtons(); return; }
+  let r;
+  try { r = await api(`/api/peek?path=${encodeURIComponent(p)}`); } catch (e) { r = {error: e.message}; }
+  if (seq !== peekSeq) return;
+  peekInfo = r;
+  let h = "";
+  if (r.error) h = `<span class="err">${esc(r.error)}</span>`;
+  else {
+    const parts = [r.format];
+    if (r.count != null) parts.push(`<b>${r.approx ? "~" : ""}${fmtN(r.count)}</b> particles`);
+    if (r.box) parts.push(`${r.box} px${r.apix ? " @ " + r.apix + " Å" : ""}`);
+    if (r.title) parts.push(esc(r.title));
+    if (r.project) parts.push(`${r.project.kind === "cryosparc" ? "cryoSPARC" : "RELION"} project ${esc(r.project.root.split("/").pop())}`);
+    h = `${r.warning ? `<span class="warn">⚠</span>` : `<span class="ok">✓</span>`} <span class="fmt">${parts.join(" · ")}</span>`;
+    if (r.warning) h += `<div class="warn">${esc(r.warning)}</div>`;
+    if (r.note) h += `<div class="muted">${esc(r.note)}</div>`;
+  }
+  $("peek").innerHTML = h;
+  updateButtons();
+}
+$("path").addEventListener("input", schedulePeek);
+$("path").addEventListener("keydown", (e) => { if (e.key === "Enter") { doPeek(); } });
+function shortPath(p) { const a = p.split("/").filter(Boolean); return a.length > 3 ? "…/" + a.slice(-3).join("/") : p; }
+async function loadRecent() {
+  try { recent = await api("/api/recent"); } catch (e) { recent = {paths: []}; }
+  renderRecent();
+}
+function renderRecent() {
+  const items = (recent.paths || []).slice(0, 5);
+  $("recent").innerHTML = items.length ? `<div class="rh">Recent</div>` + items.map((r, i) =>
+    `<div class="ri" data-i="${i}" title="${esc(r.path)}"><span class="rn">${esc(shortPath(r.path))}</span><span class="rc">${r.count ? fmtN(r.count) : ""}</span><button class="rx" data-rm="${i}" title="Remove from the list">✕</button></div>`).join("") : "";
+  $("recent").querySelectorAll(".ri").forEach(el => el.onclick = (ev) => {
+    const r = items[+el.dataset.i];
+    if (ev.target.dataset.rm !== undefined) { api("/api/recent", {path: r.path, remove: true}).then(d => { recent = d; renderRecent(); }).catch(e => toast(e.message, true)); return; }
+    usePath(r.path, r.project_dir);
+  });
+  $("fbRecent").innerHTML = (recent.paths || []).length ? recent.paths.map((r, i) => `<a class="sl" data-i="${i}" title="${esc(r.path)}">${esc(r.path.split("/").slice(-2).join("/"))}${r.count ? ` <span style="color:var(--ink3)">${fmtN(r.count)}</span>` : ""}</a>`).join("")
+    : `<div class="muted" style="font-size:12px">none yet</div>`;
+  $("fbRecent").querySelectorAll(".sl").forEach(a => a.onclick = () => fbOpen(recent.paths[+a.dataset.i].path));
+}
+function usePath(p, projectDir) {
+  $("path").value = p;
+  if (projectDir !== undefined) { setVal("project_dir", projectDir || ""); saveSettings(); refreshMods(); }
+  doPeek();
+}
+
+// ------------------------------------------------------------------ file browser
+const FB = {mode: "file", cur: null, selected: null, data: null, proj: null, projCache: {}};
+const PART_EXT = /\.(star|cs|csg|mrcs|mrc)$/i;
+function badgeFor(f) {
+  if (f.kind === "csg") return f.particles ? `<span class="badge p">cryoSPARC particles</span>` : (f.count != null ? `<span class="badge x">csg${f.title ? " · " + esc(f.title) : ""}</span>` : `<span class="badge x">csg</span>`);
+  if (f.kind === "cs-particles") return `<span class="badge p">cryoSPARC .cs</span>`;
+  if (f.kind === "star-particles") return `<span class="badge p">RELION particles</span>`;
+  if (f.kind === "stack") return `<span class="badge p">MRC stack</span>`;
+  if (f.kind === "star") return `<span class="badge x">star</span>`;
+  if (f.kind === "cs") return `<span class="badge x">cs</span>`;
+  if (f.kind === "mrc") return `<span class="badge x">mrc</span>`;
+  return "";
+}
+const fmtSize = (b) => b == null ? "" : b < 1024 ? b + " B" : b < 1048576 ? (b / 1024).toFixed(1) + " KB" : b < 1073741824 ? (b / 1048576).toFixed(1) + " MB" : (b / 1073741824).toFixed(2) + " GB";
+const fmtTime = (t) => { if (!t) return ""; const d = new Date(t * 1000); return d.toLocaleDateString(undefined, {year: "numeric", month: "short", day: "numeric"}) + " " + d.toLocaleTimeString(undefined, {hour: "2-digit", minute: "2-digit"}); };
+
+function openBrowser(mode) {
+  FB.mode = mode;
+  $("fbTitle").textContent = mode === "dir" ? "Choose the export folder" : "Choose a particle file";
+  $("fbUse").textContent = mode === "dir" ? "Use this folder" : "Use this file";
+  $("fbAll").checked = store.get("fbAll", false);
+  $("fbHidden").checked = false;
+  $("fbFilter").value = "";
+  $("fb").classList.add("show");
+  const start = mode === "dir" ? $("outdir").value.trim() : $("path").value.trim();
+  fbOpen(start || "");
+  setTimeout(() => $("fbFilter").focus(), 50);
+}
+function closeBrowser() { $("fb").classList.remove("show"); }
+async function fbOpen(path) {
+  $("fbList").innerHTML = `<div class="fnote">loading…</div>`;
+  let d;
+  try { d = await api(`/api/browse?path=${encodeURIComponent(path || "")}&hidden=${$("fbHidden").checked}`); }
+  catch (e) { $("fbList").innerHTML = `<div class="fnote err">${esc(e.message)}</div>`; return; }
+  FB.data = d; FB.cur = d.path;
+  FB.selected = FB.mode === "dir" ? d.path : (d.selected || null);
+  $("fbPath").value = d.path;
+  $("fbCrumbs").innerHTML = d.crumbs.map((c, i) => `${i > 1 ? `<span class="muted">/</span>` : ""}<a data-p="${esc(c.path)}" title="${esc(c.path)}">${esc(c.name)}</a>`).join("");
+  $("fbCrumbs").querySelectorAll("a").forEach(a => a.onclick = () => fbOpen(a.dataset.p));
+  $("fbUp").disabled = !d.parent;
+  $("fbPlaces").innerHTML = [["Home", d.home], ["Filesystem root", "/"]].concat(lastStatus && lastStatus.workdir ? [["Work folder", lastStatus.workdir]] : [])
+    .map(([n, p]) => `<a class="sl" data-p="${esc(p)}" title="${esc(p)}">${esc(n)}</a>`).join("");
+  $("fbPlaces").querySelectorAll(".sl").forEach(a => a.onclick = () => fbOpen(a.dataset.p));
+  fbRender();
+  fbUpdateFoot();
+  // project discovery
+  if (d.project && FB.mode === "file") {
+    FB.proj = d.project;
+    const root = d.project.root;
+    if (!FB.projCache[root]) {
+      $("fbProject").innerHTML = `<div class="ph">Looking for particle outputs in this ${d.project.kind === "cryosparc" ? "cryoSPARC" : "RELION"} project…</div>`;
+      try { FB.projCache[root] = await api(`/api/discover?path=${encodeURIComponent(root)}`); }
+      catch (e) { FB.projCache[root] = {error: e.message, jobs: []}; }
+      if (FB.cur !== d.path) return;
+    }
+    fbRenderProject();
+  } else { FB.proj = null; $("fbProject").innerHTML = ""; }
+}
+function fbFilterText() { return $("fbFilter").value.trim().toLowerCase(); }
+function fbRender() {
+  const d = FB.data; if (!d) return;
+  if (d.error) { $("fbList").innerHTML = `<div class="fnote err">${esc(d.error)}</div>`; $("fbCount").textContent = ""; return; }
+  const q = fbFilterText(), all = $("fbAll").checked;
+  const dirs = d.dirs.filter(x => !q || x.name.toLowerCase().includes(q));
+  const files = d.files.filter(x => (all || PART_EXT.test(x.name)) && (!q || x.name.toLowerCase().includes(q)));
+  const hidden = d.files.length - d.files.filter(x => all || PART_EXT.test(x.name)).length;
+  const showFiles = FB.mode !== "dir" || all;
+  let rows = dirs.map(x => `<tr class="r" data-dir="${esc(x.path)}"><td class="n"><span class="ico d">▰</span>${esc(x.name)}${x.hint ? `<span class="badge j">${esc(x.hint)}</span>` : ""}</td><td class="num"></td><td class="num"></td><td class="t">${fmtTime(x.mtime)}</td></tr>`);
+  if (showFiles) rows = rows.concat(files.map(x => `<tr class="r${x.particles ? "" : " dim"}${FB.selected === x.path ? " sel" : ""}" data-file="${esc(x.path)}"><td class="n"><span class="ico">·</span>${esc(x.name)}${badgeFor(x)}</td><td class="num">${x.count != null ? fmtN(x.count) : ""}</td><td class="num">${fmtSize(x.size)}</td><td class="t">${fmtTime(x.mtime)}</td></tr>`));
+  $("fbList").innerHTML = rows.length ? `<table class="ft"><tr><th>Name</th><th style="text-align:right">Particles</th><th style="text-align:right">Size</th><th>Modified</th></tr>${rows.join("")}</table>`
+    : `<div class="fnote">${q ? "nothing matches the filter" : "empty folder"}${hidden && !all ? ` · ${hidden} other file${hidden > 1 ? "s" : ""} hidden (tick “show all files”)` : ""}</div>`;
+  $("fbCount").textContent = `${d.dirs.length} folders · ${d.files.length} files${hidden && !all && showFiles ? ` (${hidden} non-particle hidden)` : ""}${d.truncated ? ` · list capped at ${fmtN(d.dirs.length + d.files.length)} of ${fmtN(d.total)}` : ""}`;
+  if (d.note) $("fbCount").textContent = d.note + " · " + $("fbCount").textContent;
+  $("fbList").querySelectorAll("tr.r").forEach(tr => {
+    if (tr.dataset.dir) { tr.onclick = () => fbOpen(tr.dataset.dir); }
+    else { tr.onclick = () => fbSelect(tr.dataset.file); tr.ondblclick = () => { fbSelect(tr.dataset.file); fbUse(); }; }
+  });
+}
+function fbRenderProject() {
+  const pr = FB.projCache[FB.proj.root];
+  if (!pr) return;
+  const q = fbFilterText();
+  const kind = pr.kind === "cryosparc" ? "cryoSPARC" : "RELION";
+  const name = pr.title ? `${pr.title} (${pr.root.split("/").pop()})` : pr.root.split("/").pop();
+  if (pr.error && !pr.jobs.length) { $("fbProject").innerHTML = `<div class="ph">${kind} project: <span class="err">${esc(pr.error)}</span></div>`; return; }
+  const rows = [];
+  for (const j of pr.jobs) {
+    for (const o of j.outputs) {
+      const hay = `${j.job} ${j.type || ""} ${j.title || ""} ${o.name} ${o.title || ""}`.toLowerCase();
+      if (q && !hay.includes(q)) continue;
+      const usable = o.images !== false;
+      rows.push(`<tr class="r${usable ? "" : " dim"}${FB.selected === o.path ? " sel" : ""}" data-file="${usable ? esc(o.path) : ""}" title="${esc(o.path)}${usable ? "" : " — no particle images (picks only)"}">
+        <td><b>${esc(j.job)}</b>${j.title ? ` <span class="muted">${esc(j.title)}</span>` : ""}</td><td class="t">${esc(j.type || "")}</td>
+        <td class="t st-${esc(j.status || "")}">${esc(j.status || "")}</td><td class="n">${esc(o.name)}${o.title ? ` <span class="muted">${esc(o.title)}</span>` : ""}${usable ? "" : `<span class="badge x">no images</span>`}</td>
+        <td class="num">${o.approx ? "~" : ""}${fmtN(o.count)}</td></tr>`);
+    }
+  }
+  const open = store.get("fbProjOpen", true);
+  $("fbProject").innerHTML = `<div class="ph"><b>${kind} project</b> ${esc(name)} · ${pr.jobs.length} job${pr.jobs.length === 1 ? "" : "s"} with particle outputs, newest first<span class="grow"></span><button class="link" id="fbProjToggle">${open ? "hide" : "show"}</button></div>` +
+    (open ? (rows.length ? `<table class="ft"><tr><th>Job</th><th>Type</th><th>Status</th><th>Output</th><th style="text-align:right">Particles</th></tr>${rows.join("")}</table>` : `<div class="fnote">${q ? "no job matches the filter" : "no particle outputs found"}</div>`) : "");
+  $("fbProjToggle").onclick = () => { store.set("fbProjOpen", !open); fbRenderProject(); };
+  $("fbProject").querySelectorAll("tr.r").forEach(tr => {
+    if (!tr.dataset.file) return;
+    tr.onclick = () => fbSelect(tr.dataset.file);
+    tr.ondblclick = () => { fbSelect(tr.dataset.file); fbUse(); };
+  });
+}
+let fbPeekSeq = 0;
+async function fbSelect(p) {
+  if (FB.mode === "dir") return;
+  FB.selected = p;
+  document.querySelectorAll("#fb tr.r").forEach(tr => tr.classList.toggle("sel", tr.dataset.file === p));
+  fbUpdateFoot();
+  const seq = ++fbPeekSeq;
+  try {
+    const r = await api(`/api/peek?path=${encodeURIComponent(p)}`);
+    if (seq !== fbPeekSeq) return;
+    const bits = [r.format, r.count != null ? `${r.approx ? "~" : ""}${fmtN(r.count)} particles` : null, r.error, r.warning].filter(Boolean);
+    $("fbSel").innerHTML = `<b>${esc(p.split("/").pop())}</b> <span class="${r.error ? "err" : r.warning ? "warn" : "muted"}">${esc(bits.join(" · "))}</span>`;
+  } catch (e) { /* the footer already shows the path */ }
+}
+function fbUpdateFoot() {
+  if (FB.mode === "dir") { $("fbSel").innerHTML = `Export to <b>${esc(FB.cur || "")}</b> (files are written into this folder)`; $("fbUse").disabled = !FB.cur; return; }
+  $("fbUse").disabled = !FB.selected;
+  if (!FB.selected) $("fbSel").textContent = "Click a folder to open it. Click a particle file to select it, double-click to use it.";
+  else $("fbSel").innerHTML = `<b>${esc(FB.selected.split("/").pop())}</b>`;
+}
+function fbUse() {
+  if (FB.mode === "dir") { $("outdir").value = FB.cur; store.set("outdir", FB.cur); closeBrowser(); updateButtons(); return; }
+  if (!FB.selected) return;
+  usePath(FB.selected);
+  closeBrowser();
+}
+$("btnBrowse").onclick = () => openBrowser("file");
+$("btnOutdir").onclick = () => openBrowser("dir");
+$("fbClose").onclick = closeBrowser; $("fbCancel").onclick = closeBrowser; $("fbUse").onclick = fbUse;
+$("fbUp").onclick = () => FB.data && FB.data.parent && fbOpen(FB.data.parent);
+$("fbHome").onclick = () => fbOpen(FB.data ? FB.data.home : "~");
+$("fbGo").onclick = () => fbOpen($("fbPath").value.trim());
+$("fbPath").addEventListener("keydown", (e) => { if (e.key === "Enter") fbOpen($("fbPath").value.trim()); });
+$("fbFilter").addEventListener("input", () => { fbRender(); if (FB.proj) fbRenderProject(); });
+$("fbAll").onchange = () => { store.set("fbAll", $("fbAll").checked); fbRender(); };
+$("fbHidden").onchange = () => fbOpen(FB.cur);
+$("fb").addEventListener("click", (e) => { if (e.target === $("fb")) closeBrowser(); });
+document.addEventListener("keydown", (e) => {
+  if (!$("fb").classList.contains("show")) return;
+  if (e.key === "Escape") closeBrowser();
+  else if (e.key === "Backspace" && document.activeElement !== $("fbPath") && document.activeElement !== $("fbFilter") && FB.data && FB.data.parent) { e.preventDefault(); fbOpen(FB.data.parent); }
+});
+
+// ------------------------------------------------------------------ actions
+function loadBody() {
+  const body = {path: $("path").value.trim()};
+  for (const k in META) {
+    const m = META[k];
+    if (m.stage !== "load") continue;
+    const v = getVal(k);
+    if (v === null || v === undefined) continue;
+    body[k] = v;
+  }
+  Object.assign(body, D.presets[getVal("speed")] || {});
+  delete body.speed;
+  return body;
+}
+function invalidFields(stage) {
+  return Object.keys(META).filter(k => META[k].stage === stage && (META[k].type === "int" || META[k].type === "number"))
+    .filter(k => { const v = getVal(k); return v === null || !isFinite(v); }).map(k => META[k].label);
 }
 $("btnLoad").onclick = async () => {
-  const body = {path: $("path").value.trim(), project_dir: $("project_dir").value.trim(), gpus: $("gpus").value.trim(),
-                subset: Number($("subset").value), diameter_a: Number($("diameter_a").value), max_res_a: Number($("max_res_a").value),
-                ...PRESETS[$("speed").value], ...read(Object.keys(defaults.load))};
-  try { await api("/api/load", body); resultsSeen.clear(); current = null; } catch (e) { toast(e.message, true); }
+  try {
+    const r = await api("/api/load", loadBody());
+    resultsSeen.clear(); current = null; currentRes = null; errShownFor = null;
+    $("banner").classList.remove("show");
+    toast(`loading ${$("path").value.trim().split("/").pop()} (work folder ${r.workdir})`);
+    pollSoon();
+  } catch (e) { showError("Load failed", e.message); }
 };
 $("btnRun").onclick = () => runClassify($("on").value);
 async function runClassify(on, name) {
-  const body = {name: name || $("name").value.trim(), K: Number($("K").value), seeds: Number($("seeds").value), on,
-                ...read(Object.keys(defaults.run))};
-  try { const r = await api("/api/classify", body); toast(`started ${r.name} on ${on}`); $("name").value = ""; } catch (e) { toast(e.message, true); }
+  const body = {name: name || $("name").value.trim(), K: getVal("K"), seeds: getVal("seeds"), on};
+  for (const k in META) {
+    const m = META[k];
+    if (m.stage !== "run" || k === "K" || k === "seeds") continue;
+    const v = getVal(k);
+    if (v === null || v === undefined) continue;
+    body[k] = m.type === "tri" ? (v === "auto" ? "auto" : v === "on") : v;
+  }
+  try {
+    const r = await api("/api/classify", body);
+    toast(`started ${r.name} on ${on === "all" ? "all particles" : on}`); $("name").value = ""; errShownFor = null;
+    $("banner").classList.remove("show");
+    pollSoon();
+  } catch (e) { showError("Run failed", e.message); }
 }
 $("btnOpt").onclick = async () => {
-  try { await api("/api/optimize", {K: Number($("K").value), subset: Number($("optSubset").value), apply: true}); } catch (e) { toast(e.message, true); }
+  try { await api("/api/optimize", {K: getVal("K"), subset: getVal("opt_subset"), apply: true}); toast("optimizer started"); pollSoon(); }
+  catch (e) { showError("Optimizer failed", e.message); }
 };
 
+function setBtn(id, reason, whyId) {
+  const b = $(id);
+  b.disabled = !!reason;
+  b.dataset.reason = reason || "";
+  if (whyId !== undefined && whyId) $(whyId).textContent = reason || "";
+}
+function updateButtons() {
+  if (!D) return;
+  const s = lastStatus || {};
+  const busy = s.busy ? `wait: ${s.job.kind} “${s.job.name}” is running` : "";
+  const p = $("path").value.trim();
+  const badLoad = invalidFields("load");
+  setBtn("btnLoad", busy || (!p ? "choose a particle file first (Browse… or paste a path)" : peekInfo && peekInfo.exists === false ? "file not found" :
+    peekInfo && peekInfo.is_dir ? "that is a folder, not a file" : badLoad.length ? `fill in: ${badLoad.join(", ")}` : ""), "whyLoad");
+  const badRun = invalidFields("run");
+  const notLoaded = s.loaded ? "" : "load particles first (step 1)";
+  setBtn("btnRun", busy || notLoaded || (badRun.length ? `fill in: ${badRun.join(", ")}` : (getVal("K") < 1 ? "K must be at least 1" : "")), "whyRun");
+  setBtn("btnOpt", busy || notLoaded, "whyOpt");
+  // gallery tools
+  const nTiles = document.querySelectorAll(".tile").length;
+  const noRes = current ? "" : "open a result first";
+  const noSel = sel.size === 0 ? "select good classes first (click tiles)" : "";
+  setBtn("rerunGood", busy || noRes || noSel);
+  setBtn("rerunBad", busy || noRes || (sel.size === 0 ? "select good classes first (click tiles)" : sel.size >= nTiles ? "every class is selected" : ""));
+  setBtn("btnExport", busy || noRes || noSel || (!$("outdir").value.trim() ? "choose an export folder" : ""));
+  setBtn("selSuggest", noRes);
+  const why = ["rerunGood", "btnExport"].map(id => $(id).dataset.reason).find(Boolean);
+  $("whyTools").textContent = why || "";
+  ["btnLoad", "btnRun", "btnOpt", "rerunGood", "rerunBad", "btnExport"].forEach(id => {
+    const b = $(id);
+    if (!b.dataset.tip) b.dataset.tip = b.title || "";
+    b.title = b.dataset.reason ? `Not available: ${b.dataset.reason}` : b.dataset.tip;
+  });
+}
+
+// ------------------------------------------------------------------ status polling
+let pollTimer = null;
+function pollSoon() { clearTimeout(pollTimer); pollTimer = setTimeout(poll, 250); }
+const fmtDur = (s) => s < 60 ? `${Math.round(s)} s` : s < 3600 ? `${Math.floor(s / 60)} min ${Math.round(s % 60)} s` : `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min`;
 async function poll() {
-  let s; try { s = await api("/api/status"); } catch { return; }
-  $("ds").textContent = s.loaded ? `${s.path} · ${s.particles.toLocaleString()} particles (${s.loaded_particles.toLocaleString()} loaded) · ${s.box}px @ ${s.apix} Å · ${s.gpus.join(", ")}` : "no dataset loaded";
-  $("log").textContent = s.log.join("\n"); $("log").scrollTop = $("log").scrollHeight;
+  clearTimeout(pollTimer);
+  let s;
+  try { s = await api("/api/status"); }
+  catch (e) { $("jobpanel").innerHTML = `<div class="err">server not reachable: ${esc(e.message)}</div>`; pollTimer = setTimeout(poll, 3000); return; }
+  lastStatus = s;
+  // header
+  if (s.loaded) {
+    const streaming = s.loaded_particles < s.particles;
+    $("ds").innerHTML = `<b>${esc(s.path.split("/").slice(-2).join("/"))}</b> · ${fmtN(s.particles)} particles${streaming ? ` (<span class="warn">${fmtN(s.loaded_particles)} streamed to GPU so far</span>)` : ""} · ${s.box} px @ ${s.apix} Å · working box ${s.working_box} px · ${esc(s.gpus.join(", "))}`;
+    $("ds").title = `${s.path}\nwork folder: ${s.workdir}`;
+  } else {
+    $("ds").textContent = s.busy && s.job.kind === "load" ? "loading…" : "no dataset loaded";
+    $("ds").title = "";
+  }
+  // log (keep the reader's scroll position unless at the bottom)
+  const lg = $("log"), atBottom = lg.scrollHeight - lg.scrollTop - lg.clientHeight < 30, txt = s.log.join("\n");
+  if (lg.textContent !== txt) { lg.textContent = txt; if (atBottom) lg.scrollTop = lg.scrollHeight; }
   // job panel
   const j = s.job;
   if (j) {
-    const pct = s.progress ? Math.round(100 * s.progress.it / s.progress.n_iter) : (j.done ? 100 : 5);
-    $("jobpanel").innerHTML = `<b>${j.kind}</b> · ${j.name}<div class="prog"><div style="width:${pct}%"></div></div>` +
-      (j.done ? (j.error ? `<div class="err">${j.error}</div>` : `<div class="muted">done in ${j.seconds}s</div>`)
-              : (s.progress ? `<div class="muted">iteration ${s.progress.it}/${s.progress.n_iter} · align ${s.progress.res} Å · est ${s.progress.est_res} Å</div>` : `<div class="muted">running…</div>`)) +
+    const el = (j.done ? j.seconds : (s.now - j.started)) || 0;
+    let pct = 100, cls = j.done ? (j.error ? "fail" : "done") : "", line;
+    if (!j.done) {
+      if (s.progress) { pct = Math.round(100 * s.progress.it / Math.max(1, s.progress.n_iter)); line = `iteration ${s.progress.it} of ${s.progress.n_iter} · alignment limit ${s.progress.res} Å · estimated ${s.progress.est_res} Å`; }
+      else { cls = "ind"; line = j.kind === "load" ? "reading metadata, starting GPU streaming…" : "preparing…"; }
+      if (j.info && j.info.seeds > 1) line += ` · ${j.info.seeds} starts in total`;
+    } else line = j.error ? `<span class="err">failed: ${esc(j.error)}</span>` : `<span class="ok">finished</span>`;
+    const what = {load: "Loading", classify: "Classifying", optimize: "Optimizing settings"}[j.kind] || j.kind;
+    const extra = j.info && j.kind === "classify" ? ` <span class="muted">K=${j.info.K} · ${esc(j.info.on)}</span>` : "";
+    $("jobpanel").innerHTML = `<b>${what}</b> · ${esc(j.name)}${extra}<div class="prog ${cls}"><div style="width:${pct}%"></div></div>` +
+      `<div class="muted">${line}</div><div class="muted" style="margin-top:2px">${j.done ? "took" : "running for"} ${fmtDur(el)}</div>` +
+      (s.loaded && s.loaded_particles < s.particles ? `<div style="margin-top:8px" class="muted">particles on GPU: ${fmtN(s.loaded_particles)} / ${fmtN(s.particles)} (classification starts before all are in; full passes wait for the rest)</div><div class="prog"><div style="width:${Math.round(100 * s.loaded_particles / s.particles)}%"></div></div>` : "") +
       (s.optimizer ? optTable(s.optimizer) : "");
-    if (j.done && lastJob !== j.started + ":done") { lastJob = j.started + ":done"; }
+    if (j.done && j.error && errShownFor !== j.started) { errShownFor = j.started; showError(`${what} failed`, j.error + " (see the log below for details)"); }
+  } else {
+    $("jobpanel").innerHTML = `<div class="muted">idle — no job has run yet</div>`;
   }
-  ["btnLoad", "btnRun", "btnOpt", "rerunGood", "rerunBad", "btnExport"].forEach(id => $(id).disabled = j && !j.done);
-  if (!s.loaded) return;
   // results chips + particle-set choices
-  const res = s.results || [];
-  $("results").innerHTML = res.length ? res.map(r => `<span class="chip ${current === r.name ? "on" : ""}" data-n="${r.name}">${r.name} · ${r.classes} cl · ${r.particles.toLocaleString()}${r.selected != null ? " · " + r.selected + " good" : ""}</span>`).join("") : `<span class="muted">no results yet</span>`;
-  document.querySelectorAll(".chip").forEach(c => c.onclick = () => open(c.dataset.n));
-  const opts = ["all", ...res.flatMap(r => r.selected != null ? [`${r.name}:good`, `${r.name}:bad`, `${r.name}:ambiguous`] : [])];
+  const res = s.loaded ? (s.results || []) : [];
+  $("results").innerHTML = res.length ? `<span class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.6px">Results</span>` + res.map(r =>
+    `<span class="chip ${current === r.name ? "on" : ""}" data-n="${esc(r.name)}" title="${esc(`${r.name}: ${r.classes} classes, ${fmtN(r.particles)} particles (${r.on})${r.seconds != null ? `, ${r.seconds} s` : ""}${r.selected != null ? `, ${r.selected} classes selected` : ""} — click to show`)}">${esc(r.name)} · ${r.classes} cl · ${fmtN(r.particles)}${r.selected != null ? " · " + r.selected + " good" : ""}</span>`).join("")
+    : `<span class="muted">${s.loaded ? "No results yet: press Run classification." : "Results appear here after a run."}</span>`;
+  document.querySelectorAll(".chip").forEach(c => c.onclick = () => openResult(c.dataset.n));
+  const opts = [["all", "all loaded particles"]];
+  res.forEach(r => { if (r.selected != null) opts.push([`${r.name}:good`, `${r.name}: good particles`], [`${r.name}:bad`, `${r.name}: bad particles`], [`${r.name}:ambiguous`, `${r.name}: ambiguous particles`]); });
   const o = $("on"), keep = o.value;
-  if (o.options.length !== opts.length) { o.innerHTML = opts.map(v => `<option>${v}</option>`).join(""); o.value = opts.includes(keep) ? keep : "all"; }
+  if (o.options.length !== opts.length) { o.innerHTML = opts.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join(""); o.value = opts.some(x => x[0] === keep) ? keep : "all"; }
+  if (!s.loaded && current) { current = null; currentRes = null; renderGallery(); }
   const fresh = res.find(r => !resultsSeen.has(r.name));
   res.forEach(r => resultsSeen.add(r.name));
-  if (fresh && (!j || j.done)) open(fresh.name);
+  if (fresh && !s.busy) openResult(fresh.name);
+  else if (!current) renderGallery();
+  updateButtons();
+  pollTimer = setTimeout(poll, s.busy ? 1200 : 2500);
 }
 function optTable(o) {
   const keys = Object.keys(o.best);
-  return `<div style="margin-top:8px" class="muted">optimizer (K=${o.K}, ${o.subset.toLocaleString()} particles)</div><table><tr>${keys.map(k => `<th>${k.replace("_", " ")}</th>`).join("")}<th>stab.</th><th>s</th></tr>` +
-    o.trials.map(t => `<tr class="${keys.every(k => t[k] === o.best[k]) ? "best" : ""}">${keys.map(k => `<td>${t[k]}</td>`).join("")}<td>${t.stability}</td><td>${t.seconds}</td></tr>`).join("") + "</table>";
+  return `<div style="margin-top:8px" class="muted">optimizer (K=${o.K}, ${fmtN(o.subset)} particles) — green row applied</div><table><tr>${keys.map(k => `<th>${esc(k.replace(/_/g, " "))}</th>`).join("")}<th>stab.</th><th>s</th></tr>` +
+    o.trials.map(t => `<tr class="${keys.every(k => t[k] === o.best[k]) ? "best" : ""}">${keys.map(k => `<td>${esc(t[k])}</td>`).join("")}<td>${esc(t.stability)}</td><td>${esc(t.seconds)}</td></tr>`).join("") + "</table>";
 }
-async function open(name) {
+
+// ------------------------------------------------------------------ gallery + selection
+function renderGallery() {
+  if (current) return;
+  $("toolbar").style.display = "none";
+  const s = lastStatus || {};
+  $("gallery").innerHTML = `<div class="empty"><h3>${s.loaded ? "Dataset loaded — ready to classify" : "Getting started"}</h3><ol>
+    <li><b>Choose particles</b>: Browse… opens a file browser; inside a cryoSPARC or RELION project it lists every job with particle outputs and their particle counts. You can also paste a path.</li>
+    <li><b>Set the particle mask diameter</b> (a bit larger than the particle) and the <b>maximum resolution</b>, then press <b>Load particles</b>.</li>
+    <li>Choose the <b>number of classes K</b> and press <b>Run classification</b>. Progress and the log appear at the bottom.</li>
+    <li><b>Click class tiles</b> to mark good classes (green). Then <b>Re-run selected</b> to re-classify only those particles, or <b>Export</b> good / ambiguous / bad particle files for RELION or cryoSPARC.</li>
+  </ol><div class="muted">Every setting has an <b>i</b> button with an explanation; changed settings are marked ● and can be reset.</div></div>`;
+}
+async function openResult(name) {
   current = name;
-  const r = await api(`/api/result/${encodeURIComponent(name)}`);
+  let r;
+  try { r = await api(`/api/result/${encodeURIComponent(name)}`); } catch (e) { toast(e.message, true); return; }
+  if (current !== name) return;
+  currentRes = r;
   sel = new Set(r.table.filter(t => t.good).map(t => t.cls));
   const byCls = Object.fromEntries(r.table.map(t => [t.cls, t]));
-  const tot = r.table.reduce((a, t) => a + t.particles, 0);
+  const tot = r.table.reduce((a, t) => a + t.particles, 0) || 1;
   $("toolbar").style.display = "flex";
   $("gallery").innerHTML = r.order.map(k => {
     const t = byCls[k];
-    return `<div class="tile ${r.table.some(x => x.good != null) ? (sel.has(k) ? "good" : "bad") : ""}" data-k="${k}">
-      <img loading="lazy" src="/api/result/${encodeURIComponent(name)}/tile/${k}.png?v=${r.version.split("-")[0]}">
+    return `<div class="tile" data-k="${k}" title="class ${k}: ${fmtN(t.particles)} particles, confidence ${t.conf.toFixed(2)}${t.res_A ? ", ~" + t.res_A + " Å" : ""} — click to toggle good">
+      <img loading="lazy" alt="class ${k}" src="/api/result/${encodeURIComponent(name)}/tile/${k}.png?v=${esc(r.version.split("-")[0])}">
       <div class="k">${k}</div><div class="c">${t.conf.toFixed(2)}${t.res_A ? " · " + t.res_A + "Å" : ""}</div>
-      <div class="f"><b>${t.particles.toLocaleString()}</b><span>${(100 * t.particles / tot).toFixed(1)}%</span></div>
+      <div class="f"><b>${fmtN(t.particles)}</b><span>${(100 * t.particles / tot).toFixed(1)}%</span></div>
       <div class="conf" style="width:${Math.round(100 * t.conf)}%"></div></div>`;
   }).join("");
   document.querySelectorAll(".tile").forEach(el => el.onclick = () => { const k = +el.dataset.k; sel.has(k) ? sel.delete(k) : sel.add(k); paint(); save(); });
+  if (!$("outdir").value.trim() && lastStatus && lastStatus.workdir) $("outdir").value = `${lastStatus.workdir}/export_${name}`;
   paint();
+  if (r.sets) $("selInfo").textContent = setsText(r.sets);
   document.querySelectorAll(".chip").forEach(c => c.classList.toggle("on", c.dataset.n === name));
 }
+const setsText = (c) => `${sel.size} classes selected · good ${fmtN(c.good)} · ambiguous ${fmtN(c.ambiguous)} · bad ${fmtN(c.bad)} particles`;
 function paint() {
-  document.querySelectorAll(".tile").forEach(el => { const g = sel.has(+el.dataset.k); el.classList.toggle("good", g); el.classList.toggle("bad", !g); });
-  $("selInfo").textContent = `${sel.size} classes selected`;
+  const any = sel.size > 0;
+  document.querySelectorAll(".tile").forEach(el => { const g = sel.has(+el.dataset.k); el.classList.toggle("good", g); el.classList.toggle("bad", any && !g); });
+  $("selInfo").textContent = any ? `${sel.size} classes selected` : "click tiles to mark good classes (green)";
+  updateButtons();
 }
-let saveTimer = null;
+let saveTimer = null, savePromise = Promise.resolve();
 function save() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    try { await api("/api/select", {name: current, good: [...sel]}); const c = await api(`/api/sets/${encodeURIComponent(current)}?min_p=${$("minp").value}`);
-          $("selInfo").textContent = `${sel.size} classes · good ${c.good.toLocaleString()} · ambiguous ${c.ambiguous.toLocaleString()} · bad ${c.bad.toLocaleString()} particles`; }
-    catch (e) { toast(e.message, true); }
-  }, 250);
+  saveTimer = setTimeout(flushSave, 250);
+}
+function flushSave() {
+  clearTimeout(saveTimer); saveTimer = null;
+  const name = current, good = [...sel];
+  if (!name) return savePromise;
+  savePromise = (async () => {
+    try {
+      await api("/api/select", {name, good});
+      const c = await api(`/api/sets/${encodeURIComponent(name)}?min_p=${encodeURIComponent($("minp").value || 0.5)}`);
+      if (current === name) $("selInfo").textContent = setsText(c);
+    } catch (e) { toast("saving the selection failed: " + e.message, true); }
+  })();
+  return savePromise;
 }
 const allK = () => [...document.querySelectorAll(".tile")].map(e => +e.dataset.k);
 $("selAll").onclick = () => { sel = new Set(allK()); paint(); save(); };
 $("selNone").onclick = () => { sel = new Set(); paint(); save(); };
 $("selInv").onclick = () => { sel = new Set(allK().filter(k => !sel.has(k))); paint(); save(); };
-$("selSuggest").onclick = async () => { const r = await api(`/api/suggest/${encodeURIComponent(current)}`); sel = new Set(r.suggested); paint(); save(); toast("suggestion applied — review it"); };
-$("minp").onchange = save;
-$("rerunGood").onclick = () => runClassify(`${current}:good`, `${current}_good`);
-$("rerunBad").onclick = () => runClassify(`${current}:bad`, `${current}_bad`);
-$("btnExport").onclick = async () => {
-  const outdir = $("outdir").value.trim(); if (!outdir) return toast("set an export folder", true);
-  try { const r = await api("/api/export", {name: current, outdir, min_p: Number($("minp").value)}); toast(`exported ${JSON.stringify(r.written)} to ${r.outdir}`); } catch (e) { toast(e.message, true); }
+$("selSuggest").onclick = async () => {
+  try { const r = await api(`/api/suggest/${encodeURIComponent(current)}`); sel = new Set(r.suggested); paint(); save(); toast("suggestion applied — review it before using it"); }
+  catch (e) { toast(e.message, true); }
 };
+$("minp").onchange = () => { if (current) flushSave(); };
+$("rerunGood").onclick = async () => { await flushSave(); runClassify(`${current}:good`, `${current}_good`); };
+$("rerunBad").onclick = async () => { await flushSave(); runClassify(`${current}:bad`, `${current}_bad`); };
+$("outdir").addEventListener("input", () => { store.set("outdir", $("outdir").value.trim()); updateButtons(); });
+$("btnExport").onclick = async () => {
+  const outdir = $("outdir").value.trim();
+  if (!outdir) return toast("choose an export folder", true);
+  await flushSave();
+  try {
+    const r = await api("/api/export", {name: current, outdir, min_p: Number($("minp").value)});
+    const w = Object.entries(r.written || {}).map(([k, v]) => `${k} ${fmtN(v)}`).join(", ");
+    toast(`exported ${w || "nothing"} to ${r.outdir}`);
+  } catch (e) { showError("Export failed", e.message); }
+};
+
+// ------------------------------------------------------------------ init
+function fallbackMeta(d) {
+  const typ = (v) => typeof v === "boolean" ? "bool" : typeof v === "number" ? "number" : v === null ? "tri" : "text";
+  const m = {};
+  const add = (key, value, group, stage, extra) => { m[key] = Object.assign({key, value: value === null ? "auto" : value, label: key, unit: "", help: "(this server sends no descriptions; restart it to get them)", group, stage, type: typ(value)}, extra || {}); };
+  ["diameter_a", "max_res_a"].forEach(k => add(k, d.load[k], "load_basic", "load"));
+  add("gpus", "auto", "load_basic", "load"); add("subset", 0, "load_basic", "load", {type: "int"});
+  add("speed", "balanced", "load_basic", "load", {type: "choice", choices: ["fast", "balanced", "accurate"]});
+  add("project_dir", "", "load_adv", "load");
+  Object.entries(d.load).forEach(([k, v]) => { if (!m[k] && k !== "psi_factor" && k !== "trans_div") add(k, v, "load_adv", "load"); });
+  add("K", 50, "run_basic", "run", {type: "int"}); add("seeds", 1, "run_basic", "run", {type: "int"});
+  Object.entries(d.run).forEach(([k, v]) => add(k, v, "run_classes", "run"));
+  add("opt_subset", 20000, "opt", "opt", {type: "int"});
+  d.meta = m;
+  d.groups = d.groups || [{id: "load_basic", title: "Dataset", help: ""}, {id: "load_adv", title: "Advanced dataset settings", help: ""},
+    {id: "run_basic", title: "Classification", help: ""}, {id: "run_schedule", title: "Iterations", help: ""}, {id: "run_align", title: "Alignment", help: ""},
+    {id: "run_classes", title: "Class averages", help: ""}, {id: "opt", title: "Settings optimizer", help: ""}];
+  d.presets = d.presets || {fast: {psi_factor: 1.5, trans_div: 2.5}, balanced: {psi_factor: 1.0, trans_div: 3.0}, accurate: {psi_factor: 1.0, trans_div: 4.0}};
+}
+async function init() {
+  try { D = await api("/api/defaults"); }
+  catch (e) { showError("Cannot reach the server", e.message); return; }
+  if (!D.meta) fallbackMeta(D);   // older server: plain values only
+  META = D.meta;
+  buildSettings();
+  $("path").value = store.get("path", "");
+  $("outdir").value = store.get("outdir", "");
+  if ($("path").value) doPeek();
+  loadRecent();
+  renderGallery();
+  updateButtons();
+  poll();
+}
 init();
 </script>
 </body>
