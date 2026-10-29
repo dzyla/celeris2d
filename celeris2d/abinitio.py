@@ -1259,6 +1259,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
         if clf._n_loaded < clf.N:   # the class stage needs no particles; it ran while they were still streaming in
             log(f"[3d] waiting for particles to finish loading ({clf._n_loaded}/{clf.N})")
         clf._wait_loaded(clf.N)
+        clf.ensure_polarity()       # the 2D result may have been restored from disk, with no 2D run in this session
         t0 = time.time()
         if len(starts) > 1:
             # the class averages can prefer a wrong model (few views, pseudo-symmetry): let the particles decide.

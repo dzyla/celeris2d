@@ -108,6 +108,7 @@ def cmd_ref(a):
     s.load(a.particles, diameter=a.diameter, max_res=a.max_res, gpus="0")
     clf = s.clf
     clf._wait_loaded(clf.N)
+    clf.ensure_polarity()           # same contrast as an ab initio run on these particles
     b, box_a = clf.bmax, clf.box_a
     R = gt_matrices(cs)
     sh = torch.as_tensor(cs["alignments3D/shift"] * cs["alignments3D/psize_A"][:, None], dtype=torch.float32)

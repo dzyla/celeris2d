@@ -25,12 +25,13 @@ from .engine import Params
 
 # settings shown in the UI (Params fields); the dataset-level ones are used at load time
 _LOAD_KEYS = ("diameter_a", "max_res_a", "init_res_a", "psi_step_min", "psi_factor", "trans_div", "max_shift_a",
-              "notch_thresh", "noise_model", "seed")
+              "notch_thresh", "noise_model", "polarity", "seed")
 _RUN_KEYS = ("n_iter", "n_full_iter", "batch_per_class", "march_margin", "recon_margin", "frc_reg", "tau2_fudge",
              "sigma_init_factor", "solvent_flatten", "gold_standard", "solvent_thresh", "solvent_dilate_a",
              "center_classes", "recenter_thresh", "hard_pose", "class_prior", "polish", "reseed_frac", "max_offset_a",
              "local_refine")
 _FIELDS = {f.name for f in dataclasses.fields(Params)}
+POLARITY_UI = {0: "auto", -1: "invert", 1: "keep"}     # Params.polarity <-> the page's choice
 LOAD_KEYS = tuple(k for k in _LOAD_KEYS if k in _FIELDS)   # tolerate Params fields being renamed / removed
 RUN_KEYS = tuple(k for k in _RUN_KEYS if k in _FIELDS)
 
@@ -101,6 +102,12 @@ SETTINGS = {
     "noise_model": dict(group="load_adv", label="Noise model", unit="", type="choice", choices=["coloured", "radial"],
                         help="coloured: one noise value per Fourier pixel in the particle frame, which down-weights "
                              "fixed-frame artefacts; radial: one value per resolution shell."),
+    "polarity": dict(group="load_adv", label="Contrast", unit="", type="choice", choices=["auto", "invert", "keep"],
+                     value="auto",
+                     help="Protein must be white for classification. auto: decided from the unaligned average of the "
+                          "particles (centre vs ring); invert: flip the contrast of the images as stored; keep: use them "
+                          "as stored. If the classes or the 3D map come out with dark protein, set this the other way. "
+                          "The log line [polarity] says what auto chose."),
     "seed": dict(group="load_adv", label="Random seed", unit="", type="int",
                  help="Seeds the random subset and the class initialisation. Change it to get an independent start "
                       "with otherwise identical settings."),
@@ -195,6 +202,7 @@ def _defaults():
     p = Params()
     d = {f.name: getattr(p, f.name) for f in dataclasses.fields(p)}
     d["n_iter"] = -1  # auto (25, or 40 above 100k particles)
+    d["polarity"] = POLARITY_UI[d["polarity"]]
     return d
 
 
@@ -804,6 +812,9 @@ def create(workdir):
     def load_kwargs(body):
         """Session.load() arguments from the page's load-stage settings."""
         kw = {k: body[k] for k in LOAD_KEYS if k in body and body[k] not in (None, "")}
+        if "polarity" in kw:
+            v = kw["polarity"]
+            kw["polarity"] = {u: k for k, u in POLARITY_UI.items()}.get(v, v) if isinstance(v, str) else int(v)
         return dict(diameter=float(kw.pop("diameter_a", 200)), max_res=float(kw.pop("max_res_a", 6)),
                     gpus=str(body.get("gpus") or "auto").strip() or "auto", subset=int(body.get("subset") or 0),
                     project_dir=body.get("project_dir") or None, **kw)
@@ -997,7 +1008,8 @@ def create(workdir):
                                   seconds=round((m.get("seconds_classes") or 0) + (m.get("seconds_particles") or 0), 1),
                                   apix=m.get("apix"), box=m.get("box"))
                              for k, m in getattr(s, "maps", {}).items()],
-                       settings={k: getattr(c.p, k) for k in RUN_KEYS + LOAD_KEYS})
+                       settings={k: POLARITY_UI.get(getattr(c.p, k), "auto") if k == "polarity" else getattr(c.p, k)
+                                 for k in RUN_KEYS + LOAD_KEYS})
             if st.job and not st.job["done"] and c.history:
                 out["progress"] = _progress(c, st.job)
         return out

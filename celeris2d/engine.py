@@ -444,6 +444,15 @@ class Classifier2D:
             x = x * self.notch.to(x.device)
         return ft_resize(x, b)
 
+    def ensure_polarity(self, n_wait: int = 20000):
+        """Decide the contrast once per loaded dataset, before particle data is used. Everything that reads
+        particles without starting a 2D run (ab initio from a restored 2D result) must call this: a negative-stain
+        stack (J85) used as stored gives a 3D map with dark protein."""
+        if not self._polarity_done:
+            self._wait_loaded(n_wait)
+            self._check_polarity(self.polarity_hint)
+            self._polarity_done = True
+
     def _check_polarity(self, hint):
         """Protein must be white. Decide from the unaligned CTF-weighted average of loaded particles:
         centred picks give a positive central blob. --invert / --no-invert override."""
@@ -561,10 +570,7 @@ class Classifier2D:
     def init_classes(self):
         """Each class = CTF-corrected, unaligned average of a random particle subset."""
         K, bm = self.p.n_classes, self.bmax
-        if not self._polarity_done:
-            self._wait_loaded(max(20000, K * 400))
-            self._check_polarity(self.polarity_hint)
-            self._polarity_done = True
+        self.ensure_polarity(max(20000, K * 400))
         if not getattr(self, "_notch_done", False):
             self._find_notch()
         p2 = self._initial_noise()                                     # initial noise = data power (2D)

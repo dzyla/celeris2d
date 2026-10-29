@@ -53,9 +53,10 @@ lacking 5.4 % of the density): 2 3D classes, 99.5 % correct.
      A map smeared around one axis scores all Cn alike (C12 0.38, C11 0.38, C10 0.37) and started a C12 trial
      (304 s): the low-score relaxation trigger now needs the group to stand out by 0.05 from unrelated groups
      (`_stands_out`) -> 100 s, same map. J341's blurred C3 (0.36 vs next unrelated 0.24) still triggers.
-   - J85 (negative stain, 21k, 64 px @ 6.375 Å): cryoSPARC ab initio J84 27 / 19 Å; ours fails (58-68 / 27-45 Å or no
-     agreement), sign of the map differs between seeds; Celeris loads this stack with the opposite contrast to
-     cryoSPARC (a reconstruction at cryoSPARC's poses comes out negative). Bounded by the weak NS 2D classes.
+   - J85 (negative stain, 21k, 64 px @ 6.375 Å): cryoSPARC ab initio J84 27 / 19 Å. The contrast was decided only
+     when a 2D run started, so ab initio from a restored 2D result used the stack as stored: dark protein, 3 of 4
+     seeds without any agreement with the reference. Fixed (`Classifier2D.ensure_polarity`, called by ab initio):
+     all 4 seeds now 45-58 / 27-31 Å, protein white. Still behind cryoSPARC; bounded by the weak NS 2D classes.
 2. **Speed.** For 3.5k particles we are ~4× faster than RELION on a quarter of the GPUs, not 20×. Most time is the
    refinement at the full 218 px box (61–100 s) and SGD (21–34 s). Leads: run early refinement iterations on a
    smaller box (Nyquist ~2× the current resolution; `_fetch` already crops), scale SGD rounds/batch with the

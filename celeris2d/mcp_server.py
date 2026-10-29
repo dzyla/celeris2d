@@ -44,17 +44,19 @@ def _js(d) -> str:
 
 @server.tool()
 def load_particles(path: str, diameter_a: float, max_res_a: float = 6.0, gpus: str = "auto", subset: int = 0,
-                   workdir: str = "", speed: str = "balanced") -> str:
+                   workdir: str = "", speed: str = "balanced", contrast: str = "auto") -> str:
     """Open particles (RELION .star, cryoSPARC .cs/.csg, or .mrc/.mrcs stack) and start streaming them to the GPU.
     diameter_a: particle mask diameter in A. max_res_a: finest resolution used. gpus: 'auto' or nvidia-smi
-    indices like '0,2,3'. subset: random subset size for quick tests (0 = all). speed: fast|balanced|accurate."""
+    indices like '0,2,3'. subset: random subset size for quick tests (0 = all). speed: fast|balanced|accurate.
+    contrast: auto|invert|keep (protein must be white; auto decides from the particle average)."""
     global _session
     preset = dict(fast=dict(psi_factor=1.5, trans_div=2.5), balanced=dict(psi_factor=1.0, trans_div=3.0),
                   accurate=dict(psi_factor=1.0, trans_div=4.0))[speed]
     with _lock:
         wd = workdir or os.path.join(os.path.dirname(os.path.abspath(path)), "celeris2d_session")
         _session = Session(wd, log=lambda *a: None)
-        info = _session.load(path, diameter=diameter_a, max_res=max_res_a, gpus=gpus, subset=subset, **preset)
+        info = _session.load(path, diameter=diameter_a, max_res=max_res_a, gpus=gpus, subset=subset,
+                             polarity=dict(auto=0, invert=-1, keep=1)[contrast], **preset)
     return _js(dict(info, workdir=wd))
 
 
