@@ -33,8 +33,8 @@ class CtfRefineSettings:
     res_lo_a: float = 20.0          # band used: from this resolution ...
     res_hi_a: float = 0.0           # ... to this one (0: the refinement's resolution, sphere-masked FSC 0.143)
     plane: bool = False             # use the per-micrograph plane fit of the offsets instead of the per-particle values
-    batch: int = 256
-    gpus: str = "auto"
+    batch: int = 256                # particles per GPU batch (fewer if memory is short)
+    gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
 
 def ctf_refine_job(project: Project, refine, s: CtfRefineSettings, label: str = "") -> Job:
@@ -240,7 +240,7 @@ def run_ctf_refine(project: Project, job, log=print) -> dict:
                 per_particle_scatter_about_plane_a=round(float(np.median(scat)), 1),
                 micrograph_median_delta_a=[round(p["median_a"], 1) for p in per],
                 cc_gain_mean=round(float(np.mean(cc1 - cc0)), 5), cc_improved_share=round(float(np.mean(cc1 > cc0)), 4))
-    _figure(os.path.join(job.path, "ctfrefine.png"), use, delta, plane, mov, per, cc1 - cc0,
+    _figure(job.out("ctfrefine.png"), use, delta, plane, mov, per, cc1 - cc0,
             f"{job.name} · {len(use):,} particles of {rj.name} · band {s.res_lo_a:g}-{res_hi:.2f} Å")
     project.set_status(job, "finished", summ)
     ses.clf = None

@@ -68,12 +68,17 @@ def solvent_stats(lp: torch.Tensor, apix: float, diameter_a: float | None) -> tu
     return float(med), float(1.4826 * mad)
 
 
-def _components(m: np.ndarray, keep_frac: float) -> np.ndarray:
+def _components(m: np.ndarray, keep_frac: float, info: dict | None = None) -> np.ndarray:
+    """The connected pieces of a binary map at least keep_frac of the largest one."""
     lab, n = ndimage.label(m)
+    if info is not None:
+        info.update(pieces=int(n), pieces_kept=int(n))
     if n <= 1:
         return m
     sizes = np.bincount(lab.ravel())[1:]
     keep = np.flatnonzero(sizes >= keep_frac * sizes.max()) + 1
+    if info is not None:
+        info["pieces_kept"] = int(len(keep))
     return np.isin(lab, keep)
 
 
@@ -119,12 +124,13 @@ def auto_mask(vmap: torch.Tensor, apix: float, res_a: float | None = None, lowpa
         mu, sd = 0.0, noise_sigma(halves[0], halves[1], nb, vox, lp_a)
     peak = float(lp.max())
     thr = max(mu + k_sigma * sd, mu + min_frac * (peak - mu))
-    core = _components((lp > thr).cpu().numpy(), keep_frac)
+    core = _components((lp > thr).cpu().numpy(), keep_frac, info)
     soft = torch.as_tensor(_soften(core, vox, extend_a, soft_a), device=vmap.device)
     out = F.interpolate(soft[None, None], size=(n, n, n), mode="trilinear", align_corners=False)[0, 0] if nb != n else soft
     if info is not None:
         info.update(lowpass_a=round(lp_a, 2), threshold=thr, threshold_sigma=round((thr - mu) / max(sd, 1e-12), 2),
-                    threshold_of_peak=round((thr - mu) / max(peak - mu, 1e-12), 4), extend_a=extend_a, soft_a=soft_a,
+                    threshold_of_peak=round((thr - mu) / max(peak - mu, 1e-12), 4),
+                    threshold_frac_max=round(thr / max(peak, 1e-30), 4), extend_a=extend_a, soft_a=soft_a,
                     core_volume_a3=float(core.sum() * vox ** 3), working_grid=nb)
     return out.clamp(0, 1)
 

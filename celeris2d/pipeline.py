@@ -32,7 +32,7 @@ import torch
 from . import picking as pk
 from . import preprocess as pp
 from .engine import Optics
-from .project import PARTICLE_JOBS, Job, Project, particle_uids
+from .project import PARTICLE_JOBS, Job, Project, particle_uids, run_log
 
 
 @dataclass
@@ -251,6 +251,8 @@ def _motion(project: Project, job: Job, mv: dict, frames=None, log=print, keep_f
     t = {}
     t0 = time.time()
     fr = pp.read_movie(mv["path"]) if frames is None else frames
+    if fr.ndim == 2:                                 # a micrograph: one frame, no motion to correct
+        fr = fr[None]
     if s.flip_y:
         fr = np.ascontiguousarray(fr[:, ::-1])
     t["read"] = time.time() - t0
@@ -298,7 +300,7 @@ def process_movie_motion(project: Project, job: Job, movie_id: int, frames: np.n
     if _live_figure(job, s.figures):
         from .plots_preprocess import movie_figure
         args = (job.figure(mv), _cpu(mic), fit)
-        kw = dict(title=mv["stem"], frc_eo=pp.frc(*mic.halves, mic.apix, n_shell=120))
+        kw = dict(title=mv["stem"], frc_eo=pp.frc(*mic.halves, mic.apix, n_shell=120) if mic.halves else None)
         figures.submit(movie_figure, *args, **kw) if figures else movie_figure(*args, **kw)
     log(f"[{job.name}] {mv['stem']}: drift {stats['motion_path_a']:.0f} A, defocus "
         f"{(fit.defocus_u + fit.defocus_v) / 2:.0f} A, CTF fit {fit.fit_res_a:.1f} A; "
@@ -468,11 +470,11 @@ def recenter_report(project: Project, job) -> dict:
     per = pd.DataFrame(dict(movie=t["movie"], r=r)).groupby("movie")["r"].median()
     out = dict(recenter_shift_median_a=round(float(np.median(r)), 2), recenter_shift_p95_a=round(float(np.percentile(r, 95)), 2),
                recenter_shift_mean_a=[round(float(x), 2) for x in d.mean(0)], recenter_shift_max_a=round(float(r.max()), 1))
-    shifts_figure(os.path.join(job.path, "recenter_shifts.png"), d, per.to_numpy(),
+    shifts_figure(job.out("recenter_shifts.png"), d, per.to_numpy(),
                   f"{job.name} · {len(r):,} particles re-centred on {project.job(job.params['recenter']).name}",
                   project.job(job.params["picks"]).params.get("diameter_a"))
     pd.DataFrame(dict(stem=stems.loc[per.index].to_numpy(), median_shift_a=per.to_numpy())).to_csv(
-        os.path.join(job.path, "recenter_shifts.csv"), index=False, float_format="%.3g")
+        job.out("recenter_shifts.csv"), index=False, float_format="%.3g")
     return out
 
 
@@ -505,8 +507,8 @@ def overview(project: Project, job) -> str:
         panels = [("Particles per micrograph", "particles", df.particles)]
     if not len(df):
         return ""
-    df.to_csv(os.path.join(job.path, "micrographs.csv"), index=False, float_format="%.4g")
-    path = os.path.join(job.path, "overview.png")
+    df.to_csv(job.out("micrographs.csv"), index=False, float_format="%.4g")
+    path = job.out("overview.png")
     overview_figure(path, panels, f"{job.type}: all micrographs", f"{job.name} · {len(df):,} micrographs")
     return path
 
@@ -562,6 +564,15 @@ def _decode_pool(n: int):
 
 def run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: threading.Event | None = None,
         progress=None, finish_jobs: bool = True) -> dict:
+    jobs = [project.job(j) for j in jobs]
+    with run_log(jobs, log, "movies " + " -> ".join(j.type for j in jobs)) as lg:
+        out = _run(project, jobs, movie_ids, lg, stop, progress, finish_jobs)
+        lg(f"{out}")
+        return out
+
+
+def _run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: threading.Event | None = None,
+         progress=None, finish_jobs: bool = True) -> dict:
     """A chain of jobs (MotionCtf [-> Pick [-> Extract]]) over movies (default: all movies of the MotionCtf job's
     Import job), overlapped: worker processes decode the next movies while the GPU works on the current one, the
     micrograph and picks stay on the GPU between the jobs, files and figures are written on other threads."""
@@ -617,6 +628,8 @@ def run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thre
         return time.time()
 
     cur: list = [None]
+    t_start, last_log = time.time(), [time.time()]
+    log(f"{len(todo)} of {len(movie_ids)} movies to do")
     try:
         with ThreadPoolExecutor(1) as figs, _Writer() as io:     # one writer: catalog order kept
             while True:
@@ -646,6 +659,11 @@ def run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thre
                 n += 1
                 if progress:
                     progress(n, len(todo))
+                if time.time() - last_log[0] > 30 or n == len(todo):   # the run log: a line every ~30 s
+                    last_log[0] = time.time()
+                    el = time.time() - t_start
+                    log(f"{n}/{len(todo)} movies, {el / n:.2f} s per movie"
+                        + (f", ~{el / n * (len(todo) - n) / 60:.1f} min left" if n < len(todo) else ""))
             t = time.time()
         io.check()                                       # a failed write (e.g. a full disk) fails the run
         tm["writes_after_last"] = time.time() - t
@@ -685,7 +703,8 @@ def draw_figure(project: Project, job, movie_id: int) -> str:
     if job.type == "MotionCtf":
         from .plots_preprocess import movie_figure
         s, fr, mic, fit, t = _motion(project, job, mv, log=lambda *a: None)
-        movie_figure(path, _cpu(mic), fit, title=mv["stem"], frc_eo=pp.frc(*mic.halves, mic.apix, n_shell=120))
+        movie_figure(path, _cpu(mic), fit, title=mv["stem"],
+                     frc_eo=pp.frc(*mic.halves, mic.apix, n_shell=120) if mic.halves else None)
     elif job.type == "Pick":
         from .plots_preprocess import picks_figure
         s = PickSettings(**{k: v for k, v in job.params.items() if k in PickSettings.__dataclass_fields__})

@@ -19,7 +19,7 @@ import json
 import math
 import os
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -27,7 +27,8 @@ import torch
 from . import picking as pk
 from . import preprocess as pp
 from .engine import ctf_2d, freqs
-from .project import PARTICLE_JOBS, Job, Project
+from .jobspec import params_of, settings_of
+from .project import Job, PARTICLE_JOBS, Project, logged
 
 
 @dataclass
@@ -38,18 +39,24 @@ class PolishSettings:
     sigma_c2_a: float = 4.0         # curvature coefficient (A): ~0.17 x this at the first and last frames
     stats_movies: int = 100         # movies used to fit the per-frame weights (random)
     batch: int = 24                 # particles per GPU batch
-    dtype: str = "float16"
-    seed: int = 0
+    dtype: str = "float16"         # precision of the polished particle stacks
+    seed: int = 0                   # random seed (movies used for the weights)
+    min_resolution_a: float = 4.0   # refused unless the refinement reaches this (A): per-particle tracks need
+                                    # high-resolution signal; first improve the map (classes, symmetry); 0: no check
 
 
 def polish_job(project: Project, refine, s: PolishSettings, label: str = "") -> Job:
     rj = project.job(refine)
+    res = project.summary_of(rj).get("resolution_solvent_mask_a") or project.summary_of(rj).get("resolution_a")
+    if s.min_resolution_a and (res is None or res > s.min_resolution_a):
+        raise ValueError(f"{rj.name} is at {res} A, worse than {s.min_resolution_a} A: polishing needs a "
+                         f"high-resolution map (improve it first - classes, symmetry - or set min_resolution_a 0)")
     ex = project.job(rj.params["particles"])
     if ex.type not in PARTICLE_JOBS:
         raise ValueError(f"{rj.name}: its particles ({ex.name}) are not an extraction")
     e = ex.params
     keep = {k: e[k] for k in ("picks", "micrographs", "box", "out_apix", "box_a_used", "particle_a", "dark")}
-    return project.new_job("Polish", dict(asdict(s), refine=rj.id, particles=ex.id, **keep), [rj, ex],
+    return project.new_job("Polish", dict(params_of(s), refine=rj.id, particles=ex.id, **keep), [rj, ex],
                            label or f"{e['box_a_used']:.0f}A_{e['out_apix']:.3g}apx_on{rj.id:03d}")
 
 
@@ -86,12 +93,12 @@ def _half_maps(project: Project, rj: Job, bi: int, apix: float, max_res: float, 
     apix = bi_full * apix_full / bi                                   # same box in A, coarser pixels
     out = []
     summ = project.summary_of(rj)
-    with mrcfile.open(os.path.join(rj.path, "mask.mrc"), permissive=True) as f:
+    with mrcfile.open(rj.find("mask.mrc"), permissive=True) as f:
         mask = np.asarray(f.data, np.float32)
     fsc = np.asarray(summ["fsc_solvent"], np.float64)
     box_a_r = summ["box"] * summ["apix"]
     for h in (1, 2):
-        with mrcfile.open(os.path.join(rj.path, f"half{h}_unfil.mrc"), permissive=True) as f:
+        with mrcfile.open(rj.find(f"half{h}_unfil.mrc"), permissive=True) as f:
             v, ap = np.asarray(f.data, np.float32), float(f.voxel_size.x)
         v = map_to_box(v * mask, ap, bi, apix).to(dev)
         k = torch.fft.fftfreq(bi, device=dev) * bi
@@ -185,6 +192,7 @@ def _frame_positions(mic, centre_a: np.ndarray, dev) -> torch.Tensor:
     return (c[:, None] - s) / mic.apix
 
 
+@logged
 def run_polish(project: Project, job, log=print) -> dict:
     from multiprocessing import shared_memory
     from .pipeline import _decode_pool, _decode_shm
@@ -358,9 +366,9 @@ def run_polish(project: Project, job, log=print) -> dict:
     project.consolidate(job)
     tt = project.table(job, "particles").read(["track_rms_a", "track_mean_a"])
     tr, mv_ = tt["track_rms_a"], tt["track_mean_a"]
-    np.savez(os.path.join(job.path, "frame_weights.npz"), B=B_fr.cpu().numpy(), scale=s_fr.cpu().numpy(),
+    np.savez(job.out("frame_weights.npz"), B=B_fr.cpu().numpy(), scale=s_fr.cpu().numpy(),
              a_raw=a_raw.cpu().numpy(), sigma2=sig2.cpu().numpy(), weights=w.cpu().numpy(), apix=mic_apix, box=bi)
-    _figure(os.path.join(job.path, "polish.png"), B_rel.cpu().numpy(), (s_fr / s_fr.max()).cpu().numpy(),
+    _figure(job.out("polish.png"), B_rel.cpu().numpy(), (s_fr / s_fr.max()).cpu().numpy(),
             w.cpu().numpy(), box_a, tr, job.name)
     summ = dict(particles=int(len(P["uid"])), micrographs=int(len(movies)), box=box, apix=out_apix,
                 box_a=round(box * out_apix, 1), max_res_a=round(max_res, 2),

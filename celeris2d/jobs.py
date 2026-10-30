@@ -21,12 +21,13 @@ import json
 import os
 import shutil
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 import numpy as np
 import torch
 
-from .project import PARTICLE_JOBS, Job, Project
+from .jobspec import Input, JobSpec, _n, params_of, settings_of, warn_mark
+from .project import PARTICLE_JOBS, Job, Project, logged
 
 
 # ------------------------------------------------------------------------------------------ particle sources
@@ -122,18 +123,19 @@ def _write_results(project: Project, job: Job, src, idx, cols: dict, name="parti
 # ------------------------------------------------------------------------------------------------ Class2D
 @dataclass
 class Class2DSettings:
-    n_classes: int = 50
+    n_classes: int = 50             # number of classes (K)
     max_res_a: float = 0.0          # finest resolution used (0: Nyquist of the particles, but not finer than 6 A)
     diameter_a: float = 0.0         # mask (0: 1.25 x the extraction's particle size)
     seeds: int = 1                  # > 1: independent repeats, per-particle P(good) after selection
-    gpus: str = "auto"
+    gpus: str = "auto"              # GPUs to use: "auto" (all free ones) or a list like "0,2"
 
 
 def class2d_job(project: Project, particles, s: Class2DSettings, label: str = "") -> Job:
     p = project.job(particles)
-    return project.new_job("Class2D", dict(asdict(s), particles=p.id), [p], label or f"K{s.n_classes}_on{p.id:03d}")
+    return project.new_job("Class2D", dict(params_of(s), particles=p.id), [p], label or f"K{s.n_classes}_on{p.id:03d}")
 
 
+@logged
 def run_class2d(project: Project, job, log=print) -> dict:
     job = project.job(job)
     s = settings_of(job, Class2DSettings)
@@ -147,8 +149,11 @@ def run_class2d(project: Project, job, log=print) -> dict:
                                                   shift_x_a=r.offsets[:, 0].astype(np.float32),
                                                   shift_y_a=r.offsets[:, 1].astype(np.float32),
                                                   maxprob=r.maxprob.astype(np.float32)))
-    project.write_mrc(os.path.join(job.path, "classes.mrcs"), r.images, ses.clf.box_a / r.images.shape[-1])
-    shutil.copy(r.gallery_path, os.path.join(job.path, "gallery.png"))
+    project.write_mrc(job.out("classes.mrcs"), r.images, ses.clf.box_a / r.images.shape[-1])
+    shutil.copy(r.gallery_path, job.out("gallery.png"))
+    light = os.path.splitext(r.gallery_path)[0] + ".light.png"
+    if os.path.exists(light):
+        shutil.copy(light, job.out("gallery.light.png"))
     summ = dict(particles=int(len(r.idx)), classes=int(len(r.pops)), mask_a=round(ses.clf.p.diameter_a, 1),
                 max_res_a=round(max_res, 2), seconds=round(time.time() - t0, 1),
                 table=[dict(cls=k + 1, particles=int(r.pops[k]), conf=round(float(r.conf[k]), 3),
@@ -171,16 +176,16 @@ def select_classes(project: Project, class2d, classes: list[int], label: str = "
                          note=note or f"classes {chosen} of {c.name}", rejected=t["uid"][~keep])
     rejected = [k for k in range(1, K + 1) if k not in chosen]
     project.update_params(job, classes=chosen, rejected_classes=rejected)
-    cm = os.path.join(c.path, "classes.mrcs")
-    if os.path.exists(cm):
+    cm = c.find("classes.mrcs")
+    if cm:
         import mrcfile
         with mrcfile.open(cm, permissive=True) as f:
             imgs, apix = np.asarray(f.data, np.float32), float(f.voxel_size.x)
         pops = np.bincount(t["cls"], minlength=len(imgs))
         for name, ks in (("selected_classes.mrcs", chosen), ("rejected_classes.mrcs", rejected)):
             if ks:
-                project.write_mrc(os.path.join(job.path, name), imgs[np.asarray(ks) - 1], apix)
-        _selection_figure(os.path.join(job.path, "selection.png"), imgs, pops, set(chosen),
+                project.write_mrc(job.out(name), imgs[np.asarray(ks) - 1], apix)
+        _selection_figure(job.out("selection.png"), imgs, pops, set(chosen),
                           f"{job.name}: {int(keep.sum()):,} kept ({len(chosen)} classes), "
                           f"{int((~keep).sum()):,} rejected ({len(rejected)} classes) of {c.name}")
     return job
@@ -223,16 +228,17 @@ def _draw_selection(path, imgs, pops, chosen, title_, ncol):
 class InitialModelSettings:
     sym: str = "C1"                 # the user's choice; never detected
     classes: tuple = ()             # 1-based classes of the Class2D job (empty: all populated classes)
-    n_models: int = 1
-    seed: int = 0
-    gpus: str = "auto"
+    n_models: int = 1               # > 1: that many maps, particles classified among them (3D classes)
+    seed: int = 0                   # random seed
+    gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
 
 def initial_model_job(project: Project, class2d, s: InitialModelSettings, label: str = "") -> Job:
     c = project.job(class2d)
-    return project.new_job("InitialModel", dict(asdict(s), class2d=c.id), [c], label or f"{s.sym}_from{c.id:03d}")
+    return project.new_job("InitialModel", dict(params_of(s), class2d=c.id), [c], label or f"{s.sym}_from{c.id:03d}")
 
 
+@logged
 def run_initial_model(project: Project, job, log=print) -> dict:
     """Ab initio (abinitio.run) from the Class2D job's classes and their particles; the 2D run is reloaded from that
     job's session (same particles, same settings), so nothing is classified again."""
@@ -275,9 +281,11 @@ def run_initial_model(project: Project, job, log=print) -> dict:
         shift_x_a=z["shift_a"][:, 0].astype(np.float32), shift_y_a=z["shift_a"][:, 1].astype(np.float32),
         used=z["used"].astype(bool), model=z["model"].astype(np.int16)))
     os.remove(os.path.join(job.path, "poses.npz"))                     # the sharded table replaces it
+    job.organize()                                                     # ab.run writes flat: into the job layout
     keep = {k: summ[k] for k in ("particles", "particles_used", "resolution_a", "resolution_solvent_mask_a",
                                  "resolution_unmasked_a", "apix", "box", "seconds_total")}
-    keep.update(sym=s.sym, map="map.mrc", duplicates_removed=n_dup, duplicate_distance_a=round(dist, 1))
+    keep.update(sym=s.sym, map=project.rel(job.find("map.mrc")), duplicates_removed=n_dup,
+                duplicate_distance_a=round(dist, 1))
     project.set_status(job, "finished", keep)
     ses.clf = None
     torch.cuda.empty_cache()
@@ -287,27 +295,32 @@ def run_initial_model(project: Project, job, log=print) -> dict:
 # ---------------------------------------------------------------------------------------------- Refine3D
 @dataclass
 class Refine3DSettings:
-    sym: str = "C1"
-    n_iter: int = 10
+    sym: str = "C1"                 # point-group symmetry, the user's choice (C1, Cn, Dn, T, O, I)
+    n_iter: int = 10                # iterations of local orientation search
     res_start_a: float = 0.0        # first alignment resolution (0: the reference job's resolution, at least 8 A)
     max_res_a: float = 0.0          # finest resolution loaded (0: Nyquist)
-    n_local: int = 1
-    drop_frac: float = 0.1
+    n_local: int = 1                # local search rounds per iteration
+    min_step_deg: float = 0.5       # finest angular step (deg); the step halves once < 30% of particles move
+    drop_frac: float = 0.1          # share of worst-fitting particles left out of each reconstruction
     global_iters: int = 0           # first iterations that also search all orientations (for starts with pose errors)
     global_res_a: float = 12.0      # resolution of that search
-    diameter_a: float = 0.0
+    diameter_a: float = 0.0         # particle diameter for the mask (0: from the extraction)
     classes: tuple = ()             # poses from a HeteroRefine: only the particles of these 1-based classes
     mask: str = "auto"              # solvent mask during refinement: "auto" (made from the map every iteration below
                                     # 15 A, masking.auto_mask), "sphere" (the particle sphere only), or a MaskCreate job
                                     # / .mrc path (fixed)
-    gpus: str = "auto"
+    align_symmetry: bool = True     # sym differs from the start job's: first rotate the map and the poses so the
+                                    # group's axes (n-fold on z, 2-fold on x) lie on the map's (symalign.py); the
+                                    # symmetry itself is the user's choice, the scores say how well it holds
+    gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
 
 def refine3d_job(project: Project, particles, poses, reference, s: Refine3DSettings, label: str = "") -> Job:
     """particles: an Extract job (e.g. re-centred, full box); poses: the job whose per-particle orientations start
     the refinement (InitialModel / Refine3D, matched by uid); reference: the job whose map.mrc starts it."""
-    p, q, r = project.job(particles), project.job(poses), project.job(reference)
-    return project.new_job("Refine3D", dict(asdict(s), particles=p.id, poses=q.id, reference=r.id),
+    p, q = project.job(particles), project.job(poses)
+    r = project.job(reference) if reference not in (None, "", 0) else q
+    return project.new_job("Refine3D", dict(params_of(s), particles=p.id, poses=q.id, reference=r.id),
                            [p, q] + ([r] if r.id != q.id else []), label or f"{s.sym}_on{p.id:03d}")
 
 
@@ -398,7 +411,7 @@ def load_mask(project: Project, ref: str, b: int, apix: float) -> np.ndarray:
     """A mask for a map of box b at apix: a MaskCreate job (its mask.mrc) or an .mrc path (absolute or relative to
     the project), resampled to that grid and clipped to 0..1."""
     import mrcfile
-    path = ref if str(ref).endswith(".mrc") else os.path.join(project.job(ref).path, "mask.mrc")
+    path = ref if str(ref).endswith(".mrc") else project.job(ref).find("mask.mrc")
     path = path if os.path.isabs(path) else project.abs(path)
     with mrcfile.open(path, permissive=True) as f:
         m, ap = np.asarray(f.data, np.float32), float(f.voxel_size.x)
@@ -412,13 +425,14 @@ def _reference_map(rj: Job, cls: int = 0) -> tuple[np.ndarray, float, str]:
         names = [f"class{cls:02d}_map_nomask.mrc"]
     else:
         names = ["map_nomask.mrc", "map.mrc"]
-    path = next((os.path.join(rj.path, n) for n in names if os.path.exists(os.path.join(rj.path, n))), None)
+    path = next((rj.find(n) for n in names if rj.find(n)), None)
     if path is None:
         raise ValueError(f"{rj.name} has no {names[0]}")
     with mrcfile.open(path, permissive=True) as f:
         return np.array(f.data, np.float32), float(f.voxel_size.x), path
 
 
+@logged
 def run_refine3d(project: Project, job, log=print) -> dict:
     from . import abinitio as ab
     job = project.job(job)
@@ -443,6 +457,13 @@ def run_refine3d(project: Project, job, log=print) -> dict:
         next((c["resolution_a"] for c in rsum.get("classes", []) if c["cls"] == ref_cls), None) or 8.0
     res0 = s.res_start_a or max(8.0, float(r_ref))
     vol = map_to_box(ref, ref_apix, b, box_a / b)
+    start_sym = str(qj.params.get("sym") or "C1").upper()
+    sym_frame = None
+    if s.align_symmetry and s.sym.upper() != "C1" and s.sym.upper() != start_sym:
+        from .symalign import apply_frame, sym_frame as _frame
+        R, sym_frame = _frame(vol, box_a / b, s.sym, log=log)
+        vol, A = apply_frame(vol, A, R)
+        sym_frame["from"] = start_sym
     idx = torch.arange(clf.N)
     vol *= _scale_to_data(clf, idx, A, t, vol, b, max(res0, 10.0))
     init = ab.Volume(b, dev)
@@ -451,7 +472,7 @@ def run_refine3d(project: Project, job, log=print) -> dict:
     A_start = A.clone()
     sm = None if s.mask == "sphere" else ("auto" if s.mask == "auto" else torch.as_tensor(
         load_mask(project, s.mask, b, box_a / b)))
-    maps, A, t, z, fscs, res, vols = ab.refine_particles(clf, idx, A, t, init, sym=s.sym, n_iter=s.n_iter,
+    maps, A, t, z, fscs, res, vols = ab.refine_particles(clf, idx, A, t, init, sym=s.sym, n_iter=s.n_iter, step_min=s.min_step_deg,
                                                          res_start=res0, n_local=s.n_local, drop_frac=s.drop_frac,
                                                          global_at=tuple(range(1, s.global_iters + 1)),
                                                          global_res=s.global_res_a, box=b,
@@ -469,7 +490,7 @@ def run_refine3d(project: Project, job, log=print) -> dict:
     fsc_msk = ab.fsc_maps(h1 * smask, h2 * smask)
     for name, v in (("map.mrc", maps[0] * smask), ("map_nomask.mrc", maps[0]), ("mask.mrc", smask),
                     ("half1_unfil.mrc", h1), ("half2_unfil.mrc", h2)):
-        ab._save_mrc(os.path.join(job.path, name), v, apix)
+        ab._save_mrc(job.out(name), v, apix)
     rot, tilt, psi = ab.matrix_to_euler(A.cpu())
     fit = ab.refine_particles.last_score.cpu().numpy().astype(np.float32)
     used = (ab.refine_particles.last_weights > 0).numpy()
@@ -479,16 +500,19 @@ def run_refine3d(project: Project, job, log=print) -> dict:
         fit=fit, half=ab.refine_particles.last_half.numpy().astype(np.uint8), used=used))
     res_sol = ab.resolution_from_fsc(fsc_sol, box_a)
     tag = f"{job.name} · {clf.N:,} particles · {s.sym}"
-    report = refinement_report(job.path, tag, s.sym, box_a, apix, A_start, A, t, fit, used,
+    report = refinement_report(job, tag, s.sym, box_a, apix, A_start, A, t, fit, used,
                                ab.refine_particles.last_history,
                                fsc=dict(corrected=fsc_sol, unmasked=fsc_unm, masked=fsc_msk, sphere_masked=fscs[0]),
                                resolution_a=res_sol, maps=[maps[0].cpu().numpy()], masks=[smask.cpu().numpy()])
+    if sym_frame:
+        report["warnings"] = sym_frame.pop("warnings", []) + report.get("warnings", [])
     summ = dict(particles=int(clf.N), particles_used=int(used.sum()), duplicates_removed=n_dup,
-                duplicate_distance_a=round(dist, 1), sym=s.sym, resolution_a=round(float(res[0]), 2),
+                duplicate_distance_a=round(dist, 1), sym=s.sym, symmetry_frame=sym_frame,
+                resolution_a=round(float(res[0]), 2),
                 resolution_solvent_mask_a=round(res_sol, 2),
                 resolution_unmasked_a=round(ab.resolution_from_fsc(fsc_unm, box_a), 2),
                 apix=round(apix, 4), box=b, res_start_a=round(res0, 1), seconds=round(seconds, 1), **report,
-                fsc_solvent=[round(float(x), 4) for x in fsc_sol.cpu()], map="map.mrc")
+                fsc_solvent=[round(float(x), 4) for x in fsc_sol.cpu()], map=project.rel(job.find("map.mrc")))
     project.set_status(job, "finished", summ)
     ses.clf = None
     torch.cuda.empty_cache()
@@ -500,20 +524,20 @@ def run_refine3d(project: Project, job, log=print) -> dict:
 class HeteroRefineSettings:
     references: tuple = ()          # maps, one per class: job numbers ("12") or "job:class" ("25:2" = InitialModel
                                     # model 2, "30:3" = HeteroRefine class 3); a reference can be given several times
-    sym: str = "C1"
-    n_iter: int = 12
+    sym: str = "C1"                 # point-group symmetry, the user's choice
+    n_iter: int = 12                # iterations
     res_start_a: float = 20.0       # first alignment / comparison resolution
     max_res_a: float = 0.0          # finest resolution loaded (0: Nyquist)
     global_search: bool = True      # first iteration: every class searches all orientations (references in their own
                                     # frames, e.g. separate ab initio runs); off: all start from the poses' orientation
-    global_res_a: float = 15.0
-    n_local: int = 1
-    drop_frac: float = 0.0
+    global_res_a: float = 15.0      # resolution of that search (A)
+    n_local: int = 1                # local search rounds per iteration
+    drop_frac: float = 0.0          # share of worst-fitting particles left out of each reconstruction
     soft: bool = False              # soft: every particle in every class, weighted by its probability (RELION);
                                     # hard: in its best class only (each particle's probabilities are written either way)
-    diameter_a: float = 0.0
-    seed: int = 0
-    gpus: str = "auto"
+    diameter_a: float = 0.0         # particle diameter for the mask (0: from the extraction)
+    seed: int = 0                   # random seed (noise added to repeated references)
+    gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
 
 def hetero_refine_job(project: Project, particles, poses, s: HeteroRefineSettings, label: str = "") -> Job:
@@ -525,7 +549,7 @@ def hetero_refine_job(project: Project, particles, poses, s: HeteroRefineSetting
     p, q = project.job(particles), project.job(poses)
     refs = [project.job(str(r).split(":")[0]) for r in s.references]
     ins = [p, q] + [r for i, r in enumerate(refs) if r.id not in [x.id for x in [p, q] + refs[:i]]]
-    return project.new_job("HeteroRefine", dict(asdict(s), references=[str(r) for r in s.references], particles=p.id,
+    return project.new_job("HeteroRefine", dict(params_of(s), references=[str(r) for r in s.references], particles=p.id,
                                                 poses=q.id), ins, label or f"K{len(s.references)}_on{p.id:03d}")
 
 
@@ -537,8 +561,8 @@ def _reference(project: Project, ref: str):
     if rj.type == "HeteroRefine":
         return (*_reference_map(rj, int(k or 1))[:2], f"{rj.name} class {k or 1}")
     if k and rj.type == "InitialModel":
-        path = os.path.join(rj.path, f"map_nomask_{int(k)}.mrc")
-        if not os.path.exists(path):
+        path = rj.find(f"map_nomask_{int(k)}.mrc")
+        if not path:
             raise ValueError(f"{rj.name} has no model {k}")
         with mrcfile.open(path, permissive=True) as f:
             return np.array(f.data, np.float32), float(f.voxel_size.x), f"{rj.name} model {k}"
@@ -556,6 +580,7 @@ def _amplitude(vol: torch.Tensor, box_a: float, lo_a: float, hi_a: float) -> flo
     return float(torch.fft.rfftn(vol).abs()[band].mean())
 
 
+@logged
 def run_hetero_refine(project: Project, job, log=print) -> dict:
     """Each class starts from its reference low-passed to res_start_a. With global_search, every particle first
     searches all orientations against every class (at global_res_a) and goes to the class it fits best; then local
@@ -651,7 +676,7 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
         r_c = ab.resolution_from_fsc(f_c, box_a) if nk else float("nan")
         res_cls.append(r_c)
         if nk:
-            dg.write_fsc(os.path.join(job.path, f"class{k + 1:02d}_fsc"),
+            dg.write_fsc(job.out(f"class{k + 1:02d}_fsc.json")[:-5],
                          dict(corrected=f_c.cpu().numpy(), unmasked=ab.fsc_maps(h1, h2).cpu().numpy(),
                               masked=ab.fsc_maps(h1 * smask, h2 * smask).cpu().numpy(),
                               sphere_masked=fscs[k].cpu().numpy()), box_a, resolution_a=round(r_c, 3),
@@ -659,7 +684,7 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
         masks.append(smask.cpu().numpy())
         for nm, v in (("map", maps[k] * smask), ("map_nomask", maps[k]), ("mask", smask), ("half1_unfil", h1),
                       ("half2_unfil", h2)):
-            ab._save_mrc(os.path.join(job.path, f"class{k + 1:02d}_{nm}.mrc"), v, apix)
+            ab._save_mrc(job.out(f"class{k + 1:02d}_{nm}.mrc"), v, apix)
         table.append(dict(cls=k + 1, reference=names[k], particles=nk, share=round(nk / n, 4),
                           weight=round(float(post[:, k].sum()), 1),
                           confident=int(((z == k) & (post.max(1) > 0.9)).sum()),
@@ -667,7 +692,7 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
                           resolution_solvent_mask_a=round(r_c, 2) if r_c == r_c else None))
     tag = f"{job.name} · {n:,} particles · {K} classes · {s.sym}"
     labels = [f"class {k + 1}" for k in range(K)]
-    report = refinement_report(job.path, tag, s.sym, box_a, apix, A_start, A, t, fit, used,
+    report = refinement_report(job, tag, s.sym, box_a, apix, A_start, A, t, fit, used,
                                ab.refine_particles.last_history, fsc=fsc,
                                resolution_a=float(np.nanmin(res_cls)) if np.isfinite(res_cls).any() else float("nan"),
                                maps=[m.cpu().numpy() for m in maps], masks=masks, cls=z, class_labels=labels,
@@ -684,28 +709,30 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
     return summ
 
 
-def refinement_report(outdir: str, tag: str, sym: str, box_a: float, apix: float, A_start, A, t, fit, used, history,
+def refinement_report(job, tag: str, sym: str, box_a: float, apix: float, A_start, A, t, fit, used, history,
                       fsc: dict, resolution_a: float, maps: list, masks: list, cls=None, class_labels=None,
                       class_res=None) -> dict:
     """Diagnostics every 3D refinement writes (Refine3D, HeteroRefine): FSC curves (fsc.png + fsc.json / .star /
     .xml), angular distribution (views.png + views.json; per class with classes), progress per iteration
     (progress.png), per-particle fit / shift / orientation change (particles.png), map projections and sections with
-    the mask (map_views.png). Returns the summary entries (SCF, coverage, warnings, history)."""
+    the mask (map_views.png). job: a Job (files go to job.out(...)) or a folder. Returns the summary entries (SCF,
+    coverage, warnings, history)."""
+    out_ = job.out if hasattr(job, "out") else (lambda n: os.path.join(job, n))
     from . import diagnostics as dg
     from . import plots3d
     from .abinitio import matrix_to_euler
     fsc_np = {k: (v.cpu().numpy() if torch.is_tensor(v) else np.asarray(v)) for k, v in fsc.items()}
-    dg.write_fsc(os.path.join(outdir, "fsc"), fsc_np, box_a, resolution_a=round(resolution_a, 3), title=tag)
+    dg.write_fsc(out_("fsc.json")[:-5], fsc_np, box_a, resolution_a=round(resolution_a, 3), title=tag)
     curves = [(lab, fsc_np[k]) for k, lab in (("corrected", "solvent mask, corrected"), ("sphere_masked", "soft sphere"),
                                               ("unmasked", "no mask")) if k in fsc_np]
     if cls is not None:
         curves = [(class_labels[i], fsc_np[f"class{i + 1}"]) for i in range(len(class_labels)) if f"class{i + 1}" in fsc_np][:3]
     rot, tilt, _ = (x.numpy() for x in matrix_to_euler(A.cpu()))
     stats = dg.angular_stats(A.cpu(), sym)
-    dg.write_views(os.path.join(outdir, "views.json"), rot, tilt, stats)
+    dg.write_views(out_("views.json"), rot, tilt, stats)
     warnings = list(stats["warnings"])
-    plots3d.fsc_figure(os.path.join(outdir, "fsc.png"), curves, box_a, apix, tag)
-    plots3d.views_figure(os.path.join(outdir, "views.png"), rot, tilt, tag, stats)
+    plots3d.fsc_figure(out_("fsc.png"), curves, box_a, apix, tag)
+    plots3d.views_figure(out_("views.png"), rot, tilt, tag, stats)
     out = dict(scf=stats["scf"], view_coverage=dict(occupied=stats["occupied"], top10_share=stats["top10_share"]))
     if cls is not None:
         groups, per = [], []
@@ -715,14 +742,14 @@ def refinement_report(outdir: str, tag: str, sym: str, box_a: float, apix: float
                 st = dg.angular_stats(A.cpu()[torch.as_tensor(sel)], sym)
                 groups.append((lab, rot[sel], tilt[sel], st))
                 per.append(dict(cls=i + 1, scf=st["scf"], occupied=st["occupied"]))
-        plots3d.views_grid_figure(os.path.join(outdir, "views_classes.png"), groups, tag)
+        plots3d.views_grid_figure(out_("views_classes.png"), groups, tag)
         out["class_views"] = per
     if history:
-        plots3d.refine_history_figure(os.path.join(outdir, "progress.png"), history, tag, classes=cls is not None)
+        plots3d.refine_history_figure(out_("progress.png"), history, tag, classes=cls is not None)
         out["history"] = history
     moved = dg.orientation_change(A_start.cpu(), A.cpu(), sym) if A_start is not None else None
     tt = t.cpu().numpy() if torch.is_tensor(t) else np.asarray(t)
-    plots3d.particle_stats_figure(os.path.join(outdir, "particles.png"), np.asarray(fit), np.asarray(used, bool), tt,
+    plots3d.particle_stats_figure(out_("particles.png"), np.asarray(fit), np.asarray(used, bool), tt,
                                   moved, tag)
     if moved is not None:
         out["orientation_change_deg_median"] = round(float(np.median(moved)), 2)
@@ -731,54 +758,103 @@ def refinement_report(outdir: str, tag: str, sym: str, box_a: float, apix: float
             warnings.append(f"{(moved > 10).mean() * 100:.0f}% of particles moved more than 10 degrees from their "
                             "starting orientation: the start poses did not fit this map (global search may help)")
     if cls is None:
-        plots3d.map_views_figure(os.path.join(outdir, "map_views.png"), maps, ["map"], tag, masks)
+        plots3d.map_views_figure(out_("map_views.png"), maps, ["map"], tag, masks)
     else:
-        plots3d.class_summary_figure(os.path.join(outdir, "map_views.png"), maps, class_labels,
+        plots3d.class_summary_figure(out_("map_views.png"), maps, class_labels,
                                      [int((cls == i).sum()) for i in range(len(maps))], class_res, tag)
     out["warnings"] = warnings
-    out["figures"] = sorted(f for f in os.listdir(outdir) if f.endswith(".png") and ".light." not in f)
+    d = os.path.dirname(out_("fsc.png"))
+    out["figures"] = sorted(f for f in os.listdir(d) if f.endswith(".png") and ".light." not in f)
     return out
 
 
 # ---------------------------------------------------------------------------------------------- registry
-@dataclass
-class JobSpec:
-    """How a particle job type is made and run. Every front end (rerun, MCP, dashboard) goes through this table, so a
-    new job type is one entry here plus its settings dataclass and functions; nothing else changes.
-    settings: dataclass of the job's parameters (unknown keys in a stored job are ignored and missing ones take the
-    defaults, so parameters can be added or retired without breaking old jobs); inputs: the parameter names that hold
-    input job numbers, in the order make() takes them; make(project, *inputs, settings, label) -> Job;
-    run(project, job, log) -> summary."""
-    settings: type
-    inputs: tuple
-    make: object
-    run: object
+_PARTICLES = ("Extract", "Polish", "CtfRefine", "Select")
+_POSES = ("InitialModel", "Refine3D", "HeteroRefine")
+
+
+def _res_key(s: dict) -> str:
+    return (f"{_n(s.get('resolution_a'), 2)} Å {s.get('sym', '')}" + warn_mark(s)) if s.get("resolution_a") else ""
+
+
+def _hetero_key(s: dict) -> str:
+    c = s.get("classes") or []
+    if not c:
+        return ""
+    best = min((x.get("resolution_solvent_mask_a") or x.get("resolution_a") or float("inf")) for x in c)
+    return f"K{len(c)} · best {_n(best, 2)} Å" + warn_mark(s) if best < float("inf") else f"K{len(c)}"
 
 
 def registry() -> dict[str, JobSpec]:
+    """Every particle job type (see jobspec.py): rerun, the dashboard's New job form, MCP new_job / job_types, the
+    job list's key numbers and the reports all read this table."""
     from .ctfrefine import CtfRefineSettings, ctf_refine_job, run_ctf_refine
     from .polish import PolishSettings, polish_job, run_polish
     from .sharpen import SharpenSettings, run_sharpen, sharpen_job
-    return {
-        "Class2D": JobSpec(Class2DSettings, ("particles",), class2d_job, run_class2d),
-        "InitialModel": JobSpec(InitialModelSettings, ("class2d",), initial_model_job, run_initial_model),
-        "Refine3D": JobSpec(Refine3DSettings, ("particles", "poses", "reference"), refine3d_job, run_refine3d),
-        "HeteroRefine": JobSpec(HeteroRefineSettings, ("particles", "poses"), hetero_refine_job, run_hetero_refine),
-        "Polish": JobSpec(PolishSettings, ("refine",), polish_job, run_polish),
-        "CtfRefine": JobSpec(CtfRefineSettings, ("refine",), ctf_refine_job, run_ctf_refine),
-        "Sharpen": JobSpec(SharpenSettings, ("refine",), sharpen_job, run_sharpen),
-    }
+    specs = [
+        JobSpec("Class2D", "2D classification of the particles of an extraction or selection", Class2DSettings,
+                (Input("particles", _PARTICLES, doc="particles to classify"),), class2d_job, run_class2d,
+                key=lambda s: f"{_n(s.get('particles'))} ptcls · K{s.get('classes', '')}",
+                figures=("gallery.png",)),
+        JobSpec("InitialModel", "ab initio 3D from 2D classes and their particles", InitialModelSettings,
+                (Input("class2d", ("Class2D",), doc="the 2D classification (classes chosen in settings)"),),
+                initial_model_job, run_initial_model, key=_res_key,
+                figures=("map_views.png", "fsc.png", "views.png", "reprojections.png")),
+        JobSpec("Refine3D", "local 3D refinement with gold-standard halves", Refine3DSettings,
+                (Input("particles", _PARTICLES, doc="particles (e.g. re-centred, full box)"),
+                 Input("poses", _POSES, doc="starting orientations, matched by particle uid"),
+                 Input("reference", _POSES, optional=True, doc="starting map (default: the poses job's)")),
+                refine3d_job, run_refine3d, key=_res_key,
+                figures=("map_views.png", "fsc.png", "views.png", "progress.png", "particles.png")),
+        JobSpec("HeteroRefine", "heterogeneous refinement: K maps, particles sorted among them (hard or soft)",
+                HeteroRefineSettings,
+                (Input("particles", _PARTICLES, doc="particles"),
+                 Input("poses", _POSES, doc="starting orientations, matched by particle uid")),
+                hetero_refine_job, run_hetero_refine, key=_hetero_key,
+                figures=("map_views.png", "views_classes.png", "fsc.png", "progress.png")),
+        JobSpec("Polish", "per-particle motion tracks and per-frame dose weights from a refinement", PolishSettings,
+                (Input("refine", ("Refine3D",), doc="the refinement (its particles and map)"),),
+                polish_job, run_polish,
+                key=lambda s: f"{_n(s.get('particles'))} ptcls · {s.get('box', '')} px", figures=("polish.png",)),
+        JobSpec("CtfRefine", "per-particle defocus against the particle's own half map (gold standard)",
+                CtfRefineSettings, (Input("refine", ("Refine3D",), doc="the refinement (its particles, poses, maps)"),),
+                ctf_refine_job, run_ctf_refine,
+                key=lambda s: f"{_n(s.get('refined'))} ptcls · |Δdf| {_n(s.get('delta_abs_median_a'))} Å",
+                figures=("ctfrefine.png",)),
+        JobSpec("Sharpen", "post-processing: corrected masked FSC, B-factor, local resolution", SharpenSettings,
+                (Input("refine", ("Refine3D", "HeteroRefine"), doc="the refinement (a HeteroRefine: set cls)"),),
+                sharpen_job, run_sharpen,
+                key=lambda s: (f"{_n(s.get('resolution_a'), 2)} Å · B {_n(s.get('b_factor'))}" + warn_mark(s))
+                if s.get("resolution_a") else "",
+                figures=("postprocess.png", "localres.png")),
+    ]
+    return {sp.type: sp for sp in specs}
 
 
-def settings_of(job: Job, cls: type):
-    """A job's settings from its stored parameters: unknown keys ignored, missing ones at their defaults, lists back
-    to the tuples the dataclass declares."""
-    out = {}
-    for k, f in cls.__dataclass_fields__.items():
-        if k in job.params:
-            v = job.params[k]
-            out[k] = tuple(v) if isinstance(v, list) and isinstance(f.default, tuple) else v
-    return cls(**out)
+def new_job(project: Project, job_type: str, inputs: dict, settings: dict | None = None, label: str = "") -> Job:
+    """Make a job of any registered type from input job references and settings values (checked and converted
+    against the settings dataclass; unknown names are an error). Returns the job; spec.run(project, job) runs it."""
+    from .jobspec import coerce
+    spec = registry().get(job_type)
+    if spec is None:
+        raise ValueError(f"unknown job type {job_type!r} (known: {sorted(registry())})")
+    args = []
+    for i in spec.inputs:
+        ref = inputs.get(i.name)
+        if ref in (None, "", 0):
+            if not i.optional:
+                raise ValueError(f"{job_type}: input {i.name!r} is required ({'/'.join(i.types)} job)")
+            args.append(None)
+            continue
+        j = project.job(ref)
+        if j.type not in i.types:
+            raise ValueError(f"{job_type}: input {i.name!r} must be a {'/'.join(i.types)} job, not {j.name}")
+        args.append(j.id)
+    extra = set(inputs) - {i.name for i in spec.inputs}
+    if extra:
+        raise ValueError(f"{job_type}: unknown inputs {sorted(extra)}")
+    s = spec.settings(**coerce(spec.settings, settings or {}))
+    return spec.make(project, *args, s, label)
 
 
 # ------------------------------------------------------------------------------------------------- rerun
@@ -795,5 +871,5 @@ def rerun(project: Project, ref, log=print):
     spec = registry().get(old.type)
     if spec is None:
         raise ValueError(f"{old.type} jobs are not run again (make a new one)")
-    j = spec.make(project, *(old.params[k] for k in spec.inputs), settings_of(old, spec.settings))
+    j = spec.make(project, *(old.params.get(i.name) for i in spec.inputs), settings_of(old, spec.settings))
     return j, lambda: spec.run(project, j, log=log)

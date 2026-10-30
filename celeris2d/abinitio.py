@@ -773,6 +773,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                      batch: int = 256, n_local: int = 1, step_scale: float | None = None, global_at: tuple = (),
                      global_res: float = 12.0, drop_frac: float = 0.0, rebalance: float = 0.0,
                      box: int | None = None, relax_ops: torch.Tensor | None = None, relax_iters: int = 0,
+                     step_min: float = 0.5,
                      half: torch.Tensor | None = None, soft: bool = False, solvent_mask=None,
                      solvent_from_a: float = 15.0, log=print):
     """Local refinement of particle orientations A and shifts t (A, model shift) against CTF-modulated projections,
@@ -944,7 +945,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
         # ---- local search
         band = (kr >= 1) & (kr <= k_al)
         if step_scale is not None:
-            step = max(0.5, step_scale * math.degrees(al_res / diam))
+            step = max(step_min, step_scale * math.degrees(al_res / diam))
         Rl = local_rotations(step, n_local).to(dev)               # ((2n+1)^2, 3, 3) out-of-plane
         dpsi = torch.arange(-n_local, n_local + 1, dtype=torch.float32) * step
         Rc = (rotz(dpsi).to(dev)[:, None] @ Rl[None]).reshape(-1, 3, 3)   # (J, 3, 3) applied on the left: A' = Rc @ A
@@ -1052,7 +1053,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                             switched=round(switched / n, 4), pops=pops,
                             **({"max_posterior": round(float(post.max(1).values.mean()), 4)} if M > 1 else {})))
         if step_scale is None and changed / n < 0.3:
-            step = max(0.5, step / 2)
+            step = max(step_min, step / 2)
         wpart = torch.ones(n, device=dev)
         if drop_frac > 0:
             rel = torch.empty_like(score)        # fit relative to particles of similar defocus

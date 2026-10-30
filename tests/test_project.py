@@ -94,7 +94,7 @@ def test_jobs_picking_extraction_exports(tmp_path):
     assert len(prj.find(a["key"].iloc[0])["extractions"]) == 2
 
     # nothing foreign written by default; exports on request; all read back with the same particles
-    assert not os.path.exists(os.path.join(ex.path, "particles.star"))
+    assert not ex.find("particles.star")
     star, cs = export(prj, ex, "relion"), export(prj, ex, "cryosparc")
     export(prj, pj, "relion")
     export(prj, mc, "relion")
@@ -176,14 +176,15 @@ def test_class2d_selection_recentre(tmp_path):
     assert c.name == "005_class2d_K3_on004" and s["particles"] == len(prj.particles(ex))
     t = prj.table(c, "particles").read()
     assert set(t) >= {"uid", "cls", "psi", "shift_x_a", "shift_y_a", "maxprob"} and t["cls"].max() < 3
-    assert os.path.exists(os.path.join(c.path, "classes.mrcs")) and os.path.exists(os.path.join(c.path, "gallery.png"))
+    assert c.find("classes.mrcs") and c.find("gallery.png") and c.find("gallery.png").endswith("figures/j005_gallery.png")
+    assert os.path.exists(c.log_path) and "finished in" in open(c.log_path).read()
     k = int(np.bincount(t["cls"]).argmax()) + 1
     sel = jobs.select_classes(prj, c, [k])
     kept, rej = prj.selected_uids(sel), prj.selected_uids(sel, rejected=True)
     assert len(np.intersect1d(kept, rej)) == 0 and len(kept) + len(rej) == len(t["uid"])
     assert sel.params["classes"] == [k] and sel.params["rejected_classes"] == [i for i in (1, 2, 3) if i != k]
     for f in ("selection.png", "selected_classes.mrcs", "rejected_classes.mrcs"):
-        assert os.path.exists(os.path.join(sel.path, f)), f
+        assert sel.find(f), f
 
     # an alignment job with known shifts: particle 1 is moved onto particle 0 (a duplicate after re-centring)
     e = prj.particles(ex)

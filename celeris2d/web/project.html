@@ -54,6 +54,8 @@
   .warnbox b { color: var(--serious); }
   .figs .cap { color: var(--ink3); font-size: 11.5px; margin: -8px 0 14px; }
   details summary { cursor: pointer; color: var(--ink2); }
+  .log { max-height: 340px; overflow: auto; font: 11.5px ui-monospace, Menlo, monospace; white-space: pre-wrap;
+         background: var(--panel2); padding: 8px 10px; border-radius: 6px; margin: 6px 0 0; }
   .files a { display: block; font: 12px ui-monospace, Menlo, monospace; padding: 2px 0; }
   .bar { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
   .empty { color: var(--ink3); padding: 40px; text-align: center; }
@@ -65,6 +67,7 @@
   <h1>Celeris<span>2D</span> project</h1>
   <div id="root">loading...</div>
   <a href="/">2D dashboard</a>
+  <button id="newjob" class="primary" title="make a job of any type, its form built from the job type's settings">New job</button>
   <button id="theme" title="switch the page and its figures between dark and light">Light</button>
   <button id="refresh">Refresh</button>
 </header>
@@ -93,27 +96,8 @@ function figFor(path, files) {
   return files.some(f => f.path === lp) ? lp : path;
 }
 
-// the number a job is judged by, per type
-function key(j) {
-  const s = j.summary || {};
-  const f = (v, d = 0) => v == null ? '' : Number(v).toLocaleString(undefined, {maximumFractionDigits: d});
-  switch (j.type) {
-    case 'Import': return `${f(s.movies)} movies`;
-    case 'MotionCtf': return `${f(s.micrographs)} mics`;
-    case 'Pick': return `${f(s.picks)} picks`;
-    case 'Extract': case 'Polish': return `${f(s.particles)} ptcls · ${s.box || ''} px`;
-    case 'Select': return `${f(s.particles)} kept` + (s.rejected != null ? ` · ${f(s.rejected)} rej` : '');
-    case 'Class2D': return `${f(s.particles)} ptcls · K${s.classes || ''}`;
-    case 'InitialModel': case 'Refine3D': return s.resolution_a ? `${f(s.resolution_a, 2)} Å ${s.sym || ''}` + (s.warnings && s.warnings.length ? ' · ⚠' : '') : '';
-    case 'HeteroRefine': {
-      const c = s.classes || [];
-      const best = Math.min(...c.map(x => x.resolution_solvent_mask_a || Infinity));
-      return c.length ? `K${c.length} · best ${isFinite(best) ? f(best, 2) + ' Å' : '-'}` + (s.warnings && s.warnings.length ? ' · ⚠' : '') : '';
-    }
-    case 'Sharpen': return s.resolution_a ? `${f(s.resolution_a, 2)} Å · B ${f(s.b_factor)}` + (s.warnings && s.warnings.length ? ' · ⚠' : '') : '';
-    default: return '';
-  }
-}
+// the number a job is judged by: from its job type's spec on the server (jobspec.key_of)
+const key = j => j.key || '';
 
 async function load() {
   const r = await fetch('/api/project');
@@ -166,6 +150,7 @@ async function showJob(name, scroll = true) {
     ${j.error ? `<p class="err">${esc(j.error)}</p>` : ''}
     ${warns.length ? `<div class="warnbox">${warns.map(w => `<div><b>⚠ warning</b> ${esc(w)}</div>`).join('')}</div>` : ''}
     <div class="bar">
+      ${types[j.type] ? `<button id="edit" title="the New job form with this job's inputs and settings">Change settings and run</button>` : ''}
       ${canRerun ? `<button class="primary" id="rerun" ${j.status === 'running' ? 'disabled' : ''}>${['MotionCtf', 'Pick', 'Extract'].includes(j.type) ? 'Continue (new movies)' : 'Run again as a new job'}</button>` : ''}
     </div>
     <h3>Comes from</h3>${chips(j.lineage.slice(1))}
@@ -173,8 +158,13 @@ async function showJob(name, scroll = true) {
     <h3>Results</h3>${kv(summ)}
     ${figs.length ? `<h3>Figures</h3><div class="figs">${figs.map(f => `<img loading="lazy" src="/api/project/file?path=${encodeURIComponent(figFor(f.path, j.files))}&t=${Date.now()}" alt="${esc(f.path)}"><div class="cap">${esc(f.path)}</div>`).join('')}</div>` : ''}
     ${other.length ? `<h3>Files</h3><div class="files">${other.map(f => `<a href="/api/project/file?path=${encodeURIComponent(f.path)}" download>${esc(f.path)} (${(f.size / 1e6).toFixed(1)} MB)</a>`).join('')}</div>` : ''}
+    ${j.movie_figures ? `<p class="muted">${j.movie_figures} per-micrograph figures in figures/movies/</p>` : ''}
+    <h3>Log</h3><details id="logbox" ${j.status === 'running' ? 'open' : ''}><summary>${j.log ? esc(j.log) : 'no run log (jobs made before run logs, or not started)'}</summary><pre id="log" class="log"></pre></details>
     <h3>Parameters</h3><details><summary>${Object.keys(j.params).length} parameters</summary>${kv(j.params)}</details>`;
+  followLog(j.name);
   document.querySelectorAll('#detail .chip').forEach(e => e.onclick = () => showJob(e.dataset.n));
+  const eb = $('#edit');
+  if (eb) eb.onclick = () => jobForm(j.type, j.params);
   const b = $('#rerun');
   if (b) b.onclick = async () => {
     if (!confirm(`Run ${j.name} again?`)) return;
@@ -188,6 +178,85 @@ async function showJob(name, scroll = true) {
   if (scroll) $('#detail').scrollTop = 0;
 }
 
+// ------------------------------------------------------------------ New job (built from /api/project/jobtypes)
+let types = {};
+async function loadTypes() {
+  try {
+    const r = await fetch('/api/project/jobtypes');
+    if (r.ok) types = Object.fromEntries((await r.json()).map(t => [t.type, t]));
+  } catch (e) {}
+}
+
+function fieldInput(f, v) {
+  const id = 'f_' + f.name;
+  const val = v === undefined ? f.default : v;
+  if (f.kind === 'bool') return `<input type="checkbox" id="${id}" ${val ? 'checked' : ''}>`;
+  const shown = Array.isArray(val) ? val.join(', ') : (val == null ? '' : val);
+  const type = (f.kind === 'int' || f.kind === 'float') ? 'number' : 'text';
+  const step = f.kind === 'float' ? 'any' : '1';
+  return `<input type="${type}" ${type === 'number' ? `step="${step}"` : ''} id="${id}" value="${esc(shown)}">`;
+}
+
+function jobForm(type, params = {}) {
+  current = null;
+  renderList();
+  const names = Object.keys(types);
+  if (!names.length) { $('#detail').innerHTML = '<div class="err">no job types (server too old?)</div>'; return; }
+  type = type || names[0];
+  const t = types[type];
+  const sel = jobs.filter(x => x.status === 'finished');
+  const opt = (inp) => {
+    const ok = sel.filter(x => inp.types.includes(x.type));
+    const pre = params[inp.name] != null ? Number(params[inp.name]) : (ok.length ? ok[ok.length - 1].id : null);
+    return (inp.optional ? '<option value="">(default)</option>' : '') +
+      ok.map(x => `<option value="${x.id}" ${x.id === pre ? 'selected' : ''}>${esc(x.name)} ${esc(key(x))}</option>`).join('');
+  };
+  $('#detail').innerHTML = `
+    <h2>New job</h2>
+    <div class="bar"><select id="ftype">${names.map(n => `<option ${n === type ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+      <span class="muted">${esc(t.title)}</span></div>
+    <h3>Inputs</h3>
+    <table class="kv">${t.inputs.map(i => `<tr><td>${esc(i.name)}${i.optional ? '' : ' *'}</td><td><select id="in_${esc(i.name)}">${opt(i)}</select>
+      <div class="muted">${esc(i.doc)} (${esc(i.types.join(' / '))})</div></td></tr>`).join('')}</table>
+    <h3>Settings</h3>
+    <table class="kv">${t.settings.map(f => `<tr><td>${esc(f.name)}</td><td>${fieldInput(f, params[f.name])}
+      <div class="muted">${esc(f.help)}</div></td></tr>`).join('')}</table>
+    <div class="bar"><input id="flabel" placeholder="label (optional)" style="flex: 1; max-width: 360px"><button class="primary" id="frun" style="white-space: nowrap">Make and run</button></div>
+    <p class="err" id="ferr"></p>`;
+  $('#ftype').onchange = e => jobForm(e.target.value);
+  $('#frun').onclick = async () => {
+    const inputs = {}, settings = {};
+    t.inputs.forEach(i => { const v = $('#in_' + i.name).value; if (v) inputs[i.name] = Number(v); });
+    t.settings.forEach(f => {
+      const el = $('#f_' + f.name);
+      settings[f.name] = f.kind === 'bool' ? el.checked : el.value;
+    });
+    $('#frun').disabled = true;
+    const r = await fetch('/api/project/new', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({type, inputs, settings, label: $('#flabel').value})});
+    const d = await r.json();
+    if (!r.ok) { $('#ferr').textContent = d.detail; $('#frun').disabled = false; return; }
+    current = d.job;
+    load();
+  };
+}
+$('#newjob').onclick = () => jobForm(current && types[(jobs.find(x => x.name === current) || {}).type] ? jobs.find(x => x.name === current).type : null);
+
+let logTimer = null;
+async function followLog(name, offset = 0) {   // the run log, appended every 3 s while the job runs
+  clearTimeout(logTimer);
+  if (current !== name || !$('#log')) return;
+  const r = await fetch(`/api/project/log?job=${encodeURIComponent(name)}&offset=${offset}`);
+  if (!r.ok || current !== name) return;
+  const d = await r.json();
+  const pre = $('#log');
+  const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
+  pre.textContent += d.text;
+  if (atEnd) pre.scrollTop = pre.scrollHeight;
+  if (d.status === 'running') logTimer = setTimeout(() => followLog(name, d.offset), 3000);
+  else if (offset && d.text) showJob(name, false);   // just finished: show its results
+}
+
 $('#q').oninput = renderList;
 $('#theme').onclick = () => {
   theme = theme === 'dark' ? 'light' : 'dark';
@@ -196,6 +265,7 @@ $('#theme').onclick = () => {
   if (current) showJob(current, false);
 };
 applyTheme();
+loadTypes();
 $('#refresh').onclick = load;
 if (location.hash.length > 1) current = decodeURIComponent(location.hash.slice(1));   // /project#014 opens job 14
 load();

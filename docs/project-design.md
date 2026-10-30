@@ -26,6 +26,24 @@ myproject/
   Trash/                     deleted jobs (folder + data), until emptied
 ```
 
+Inside a job folder (jobs made before this layout keep their flat files and are read the same way, `Job.find`):
+
+```
+  014_refine3d_C1_on012/
+    job.json  summary.json         the job's record (fixed names)
+    j014_run.log                   time-stamped log of the run (start, progress, end or the error with traceback);
+                                   the dashboard shows it and follows it while the job runs
+    maps/      j014_map.mrc  j014_half1_unfil.mrc  j014_mask.mrc ...
+    figures/   j014_fsc.png  j014_fsc.light.png  j014_views.png ...   (figures/movies/: per-micrograph figures)
+    data/      j014_fsc.star  j014_fsc.xml  j014_fsc.json  j014_views.json  j014_particles.star ...
+    particles/                     the sharded particle table (uid, pose, half, ...)
+```
+
+Every result file carries the job number (`j014_`), so a file copied out of the project, or listed by RELION next
+to another job's, is never ambiguous (RELION identifies files by name). Code writes through `job.out(name)` (folder
+by extension, prefix added) and reads through `job.find(name)`; job run functions are wrapped with `@logged`
+(`project.run_log`), so each job type gets its run log without code of its own.
+
 Measured on 20 EMPIAR-10025 movies: 4.71 GB, of which 4.64 GB are micrographs and particle stacks (purgeable);
 statistics, picks and tables are a few MB.
 
@@ -119,14 +137,19 @@ engine's model convention (the particle's centre is at +shift from the box centr
   `polish.py`'s docstring); a particle job like an extraction, same uids, centred at the refined centre, and the
   table keeps each particle's half (its track was fitted against that half map).
 - **Sharpen** (on a Refine3D job or a HeteroRefine class; `celeris2d/sharpen.py`, RELION PostProcess): corrected masked FSC (phases
-  randomised beyond the shell where the unmasked FSC drops below 0.8), automatic Guinier B-factor (10 A to the
-  resolution), FSC weighting, low-pass at the resolution. `sharpened.mrc`, `sharpened_masked.mrc`,
+  randomised beyond the shell where the unmasked FSC drops below 0.8, the correction applied from 2 shells further,
+  as RELION does), automatic Guinier B-factor (10 A to the resolution), FSC weighting, low-pass at the resolution.
+  Mask (`mask="auto"`, default; `masks.py`): the half maps' average and half difference low-passed to 15 A, the
+  difference (noise only, filtered the same way) sets the threshold at 5 sd (at least 5 % of the maximum), pieces
+  under 5 % of the largest dropped, +3 A, cosine edge max(8 A, 6 px) by Euclidean distance (round outline).
+  `mask="refine"` uses the refinement's mask. Same numbers as the refinement's mask on T20S (3.10 A, B -107 vs
+  -106) and the 2025_10 data (7.86 A, B -383 vs -382), smoother outline. Shells past the half maps' content (a
+  refinement reconstructs to a little beyond its resolution) get no FSC: plotting them showed the mask leakage
+  only, rising towards 0.2. `sharpened.mrc`, `sharpened_masked.mrc`,
   `postprocess.png` (four FSC curves, Guinier plot, central slices with the mask outline) and warnings: the mask
   correlating randomised maps (too tight), density beyond the mask's soft edge, a Guinier fit on few shells or
   r^2 < 0.8, single-shell drops of the unmasked FSC. T20S: 3.05 A, B -102 A^2 (r^2 0.93) polished; 3.10 A,
-  B -106 A^2 unpolished; no warnings, 1-2 s. The one-shell dip of the corrected curve sits at the first randomised
-  shell (the mask leaks correlation from the unrandomised shells into it; RELION's curve has the same) - not a
-  reconstruction artifact; the unmasked curve has none.
+  B -106 A^2 unpolished; no warnings, 1-2 s.
 
 **Diagnostics every 3D job writes** (`jobs.refinement_report`, `diagnostics.py`, figures in `plots3d.py`):
 `fsc.png` and the curves as `fsc.json` (all curves), `fsc.star` (RELION `data_fsc` labels) and `fsc.xml` (EMDB
@@ -154,10 +177,16 @@ particles in processing order) and `micrographs.csv`; per-micrograph figures for
 `x.png` and `x.light.png`; the project page switches both. Colours come from the theme (validated categorical
 slots, sequential blue ramp, blue/red diverging, fixed status colours), never literals.
 
-**Job registry** (`jobs.registry()`): per particle job type its settings dataclass, input parameters, make and
-run functions. Rerun (and anything else that handles jobs generically) goes through it, so a new job type is one
-entry; stored parameters are read with `settings_of` (unknown keys ignored, missing ones at their defaults), so
-settings can be added or retired without breaking old jobs.
+**Job registry** (`jobs.registry()`, types in `jobspec.py`): one `JobSpec` per particle job type - title, settings
+dataclass, inputs (with the job types each accepts), make / run functions, key numbers, main figures. Every front
+end reads it: rerun, the project page's "New job" / "Change settings and run" form (`/api/project/jobtypes`,
+`/api/project/new`; fields, defaults and help come from the settings dataclass and its comments), MCP `job_types`
+/ `new_job`, the job list's key numbers and JOBS.md. A new job type is one entry plus its settings and functions;
+`tests/test_registry.py` checks every entry (form round trip, help on every field, unknown / missing stored keys,
+input types, key numbers) without running it. Stored parameters carry `settings_version`; a settings class with
+`VERSION` > 1 has `migrate(params, from_version)` for renamed or re-meant fields (Sharpen 2: an empty mask used to
+mean the refinement's mask, now "auto"). Adding a field needs no migration: unknown keys are ignored and missing
+ones take their defaults.
 
 **Gold-standard halves are never mixed.** A particle keeps the half of the refinement its poses come from
 (Refine3D reads the poses job's `half` column; RELION's rlnRandomSubset), so a polished or re-refined particle is

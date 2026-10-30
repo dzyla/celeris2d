@@ -880,13 +880,17 @@ def create(workdir, project_dir=None):
     @app.get("/api/project")
     def project_jobs(root: str = ""):
         """Every job: number, type, label, status, inputs, key numbers; newest last."""
+        from .jobs import registry
+        from .jobspec import key_of
         prj = _prj(root or None)
+        reg = registry()
         out = []
         for r in prj.jobs().itertuples():
+            summ = prj.summary_of(int(r.id))
             out.append(dict(id=int(r.id), name=r.name, type=r.type, label=r.label, status=r.status,
                             inputs=[prj.job(int(i)).name for i in json.loads(r.inputs)],
                             created=float(r.created), updated=float(r.updated),
-                            summary=_small(prj.summary_of(int(r.id)))))
+                            key=key_of(r.type, summ, reg), summary=_small(summ)))
         running = [k for k, t in proj_state["runs"].items() if t["thread"].is_alive()]
         return dict(root=prj.root, jobs=out, running=running)
 
@@ -897,15 +901,32 @@ def create(workdir, project_dir=None):
         j = prj.job(job)
         files = []
         for dp, dn, fn in os.walk(j.path):
-            dn[:] = [d for d in dn if d not in ("particles", "picks", "rejected", "session", "staging")]
+            dn[:] = sorted(d for d in dn if d not in ("particles", "picks", "rejected", "session", "staging", "movies"))
             for f in sorted(fn):
-                if f.endswith((".png", ".mrc", ".mrcs", ".star", ".cs", ".md")):
+                if f.endswith((".png", ".mrc", ".mrcs", ".star", ".cs", ".csg", ".json", ".xml", ".csv", ".md")) \
+                        and f not in ("job.json", "summary.json"):
                     full = os.path.join(dp, f)
                     files.append(dict(path=prj.rel(full), size=os.path.getsize(full)))
+        movies = os.path.join(j.path, "figures", "movies")
         run = proj_state["runs"].get(j.name)
         return dict(name=j.name, type=j.type, status=j.status, params=j.params, summary=prj.summary_of(j),
                     lineage=prj.lineage(j), dependents=prj.dependents(j), files=files,
+                    movie_figures=len(os.listdir(movies)) if os.path.isdir(movies) else 0,
+                    log=prj.rel(j.log_path) if os.path.exists(j.log_path) else None,
                     error=run["error"] if run else None)
+
+    @app.get("/api/project/log")
+    def project_log(job: str, offset: int = 0):
+        """The job's run log from byte `offset` on (the page polls it while the job runs)."""
+        prj = _prj()
+        j = prj.job(job)
+        if not os.path.exists(j.log_path):
+            return dict(text="", offset=0, status=j.status)
+        with open(j.log_path, "rb") as fh:
+            size = fh.seek(0, 2)
+            start = offset if 0 <= offset <= size else max(0, size - 200_000)
+            fh.seek(start)
+            return dict(text=fh.read().decode(errors="replace"), offset=size, status=j.status)
 
     @app.get("/api/project/file")
     def project_file(path: str):
@@ -919,16 +940,44 @@ def create(workdir, project_dir=None):
         mt = "image/png" if full.endswith(".png") else "application/octet-stream"
         return Response(data, media_type=mt, headers={"Cache-Control": "no-cache"})
 
+    @app.get("/api/project/jobtypes")
+    def project_jobtypes():
+        """Every particle job type (jobs.registry()): title, inputs with the job types they accept, settings with
+        their kinds, defaults and help (from the settings dataclasses) - the New job form is built from this."""
+        from .jobs import registry
+        from .jobspec import describe
+        return [describe(sp) for sp in registry().values()]
+
+    @app.post("/api/project/new")
+    def project_new(body: dict = Body(...)):
+        """Make and run a job of any registered type: {type, inputs: {name: job}, settings: {...}, label}."""
+        from .jobs import new_job, registry
+        spec = registry().get(body.get("type"))
+        if spec is None:
+            raise HTTPException(400, f"unknown job type {body.get('type')!r}")
+        return _start_job(lambda prj: (lambda j: (j, lambda: spec.run(prj, j, log=st._log)))(
+            new_job(prj, spec.type, body.get("inputs") or {}, body.get("settings") or {}, body.get("label") or "")),
+            body.get("type"))
+
     @app.post("/api/project/rerun")
     def project_rerun(body: dict = Body(...)):
         """Run a job again (jobs.rerun): particle jobs as a new job with the same parameters, movie jobs carry on
         with movies they do not have. One run at a time."""
         from .jobs import rerun
+        return _start_job(lambda prj: rerun(prj, body["job"], log=st._log), body["job"])
+
+    def _start_job(make, what):
+        """make(project) -> (job, fn) under the GPU-job lock (no second job is made while one runs); fn runs on the
+        job thread, a failure marks the job failed."""
         prj = _prj()
         rec = dict(error=None)
 
-        def prepare():                               # under the GPU-job lock: no second job is made while one runs
-            j, fn = rerun(prj, body["job"], log=st._log)
+        def prepare():
+            try:
+                j, fn = make(prj)
+            except ValueError as e:
+                rec["bad"] = str(e)
+                raise
             rec["job"] = j
 
             def work():
@@ -940,9 +989,9 @@ def create(workdir, project_dir=None):
                     raise
             return j.name, work
         try:
-            name, rec["thread"] = submit("project", body["job"], None, prepare=prepare)
+            name, rec["thread"] = submit("project", what, None, prepare=prepare)
         except ValueError as e:
-            raise HTTPException(400, str(e))
+            raise HTTPException(400, rec.get("bad") or str(e))
         j = rec["job"]
         proj_state["runs"][name] = rec
         return dict(job=j.name)

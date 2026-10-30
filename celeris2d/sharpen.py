@@ -19,26 +19,36 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
+from typing import ClassVar
 
 import numpy as np
 import torch
 
 from .plotstyle import GRAY, STATUS, T, grid_y, image_axes, plt, themed, title, top, warnings_text
-from .project import Job, Project
+from .jobspec import params_of, settings_of
+from .project import Job, Project, logged
 
 
 @dataclass
 class SharpenSettings:
+    VERSION: ClassVar[int] = 2      # 2: mask "" no longer means the refinement's mask ("auto" is the default)
     b_factor: float = 0.0           # applied B-factor (A^2, RELION sign: negative sharpens); 0: automatic (Guinier fit)
     fit_from_a: float = 10.0        # Guinier fit from this resolution to the map's resolution
     resolution_a: float = 0.0       # low-pass (A); 0: the corrected masked FSC at 0.143
-    mask: str = ""                  # mask .mrc (path, absolute or relative to the project); "": the refinement's
+    mask: str = "auto"              # "auto": made from the half maps (masks.auto_mask); "refine": the refinement's;
+                                    # else a mask .mrc (path, absolute or relative to the project)
     edge_shells: int = 2            # cosine edge of the low-pass (Fourier shells)
-    fsc_weight: bool = True
+    fsc_weight: bool = True         # weight each shell by sqrt(2 FSC / (1 + FSC)) (RELION)
     cls: int = 0                    # a HeteroRefine job: the class (1-based) to sharpen
     local_res: bool = True          # local resolution (localres.py): localres.mrc + localres_filtered.mrc + figure
     local_window_a: float = 0.0     # its window (0: ~7x the resolution)
+
+    @classmethod
+    def migrate(cls, params: dict, from_version: int) -> dict:
+        if from_version < 2 and not params.get("mask"):   # version 1 used the refinement's mask by default
+            params = dict(params, mask="refine")
+        return params
 
 
 def sharpen_job(project: Project, refine, s: SharpenSettings, label: str = "") -> Job:
@@ -48,7 +58,7 @@ def sharpen_job(project: Project, refine, s: SharpenSettings, label: str = "") -
         raise ValueError(f"{r.name} is not a Refine3D or HeteroRefine job")
     if r.type == "HeteroRefine" and not s.cls:
         raise ValueError(f"{r.name}: choose the class to sharpen (cls)")
-    return project.new_job("Sharpen", dict(asdict(s), refine=r.id), [r],
+    return project.new_job("Sharpen", dict(params_of(s), refine=r.id), [r],
                            label or (f"on{r.id:03d}" + (f"c{s.cls}" if s.cls else "")))
 
 
@@ -73,6 +83,8 @@ def _shells(n: int, dev):
 
 def _res(c: np.ndarray, box_a: float, thr: float) -> float:
     for i in range(1, len(c)):
+        if np.isnan(c[i]):              # past the half maps' content: as far as they go
+            return box_a / max(i - 1, 1)
         if c[i] < thr:
             return box_a / i
     return box_a / (len(c) - 1)
@@ -87,6 +99,20 @@ def _dips(c: np.ndarray, box_a: float, upto: int) -> list[float]:
     return out
 
 
+def content_end(h: torch.Tensor, kk: torch.Tensor) -> int:
+    """Last Fourier shell with content: a refinement reconstructs to a limit a little beyond its resolution, the
+    shells after it are (near) zero - a 100-fold fall of the power within 4 shells, which no real map shows."""
+    n = h.shape[0]
+    nsh = n // 2 + 1
+    sh = torch.round(kk).long().clamp(max=nsh - 1).reshape(-1)
+    pw = torch.zeros(nsh, device=h.device).index_add_(0, sh, (torch.fft.rfftn(h).abs() ** 2).reshape(-1).float())
+    p = (pw / torch.bincount(sh, minlength=nsh).float().clamp_min(1)).cpu().numpy()
+    for i in range(8, nsh - 4):
+        if p[i + 4] < 0.01 * p[i]:      # the last shell above 1% of the power before the fall
+            return i + max(j for j in range(4) if p[i + j] >= 0.01 * p[i])
+    return nsh - 1
+
+
 def postprocess(h1: np.ndarray, h2: np.ndarray, mask: np.ndarray, apix: float, s: SharpenSettings, dev=None) -> dict:
     """The sharpening of two half maps (n^3, same box) with a soft mask; returns maps, curves and numbers."""
     from .abinitio import corrected_masked_fsc
@@ -97,8 +123,11 @@ def postprocess(h1: np.ndarray, h2: np.ndarray, mask: np.ndarray, apix: float, s
     kk = _shells(n, dev)
     sh = torch.round(kk).long()
     nsh = n // 2 + 1
-    f_c, f_m, f_r, f_un, k_r = corrected_masked_fsc(t1, t2, m, parts=True)   # the one used by the refinements
-    f_un, f_m, f_r, f_c = (x[:nsh].cpu().numpy() for x in (f_un, f_m, f_r, f_c))
+    k_end = content_end(t1, kk)          # the refinement reconstructs a little beyond its resolution: zeros after
+    f_c, f_m, f_r, f_un, k_r = corrected_masked_fsc(t1, t2, m, parts=True)   # the one the refinements use
+    f_un, f_m, f_r, f_c = (x[:nsh].cpu().numpy().copy() for x in (f_un, f_m, f_r, f_c))
+    for c in (f_un, f_m, f_r, f_c):     # shells the half maps hold nothing in: no FSC (mask leakage only)
+        c[k_end + 1:] = np.nan
     res = s.resolution_a or _res(f_c, box_a, 0.143)
     k_res = box_a / res                                               # shell of the low-pass
 
@@ -155,41 +184,49 @@ def postprocess(h1: np.ndarray, h2: np.ndarray, mask: np.ndarray, apix: float, s
                 amp=amp, amp_sharp=amp_s, s2=s2, fit=fit, b_factor=float(b), b_auto=float(b_auto), resolution_a=float(res),
                 resolution_masked_a=_res(f_m, box_a, 0.143), resolution_unmasked_a=_res(f_un, box_a, 0.143),
                 resolution_05_a=_res(f_c, box_a, 0.5), mask_fraction=float(m.mean()), density_outside_mask=outside,
-                fsc_dips_a=dips, warnings=warnings)
+                fsc_dips_a=dips, warnings=warnings, content_to_a=round(box_a / max(k_end, 1), 2))
 
 
-def _settings_of(job, cls):
-    from .jobs import settings_of
-    return settings_of(job, cls)
-
-
+@logged
 def run_sharpen(project: Project, job, log=print) -> dict:
     job = project.job(job)
-    s = _settings_of(job, SharpenSettings)
+    s = settings_of(job, SharpenSettings)
     rj = project.job(job.params["refine"])
     t0 = time.time()
     pre = f"class{s.cls:02d}_" if rj.type == "HeteroRefine" else ""
-    h1, apix = _read(os.path.join(rj.path, f"{pre}half1_unfil.mrc"))
-    h2, _ = _read(os.path.join(rj.path, f"{pre}half2_unfil.mrc"))
-    mpath = project.abs(s.mask) if s.mask else os.path.join(rj.path, f"{pre}mask.mrc")
-    mask, mapix = _read(mpath)
+    h1, apix = _read(rj.find(f"{pre}half1_unfil.mrc"))
+    h2, _ = _read(rj.find(f"{pre}half2_unfil.mrc"))
+    mask_info = {}
+    if s.mask in ("auto", ""):
+        from .masks import auto_mask
+        mask, mask_info = auto_mask(h1, h2, apix)
+        mpath = job.out("mask.mrc")
+        _write(mpath, mask, apix)
+        mapix = apix
+        log(f"[sharpen] automatic mask: threshold {mask_info['threshold_sigma']} sd of the noise "
+            f"({mask_info['threshold_frac_max']:.3f} of the maximum), {mask_info['pieces_kept']} of "
+            f"{mask_info['pieces']} pieces kept, +{mask_info['dilate_a']} A, soft edge {mask_info['soft_a']} A, "
+            f"{mask_info['volume_fraction'] * 100:.1f}% of the box")
+    else:
+        mpath = rj.find(f"{pre}mask.mrc") if s.mask == "refine" else project.abs(s.mask)
+        mask, mapix = _read(mpath)
     if mask.shape != h1.shape or abs(mapix - apix) > 1e-3 * apix:
         raise ValueError(f"mask {mpath}: {mask.shape} at {mapix:.4f} A/px, half maps {h1.shape} at {apix:.4f} A/px")
     r = postprocess(h1, h2, np.clip(mask, 0, 1), apix, s)
-    _write(os.path.join(job.path, "sharpened.mrc"), r["sharp"], apix)
-    _write(os.path.join(job.path, "sharpened_masked.mrc"), r["sharp"] * r["mask"], apix)
+    _write(job.out("sharpened.mrc"), r["sharp"], apix)
+    _write(job.out("sharpened_masked.mrc"), r["sharp"] * r["mask"], apix)
     src_name = rj.name + (f" class {s.cls}" if pre else "")
-    figure(os.path.join(job.path, "postprocess.png"), r, f"{job.name} (from {src_name})")
+    figure(job.out("postprocess.png"), r, f"{job.name} (from {src_name})")
     from .diagnostics import write_fsc
-    write_fsc(os.path.join(job.path, "fsc"), r["fsc"], r["box_a"], resolution_a=round(r["resolution_a"], 3),
+    write_fsc(job.out("fsc.json")[:-5], r["fsc"], r["box_a"], resolution_a=round(r["resolution_a"], 3),
               main="corrected", title=f"{job.name} (from {src_name})")
-    with open(os.path.join(job.path, "guinier.json"), "w") as f:
+    with open(job.out("guinier.json"), "w") as f:
         json.dump(dict(s2_inv_a2=r["s2"].round(6).tolist(), ln_amplitude=np.log(np.maximum(r["amp"], 1e-30)).round(4).tolist(),
                        ln_amplitude_sharpened=np.log(np.maximum(r["amp_sharp"], 1e-30)).round(4).tolist(),
                        fit={k: v for k, v in r["fit"].items()}, b_factor=r["b_factor"], b_auto=r["b_auto"]), f)
     lres = None
     if s.local_res:
-        lres = local_resolution(job.path, h1, h2, r, apix, s, f"{job.name} (from {src_name})", log)
+        lres = local_resolution(job, h1, h2, r, apix, s, f"{job.name} (from {src_name})", log)
         r["warnings"] += lres.pop("warnings", [])
     for w in r["warnings"]:
         log(f"[sharpen] warning: {w}")
@@ -198,17 +235,17 @@ def run_sharpen(project: Project, job, log=print) -> dict:
                 b_factor=round(r["b_factor"], 1), b_factor_auto=round(r["b_auto"], 1),
                 guinier_fit=dict(from_a=r["fit"]["from_a"], to_a=r["fit"]["to_a"], shells=r["fit"]["shells"],
                                  r2=round(r["fit"]["r2"], 3) if r["fit"]["r2"] == r["fit"]["r2"] else None),
-                randomised_phases_from_a=round(r["randomised_from_a"], 2), mask=project.rel(mpath),
+                randomised_phases_from_a=round(r["randomised_from_a"], 2), mask=project.rel(mpath), mask_auto=mask_info or None, content_to_a=r["content_to_a"],
                 mask_fraction=round(r["mask_fraction"], 4), density_outside_mask=round(r["density_outside_mask"], 4),
                 fsc_dips_a=r["fsc_dips_a"], warnings=r["warnings"], apix=round(apix, 4), box=int(h1.shape[0]),
-                fsc_corrected=[round(float(x), 4) for x in r["fsc"]["corrected"]], map="sharpened.mrc",
+                fsc_corrected=[round(float(x), 4) for x in r["fsc"]["corrected"]], map=project.rel(job.out("sharpened.mrc")),
                 **({"local_resolution": lres} if lres else {}), seconds=round(time.time() - t0, 1))
     project.set_status(job, "finished", summ)
     log(f"[sharpen] {summ['resolution_a']} A (corrected masked FSC 0.143), B {summ['b_factor']} A^2")
     return summ
 
 
-def local_resolution(outdir: str, h1, h2, r: dict, apix: float, s: SharpenSettings, title_: str, log=print) -> dict:
+def local_resolution(job: Job, h1, h2, r: dict, apix: float, s: SharpenSettings, title_: str, log=print) -> dict:
     """Local resolution of the half maps inside the mask (localres.py): localres.mrc (A per voxel), localres_filtered.mrc
     (the B-sharpened map low-passed at every voxel to its local resolution), localres.png, localres.json."""
     from . import plots3d
@@ -225,12 +262,12 @@ def local_resolution(outdir: str, h1, h2, r: dict, apix: float, s: SharpenSettin
     from .localres import local_filter
     filt = local_filter(sharpB, lr, apix)
     lr_np = lr.cpu().numpy()
-    _write(os.path.join(outdir, "localres.mrc"), lr_np, apix)
-    _write(os.path.join(outdir, "localres_filtered.mrc"), filt.cpu().numpy(), apix)
+    _write(job.out("localres.mrc"), lr_np, apix)
+    _write(job.out("localres_filtered.mrc"), filt.cpu().numpy(), apix)
     st = out["stats"]
-    with open(os.path.join(outdir, "localres.json"), "w") as f:
+    with open(job.out("localres.json"), "w") as f:
         json.dump(st, f)
-    plots3d.localres_figure(os.path.join(outdir, "localres.png"), r["sharp"], lr_np, m, r["resolution_a"], st, title_)
+    plots3d.localres_figure(job.out("localres.png"), r["sharp"], lr_np, m, r["resolution_a"], st, title_)
     warnings = []
     if st["at_nyquist"] > 0.05:
         nyq = 2 * apix
@@ -245,7 +282,8 @@ def local_resolution(outdir: str, h1, h2, r: dict, apix: float, s: SharpenSettin
     log(f"[sharpen] local resolution: median {st['median_a']} A (5-95%: {st['p05_a']}-{st['p95_a']} A), window "
         f"{st['window_a']} A, {time.time() - t0:.1f}s")
     keep = {k: st[k] for k in ("median_a", "p05_a", "p25_a", "p75_a", "p95_a", "window_a", "at_nyquist")}
-    keep.update(map="localres.mrc", filtered="localres_filtered.mrc", seconds=round(time.time() - t0, 1),
+    keep.update(map=os.path.relpath(job.out("localres.mrc"), job.root),
+                filtered=os.path.relpath(job.out("localres_filtered.mrc"), job.root), seconds=round(time.time() - t0, 1),
                 warnings=warnings)
     return keep
 

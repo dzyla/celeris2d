@@ -276,6 +276,29 @@ def _background_job(job, fn):
 
 
 @server.tool()
+def job_types() -> str:
+    """Every particle job type this version can run: what it does, its inputs (and the job types each accepts) and
+    its settings (kind, default, help). new_job makes any of them; the specific tools (classify_job, refine3d, ...)
+    are shortcuts for the common settings."""
+    from .jobs import registry
+    from .jobspec import describe
+    return _js([describe(sp) for sp in registry().values()])
+
+
+@server.tool()
+def new_job(job_type: str, inputs: dict, settings: dict | None = None, label: str = "") -> str:
+    """Make and run (in the background; job_status / job_report) a job of any type listed by job_types, e.g.
+    new_job("Sharpen", {"refine": "14"}, {"mask": "auto", "local_res": true}). Settings not given take their
+    defaults; unknown inputs or settings are an error. Symmetry is the user's choice, never guessed."""
+    from .jobs import new_job as _new, registry
+    prj = _p()
+    j = _new(prj, job_type, inputs, settings or {}, label)
+    spec = registry()[job_type]
+    _background_job(j, lambda: spec.run(prj, j, log=lambda *a: None))
+    return _js(dict(job=j.name, params=j.params))
+
+
+@server.tool()
 def classify_job(particles_job: str, n_classes: int = 50, max_res_a: float = 0.0, diameter_a: float = 0.0,
                  seeds: int = 1, label: str = "") -> str:
     """A Class2D job on the particles of an Extract, Polish or Select job, in the background (job_status; then
@@ -360,12 +383,12 @@ def polish(refine_job: str, label: str = "") -> str:
 
 
 @server.tool()
-def sharpen(refine_job: str, b_factor: float = 0.0, resolution_a: float = 0.0, mask: str = "", cls: int = 0,
+def sharpen(refine_job: str, b_factor: float = 0.0, resolution_a: float = 0.0, mask: str = "auto", cls: int = 0,
             local_res: bool = True, label: str = "") -> list:
     """A Sharpen job (RELION PostProcess) on a Refine3D job's half maps (or class cls of a HeteroRefine): corrected
     masked FSC (phase randomisation), automatic Guinier B-factor (b_factor 0; RELION sign, negative sharpens), FSC
-    weighting and low-pass at the resolution (resolution_a 0: from the corrected FSC). mask: a .mrc path (default
-    the refinement's solvent mask). local_res: local resolution map, a map filtered to it, and its figure.
+    weighting and low-pass at the resolution (resolution_a 0: from the corrected FSC). mask: "auto" (made from the
+    half maps: threshold above their noise, round soft edge), "refine" (the refinement's) or a .mrc path. local_res: local resolution map, a map filtered to it, and its figure.
     Returns the summary (resolutions, B-factor, fit quality, mask checks, local resolution, warnings) and figures."""
     from .sharpen import SharpenSettings, run_sharpen, sharpen_job
     prj = _p()
@@ -375,8 +398,8 @@ def sharpen(refine_job: str, b_factor: float = 0.0, resolution_a: float = 0.0, m
         summ = run_sharpen(prj, j, log=lambda *a: None)
     out = [_js(dict(job=j.name, **{k: v for k, v in summ.items() if k != "fsc_corrected"}))]
     for fn in ("postprocess.png", "localres.png"):
-        path = os.path.join(j.path, fn)
-        if os.path.exists(path):
+        path = j.find(fn)
+        if path:
             with open(path, "rb") as fh:
                 out.append(Image(data=fh.read(), format="png"))
     return out
@@ -443,9 +466,8 @@ def job_report(job: str, movies: list[str] | None = None, max_figures: int = 3) 
         rep["micrographs"] = prj.micrograph_stats(j)
     out = [None]
     if j.type not in ("MotionCtf", "Pick"):                # the job's own figures
-        figs = [os.path.join(j.path, f) for f in ("gallery.png", "selection.png", "map_views.png", "fsc.png",
-                                                    "polish.png", "reprojections.png")
-                if os.path.exists(os.path.join(j.path, f))][:max_figures]
+        figs = [j.find(f) for f in ("gallery.png", "selection.png", "map_views.png", "fsc.png", "views.png",
+                                    "postprocess.png", "polish.png", "reprojections.png") if j.find(f)][:max_figures]
         for f in figs:
             with open(f, "rb") as fh:
                 out.append(Image(data=fh.read(), format="png"))
@@ -456,7 +478,9 @@ def job_report(job: str, movies: list[str] | None = None, max_figures: int = 3) 
             ids = mi["movie_id"][mi["stem"].isin(movies)].tolist()[:max_figures]
             figs = [draw_figure(prj, j, i) for i in ids]
         else:
-            figs = sorted(glob.glob(os.path.join(j.path, "figures", "*.png")))[:max_figures]
+            figs = sorted(f for f in glob.glob(os.path.join(j.path, "figures", "movies", "*.png"))
+                          + glob.glob(os.path.join(j.path, "figures", "*_*.png"))      # older jobs: flat
+                          if ".light." not in f and "overview" not in f)[:max_figures]
         for f in figs:
             with open(f, "rb") as fh:
                 out.append(Image(data=fh.read(), format="png"))
