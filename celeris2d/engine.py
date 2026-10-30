@@ -1325,10 +1325,13 @@ class Classifier2D:
                 # has its centre of mass far off-centre and walks out of the box iteration after iteration, until
                 # its particles' offsets hit the cap and it dies. Remove the best-fit plane inside the mask first.
                 yy, xx = torch.meshgrid(r, r, indexing="ij")
-                basis = torch.stack([torch.ones_like(xx), xx, yy], -1) * mask[..., None]        # (b, b, 3)
-                A = basis.reshape(-1, 3)
-                coef = torch.linalg.lstsq(A, (img * mask).reshape(K, -1).T).solution           # (3, K)
-                src = (img - (A @ coef).T.reshape(K, b, b)) * mask
+                # The plane is fitted on the outer ring of the mask (0.75-1 x its radius: background, or the
+                # gradient): fitted over the whole mask it tilts towards the heavier side of an asymmetric particle
+                # and moves that particle's own centre (synthetic ab initio test: orientations 0.09-0.45 vs >= 0.8)
+                basis = torch.stack([torch.ones_like(xx), xx, yy], -1).reshape(-1, 3)          # (b*b, 3)
+                ring = (mask * (torch.sqrt(xx * xx + yy * yy) >= 0.75 * self.radius_a)).reshape(-1, 1)
+                coef = torch.linalg.lstsq(basis * ring, (img.reshape(K, -1) * ring.T).T).solution   # (3, K)
+                src = (img - (basis @ coef).T.reshape(K, b, b)) * mask
             thr = self.p.recenter_thresh * src.amax((1, 2), keepdim=True)
             pos = torch.where(src > thr, src, torch.zeros_like(src))
             tot = pos.sum((1, 2)).clamp_min(1e-12)
