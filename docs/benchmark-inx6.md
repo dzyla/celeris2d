@@ -41,6 +41,20 @@ Against the deposited map (scripts/compare_maps.py, EMD-9973 mask): masked map-v
   measured peak is 73 %). Pad 1 kept the masked resolution but cost unmasked FSC (beta-gal 3.70 -> 3.93 A). Now 90 %
   of the free memory (the reserve is already in gpu_free); the INX-6 best-class refinement above ran at pad 1.
 
+## What else was tried to go past 3.6 A (none moved it)
+
+| tool | result |
+|---|---|
+| MapScore (other agent) on all 221,807 Class2D particles vs the 3.6 A map | proposes 31 classes / 115k particles: all 21 chosen by eye + 10 more (fit 46-81 %); InitialModel -> extraction -> NU: 91,597 used, 3.65 / 4.05 A |
+| Class3D K4 at fixed poses (other agent), C8, 6 A | 30.7k / 15.5k / 15.1k / 21.5k at 3.84 / 3.94 / 4.29 / 3.94 A; NU on classes 1, 2, 4 (60,912 used): 3.65 / 4.05 A |
+| HeteroRefine K3 (with alignment) | no useful classes (above) |
+| optics fit (magnification, beam tilt, trefoil, 4th order) | magnification 1.0016 isotropic, no aberrations |
+| Modes3D (other agent), C1, 8 A | one reproducible mode (halves cc 0.84 to 12.9 A): the nanodisc ring's size / density - outside the protein, which NU and the dynamic mask already down-weight |
+| detector MTF (K2 300 kV) in Sharpen | B -221 -> -199 A^2, same resolution |
+
+With B ~ -220 A^2 (Guinier), Rosenthal-Henderson predicts ~0.05 A from 23 % more particles - below one Fourier shell
+here: the limit is the per-particle quality, and this set has no movies (no polishing).
+
 ## Next for INX-6
 
 More particles (only 92k of 222k picks passed 2D selection; template picking from this map, a looser 2D selection
