@@ -505,7 +505,13 @@ class Classifier2D:
     def _fetch(self, idx: torch.Tensor, dev, b: int) -> torch.Tensor:
         """Particle spectra (complex64) for host indices idx, on device dev, cropped to box b."""
         d = self.data
-        x = d[idx.to(d.device)] if d.device.type == "cuda" else d[idx]
+        if d.device.type == "cuda":
+            x = d[idx.to(d.device)]
+        elif len(idx) > 1 and int(idx[-1]) - int(idx[0]) == len(idx) - 1 and bool((idx[1:] > idx[:-1]).all()):
+            x = d[int(idx[0]):int(idx[-1]) + 1]      # a run of particles (refinements go in order): a view of the
+                                                     # pinned store, copied asynchronously (a gather is pageable)
+        else:
+            x = d[idx]
         x = x.to(dev, non_blocking=True)
         if self.half:
             x = torch.view_as_complex(x.float()) / self.store_scale

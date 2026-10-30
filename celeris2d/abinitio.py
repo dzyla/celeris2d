@@ -23,7 +23,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .engine import TWO_PI, ctf_2d, freqs, gpu_free, rot_grid, upsample2, release_cache
+from .engine import TWO_PI, ctf_2d, freqs, ft_resize, gpu_free, rot_grid, upsample2, release_cache
 
 
 # --------------------------------------------------------------------------- geometry
@@ -291,6 +291,34 @@ class Volume:
                         wt = wt[ok]
                         self.num.index_add_(0, idx, vr[ok] * wt[:, None])
                         self.den.index_add_(0, idx, ww[ok] * wt)
+
+    def symmetrize(self, ops: torch.Tensor):
+        """Symmetrise the accumulators once (RELION's BackProjector::symmetrise): num and den at grid point p become
+        the sum over operators S of their trilinear samples at S p - the same as inserting every image at A @ S
+        (whose frequencies land at S^T A^T k), for one resampling of the grid instead of |S| insertions per image."""
+        if self.num is None or ops is None or len(ops) < 2:
+            return
+        G, dev = self.G, self.dev
+        acc = torch.cat([self.num.view(G, G, G, 2).permute(3, 0, 1, 2), self.den.view(1, G, G, G)])  # (3, G, G, G)
+        self.num = self.den = None
+        num = torch.empty((G, G, G, 2), device=dev)
+        den = torch.empty((G, G, G), device=dev)
+        ops = ops.to(dev).float()
+        r = torch.arange(G, device=dev, dtype=torch.float32) - G // 2
+        cz = max(1, int(8e6 // (G * G)))
+        for z0 in range(0, G, cz):
+            zz = r[z0:z0 + cz]
+            q = torch.stack(torch.broadcast_tensors(r[None, None, :], r[None, :, None], zz[:, None, None]), -1)  # x, y, z
+            out = acc[:, z0:z0 + cz].clone()
+            for S in ops:
+                if torch.allclose(S, torch.eye(3, device=dev)):
+                    continue
+                g = ((q @ S.T + G // 2 + 0.5) / G * 2 - 1)[None]
+                out += F.grid_sample(acc[None], g, mode="bilinear", padding_mode="zeros", align_corners=False)[0]
+            num[z0:z0 + cz] = out[:2].permute(1, 2, 3, 0)
+            den[z0:z0 + cz] = out[2]
+        del acc
+        self.num, self.den = num.view(-1, 2), den.view(-1)
 
     def clear(self):
         self._acc()
@@ -562,10 +590,12 @@ def classes_to_volume(cls_ft: torch.Tensor, pops: torch.Tensor, box_a: float, di
 
 
 # --------------------------------------------------------------------------- stage 2: particles
-def auto_pad(b: int, n_vol: int, dev) -> int:
-    """Padding of 3D spectra: 2 if n_vol reconstructions (~60 (2b)^3 bytes each with accumulators and references)
-    fit in 60 % of the free memory, else 1 (gridding-corrected; box 512 in 16 GB)."""
-    return 2 if n_vol * 60 * (2 * b) ** 3 < 0.6 * _free(dev) else 1
+def auto_pad(b: int, n_vol: float, dev) -> int:
+    """Padding of 3D spectra: 2 if n_vol reconstructions (~64 (2b)^3 bytes each with accumulators, references and
+    batch arrays: measured 8.5 GB peak for beta-gal at box 256) fit in 90 % of the free memory (gpu_free already keeps
+    a reserve), else 1 (gridding-corrected; box 512 in 16 GB). Pad 1 costs accuracy away from the centre: beta-gal box
+    256 unmasked FSC 3.70 -> 3.93 A (masked unchanged) - with 60 % of free it fell back to pad 1 on a 16 GB card."""
+    return 2 if n_vol * 64 * (2 * b) ** 3 < 0.9 * _free(dev) else 1
 
 
 def _to_box(init, b: int, dev) -> torch.Tensor:
@@ -845,6 +875,9 @@ def cross_fit(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, halves, 
     return out
 
 
+SYM_RESAMPLE = True      # refine_particles: symmetry by resampling the accumulators (False: insert at every operator)
+
+
 def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, inits, z: torch.Tensor | None = None,
                      sym: str = "C1", n_iter: int = 8, res_start: float = 15.0, step_start: float | None = None,
                      batch: int = 256, n_local: int = 1, step_scale: float | None = None, global_at: tuple = (),
@@ -853,7 +886,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                      step_min: float = 0.5,
                      half: torch.Tensor | None = None, soft: bool = False, solvent_mask=None,
                      solvent_from_a: float = 15.0, pad: int | None = None, grid_correct: bool = False,
-                     nu: bool = False, log=print):
+                     nu: bool = False, nu_strict: bool = True, log=print):
     """Local refinement of particle orientations A and shifts t (A, model shift) against CTF-modulated projections,
     gold-standard halves (half: (n,) 0/1 per particle, e.g. the split of the refinement the poses come from - a
     particle must stay in the half it was aligned or polished against; default a random split, seed 1). inits:
@@ -873,21 +906,26 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     models (each at its own pose there), RELION-style; the temperature starts where the typical particle is ~60/40
     and falls to 1 (the true posterior) over the first half of the iterations. Off: each particle in its best model
     only. refine_particles.last_post holds the final posteriors (n, M).
-    solvent_mask (one model): "auto" - a solvent mask made from the current map every iteration once it is better than
+    solvent_mask: "auto" - a solvent mask made from each model's current map every iteration once it is better than
     solvent_from_a (masking.auto_mask, noise from the half maps; cryoSPARC's dynamic mask) - or a fixed mask (b^3
-    tensor). It replaces the particle sphere for the FSC that sets the resolution and weights the references (then
+    tensor, or a list of one per model). It replaces the particle sphere for the FSC that sets the resolution and weights the references (then
     corrected by phase randomisation, as it is tight), for flattening the references' solvent, and for the final map:
-    the references lose the solvent noise and keep more of the signal. refine_particles.last_mask holds the last one.
+    the references lose the solvent noise and keep more of the signal. refine_particles.last_masks holds the last
+    one per model (None: the sphere), last_mask model 1's.
     pad: padding of the 3D spectra (None: 2 if the volumes, ~60 (2b)^3 bytes for one model, fit in 60 % of the free
     memory, else 1 - box 512 in 16 GB). grid_correct: gridding correction of every volume (Volume; pad 1 needs it).
     nu (one model): non-uniform regularisation (nufilter.adaptive_filter) below 15 A: each half's reference is
     low-passed region by region, the cutoff chosen by cross-validation against the other half, instead of the global
-    FSC filter. refine_particles.last_nu holds the last cutoff statistics.
+    FSC filter. refine_particles.last_nu holds the last cutoff statistics (nufilter.cutoff_stats; per iteration in the
+    history's "nu"), refine_particles.last_nu_map the last cutoff map (A, mean of the halves). nu_strict (default): the cutoffs of each
+    half chosen by cross-validation between two folds of that half's own particles (each reconstructed on a small
+    pad-1 box sized to the resolution), so no information crosses between the halves (gold standard).
     Returns (maps (M, b, b, b), A (n, 3, 3), t (n, 2) in the chosen model, z, fsc (M, shells), resolutions (M,),
     half Volumes [[h0, h1] per model])."""
     dev = clf.dev
     box_a, diam = clf.box_a, clf.p.diameter_a
     b = box or clf.bmax
+    refine_particles.last_nu = refine_particles.last_nu_map = None
     n = len(idx)
     inits = inits if isinstance(inits, (list, tuple)) else [inits]
     bp = int(max(64, min(2048, 2e8 // (b * (b // 2 + 1) * 8))))   # particles per back-projection batch
@@ -897,6 +935,12 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     if half is None:
         half = torch.randperm(n, generator=torch.Generator().manual_seed(1)) % 2
     half = torch.as_tensor(half).long().cpu()
+    fold = torch.zeros(n, dtype=torch.long)         # strict NU: two folds inside each half
+    for h_ in (0, 1):
+        k_ = torch.nonzero(half == h_).squeeze(1)
+        fold[k_[torch.randperm(len(k_), generator=torch.Generator().manual_seed(7 + h_))]] = torch.arange(len(k_)) % 2
+    subvols = None                                   # [half][fold] Volumes of this back-projection (strict NU)
+    sub_maps = None
     fy, fx = freqs(b, dev)
     kr = torch.sqrt(fy[:, None] ** 2 + fx[None, :] ** 2)
     ph = TWO_PI / box_a
@@ -908,7 +952,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
         t = t[:, None].expand(n, M, 2).contiguous()
     ar_n = torch.arange(n, device=dev)
     if pad is None:
-        pad = auto_pad(b, M, dev)
+        pad = auto_pad(b, M * (1.15 if nu else 1.0), dev)   # NU: its filtered maps and folds (+24 % peak)
         if pad == 1:
             log(f"[3d] box {b}: 3D spectra without padding (pad 1, gridding-corrected) to fit the GPU")
     gc = grid_correct or pad == 1
@@ -928,6 +972,10 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     t0 = time.time()
     history = []                          # per iteration: alignment limit, step, share moved, resolution after it
     kmax_used = [float(b)] * M            # highest shell inserted in the last reconstruction
+
+    # symmetry by one resampling of the accumulators after the back-projection instead of |S| insertions per image
+    # (C8: ~8x less splatting); at pad 2 the two agree within 4 %, at pad 1 the resampling costs low-frequency accuracy
+    sym_after = len(ops) > 1 and pad >= 2 and SYM_RESAMPLE
 
     def backproject():
         for vm in vols:
@@ -955,10 +1003,28 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                     sel = (hh == h) & (wp > 0) & ((pp[:, m] > 1e-3) if soft else (zz == m))
                     if sel.any():
                         w3 = (wp[sel] * (pp[sel, m] if soft else 1.0))[:, None, None]
-                        vols[m][h].insert((xs * ctf)[sel] * w3, (ctf * ctf)[sel] * w3, AA[sel], kmax=kmax, ops=ops)
+                        vols[m][h].insert((xs * ctf)[sel] * w3, (ctf * ctf)[sel] * w3, AA[sel], kmax=kmax,
+                                          ops=None if sym_after else ops)
+            if subvols is not None:                  # the folds, on their small box
+                bs_ = subvols[0][0].b
+                fys, fxs = subvols[0][0].fy, subvols[0][0].fx
+                x_s = ft_resize(x, bs_)                     # the batch already fetched, cropped (not read again)
+                c_s = ctf_2d(clf.ctf_p[j].to(dev), clf.optics, fys, fxs, box_a)
+                tt, AA = t[sl, zz], A[sl, zz]
+                xs_s = x_s * torch.exp(1j * ph * (fxs[None, None, :] * tt[:, 0, None, None] + fys[None, :, None] * tt[:, 1, None, None]))
+                ff = fold[i:i + bp].to(dev)
+                for h in (0, 1):
+                    for f_ in (0, 1):
+                        sel = (hh == h) & (ff == f_) & (wp > 0)
+                        if sel.any():
+                            w3 = wp[sel][:, None, None]
+                            subvols[h][f_].insert((xs_s * c_s)[sel] * w3, (c_s * c_s)[sel] * w3, AA[sel], kmax=bs_ / 2 - 1)
+        for vm in (vols if sym_after else []) + (subvols or []):   # the folds only choose cutoffs: resampled at pad 1 too
+            for v in vm:
+                v.symmetrize(ops)
 
     refs = None
-    cur_mask = None                 # solvent mask in use (solvent_mask), else the particle sphere
+    cur_masks = [None] * M          # per model: solvent mask in use (solvent_mask), else the particle sphere
     for it in range(n_iter + 1):
         # ---- reconstruct halves, FSC, filter
         refs = r = rm = None        # the last alignment's references (also bound to the loop variables that built them)
@@ -968,25 +1034,47 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                 for v in vols[m]:
                     v.set_real(v_init[m])
         else:
+            want_sub = nu and nu_strict and M == 1 and fscs[0] is not None and res[0] < solvent_from_a and not soft
+            subvols = None
+            if want_sub:
+                bs_ = min(b, int(math.ceil(2 * box_a / (0.85 * res[0]) / 2)) * 2 + 8)
+                subvols = [[Volume(bs_, dev, pad=1, grid_correct=True) for _ in (0, 1)] for _ in (0, 1)]
             backproject()
+            sub_maps = None
+            if subvols is not None:
+                sub_maps = []
+                for hv in subvols:
+                    row_ = []
+                    for v in hv:
+                        _regularise_solve(v, 0.02)
+                        v.free_acc()
+                        row_.append(v.real())
+                    sub_maps.append(row_)
+                subvols = None
             for m in range(M):
                 for v in vols[m]:
                     _regularise_solve(v, 0.02)
                     v.free_acc()        # 3/2 of the volume's size; made again by the next back-projection (box 256:
                                         # 3.2 GB for two halves that sat idle through the alignment)
-                if solvent_mask is not None and M == 1 and (torch.is_tensor(solvent_mask) or res[m] < solvent_from_a):
+                fixed_ = (solvent_mask[m] if isinstance(solvent_mask, (list, tuple)) else solvent_mask) \
+                    if not isinstance(solvent_mask, str) else None          # a fixed mask (one, or one per model)
+                if solvent_mask is not None and alive[m] and (fixed_ is not None or res[m] < solvent_from_a):
                     from .masking import auto_mask
                     h1_, h2_ = vols[m][0].real(), vols[m][1].real()
-                    if torch.is_tensor(solvent_mask):
-                        cur_mask = solvent_mask.to(dev)
+                    if fixed_ is not None:
+                        cur_masks[m] = torch.as_tensor(fixed_).to(dev).float()
                     else:                   # the masked average and half difference, once each (box 512: memory)
-                        cur_mask = None
+                        cur_masks[m] = None
                         avg_ = (h1_ + h2_).mul_(0.5).mul_(mask)
                         dif_ = (h1_ - h2_).mul_(0.5).mul_(mask)
-                        cur_mask = auto_mask(avg_, box_a / b, res_a=res[m], k_sigma=5.0, halves=(dif_, None),
-                                             diameter_a=diam)
+                        try:
+                            cur_masks[m] = auto_mask(avg_, box_a / b, res_a=res[m], k_sigma=5.0, halves=(dif_, None),
+                                                     diameter_a=diam)
+                        except Exception as e:      # a class too small / noisy for a mask: the sphere this time
+                            log(f"[3d] model {m + 1}: no solvent mask this iteration ({e})")
                         del avg_, dif_
-                    fscs[m] = corrected_masked_fsc(h1_, h2_, cur_mask)
+                    fscs[m] = (corrected_masked_fsc(h1_, h2_, cur_masks[m]) if cur_masks[m] is not None
+                               else masked_fsc(vols[m][0], vols[m][1], mask))
                     del h1_, h2_
                 else:
                     fscs[m] = masked_fsc(vols[m][0], vols[m][1], mask)
@@ -1012,21 +1100,31 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             from .nufilter import adaptive_filter
             hr_ = [vols[0][0].real(), vols[0][1].real()]
             refs.append([])
-            nu_info = {}
+            infos = [{}, {}]
             for h in (0, 1):
-                f_ = adaptive_filter(hr_[h], hr_[1 - h], box_a / b, res[0], mask=cur_mask,
-                                     info=nu_info if h == 0 else None)
+                if sub_maps is not None:             # gold standard: cutoffs from this half's own two folds
+                    from .nufilter import adaptive_filter_cv
+                    f_ = adaptive_filter_cv(hr_[h], sub_maps[h][0], sub_maps[h][1], box_a / b,
+                                            box_a / sub_maps[h][0].shape[0], res[0], mask=cur_masks[0], info=infos[h])
+                else:
+                    f_ = adaptive_filter(hr_[h], hr_[1 - h], box_a / b, res[0], mask=cur_masks[0], info=infos[h])
                 r = Volume(b, dev, pad=pad, grid_correct=gc)
-                r.set_real(f_ * (mask if cur_mask is None else cur_mask))
+                r.set_real(f_ * (mask if cur_masks[0] is None else cur_masks[0]))
                 del f_
                 lowpass(r, box_a / k_al, box_a)
                 refs[0].append(r)
             del hr_
-            refine_particles.last_nu = {k: v for k, v in nu_info.items() if k != "cutoff_map_a"}
+            sub_maps = None
+            from .nufilter import cutoff_stats
+            nu_it = cutoff_stats(infos, mask if cur_masks[0] is None else cur_masks[0], res[0])
+            nu_it["strict"] = bool(infos[0].get("strict", False))
+            refine_particles.last_nu = dict(nu_it, candidates_a=infos[0]["candidates_a"], window_a=infos[0]["window_a"])
+            refine_particles.last_nu_map = (0.5 * (infos[0]["cutoff_map_a"] + infos[1]["cutoff_map_a"])).half().cpu()
             if it == 1 or it == n_iter - 1:
-                log(f"[3d] non-uniform filter: cutoffs in the mask {nu_info['cutoff_p05_a']:.1f} / "
-                    f"{nu_info['cutoff_median_a']:.1f} / {nu_info['cutoff_p95_a']:.1f} A (5 / 50 / 95 %)")
-            nu_info = None
+                log(f"[3d] non-uniform filter: cutoffs in the mask {nu_it['p05_a']:.1f} / {nu_it['median_a']:.1f} / "
+                    f"{nu_it['p95_a']:.1f} A (5 / 50 / 95 %), {nu_it['at_global_pct']:.0f}% at the global "
+                    f"resolution or finer, halves agree r = {nu_it['halves_r']:.2f}")
+            infos = None
         for m in (range(M) if not use_nu else ()):
             rm = []
             for v in vols[m]:
@@ -1034,7 +1132,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                 if fscs[m] is not None and M == 1:
                     r.filter_shells(torch.sqrt((2 * fscs[m] / (1 + fscs[m])).clamp(0, 1).nan_to_num(0)))
                 lowpass(r, box_a / k_al, box_a)
-                _real_space_constraints(r, mask if cur_mask is None else cur_mask, positive=False, center=False)
+                _real_space_constraints(r, mask if cur_masks[m] is None else cur_masks[m], positive=False, center=False)
                 rm.append(r)
             refs.append(rm)
         # ---- global re-search: particles that inherited a wrong pose (mixed 2D classes) can jump
@@ -1166,7 +1264,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             + (f", mean max posterior {float(post.max(1).values.mean()):.3f}" if soft and M > 1 else "")
             + f" ({time.time() - t0:.1f}s)")
         history.append(dict(it=it + 1, align_res=round(al_res, 3), step=round(step, 3), moved=round(changed / n, 4),
-                            switched=round(switched / n, 4), pops=pops,
+                            switched=round(switched / n, 4), pops=pops, **({"nu": nu_it} if use_nu else {}),
                             **({"max_posterior": round(float(post.max(1).values.mean()), 4)} if M > 1 else {})))
         if step_scale is None and changed / n < 0.3:
             step = max(step_min, step / 2)
@@ -1188,11 +1286,11 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
         out = Volume(b, dev, pad=pad, ft=0.5 * (vols[m][0].ft + vols[m][1].ft), pre=vols[m][0].pre, grid_correct=gc)
         if fscs[m] is not None:
             out.filter_shells(torch.sqrt((2 * fscs[m] / (1 + fscs[m])).clamp(0, 1).nan_to_num(0)))
-        maps.append((out.real() * (mask if cur_mask is None else cur_mask)).nan_to_num(0))
+        maps.append((out.real() * (mask if cur_masks[m] is None else cur_masks[m])).nan_to_num(0))
     fscs = [f if f is not None else torch.zeros(b // 2 + 1, device=dev) for f in fscs]
     unmasked = [resolution_from_fsc(fsc(vols[m][0], vols[m][1]), box_a) if alive[m] and fscs[m] is not None
                 else float("nan") for m in range(M)]
-    log(f"[3d] final resolution (FSC 0.143, {'soft sphere mask' if cur_mask is None else 'solvent mask, corrected'}) {' / '.join(f'{r:.1f}' if r == r else 'merged' for r in res)} A"
+    log(f"[3d] final resolution (FSC 0.143, {'soft sphere mask' if all(c is None for c in cur_masks) else 'solvent mask, corrected'}) {' / '.join(f'{r:.1f}' if r == r else 'merged' for r in res)} A"
         f" (unmasked {' / '.join(f'{r:.1f}' if r == r else '-' for r in unmasked)} A), {time.time() - t0:.1f}s")
     refine_particles.last_weights = wpart.cpu()   # read by run(): which particles the final maps used
     refine_particles.last_score = score.cpu()
@@ -1200,7 +1298,8 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     refine_particles.last_history = history
     refine_particles.last_post = post.cpu()
     refine_particles.last_ll = llm_all.cpu() if n_iter > 0 else None   # per model, best pose, last pass
-    refine_particles.last_mask = cur_mask
+    refine_particles.last_mask = cur_masks[0]
+    refine_particles.last_masks = cur_masks      # per model (None: the sphere)
     return torch.stack(maps), A[ar_n, z], t[ar_n, z], z, torch.stack(fscs), res, vols
 
 
@@ -1387,6 +1486,8 @@ class AbinitioParams:
                                     # the particles fit best is kept (1 = trust the class agreement)
     drop_frac: float = 0.1          # worst-fitting fraction of particles left out of the reconstruction (0 = keep all)
     rebalance: float = 0.0          # > 0: cap crowded viewing directions at this x the median direction (preferred orientation)
+    solvent_mask: str = "auto"      # particle refinement: dynamic solvent mask once better than 15 A ("auto", as Refine3D),
+                                    # or the particle sphere only ("sphere")
     n_models: int = 1               # 3D classes: >1 adds a 3D classification of the particles at the consensus poses
     class3d_res: float = 10.0       # ... with every class filtered to this resolution (A) (or the consensus one if worse)
     class3d_iter: int = 20          # ... for at most this many iterations
@@ -1493,7 +1594,8 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
         torch.cuda.synchronize()
         timing["sgd"] += time.time() - t0
         t0 = time.time()
-        common = dict(sym=sym, n_local=prm.n_local, drop_frac=prm.drop_frac, rebalance=prm.rebalance, log=lg)
+        common = dict(sym=sym, n_local=prm.n_local, drop_frac=prm.drop_frac, rebalance=prm.rebalance, log=lg,
+                      solvent_mask=None if prm.solvent_mask == "sphere" else prm.solvent_mask)
         n_fine = min(prm.n_iter, 4)
         b_lo = min(b, int(math.ceil(2 * box_a / 5.0 / 2)) * 2)          # Nyquist ~5 A: enough below ~8 A
         if prm.n_iter > n_fine and b_lo < b - 8:
@@ -1534,7 +1636,8 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
         maps, A, t, z, fs, res, vols = refine_particles(
             clf, idx, A, t, Vg, sym="C1", n_iter=prm.n_iter, res_start=max(res[0], 8.0), n_local=prm.n_local, box=b,
             drop_frac=prm.drop_frac, rebalance=prm.rebalance, relax_ops=symmetry_ops(relaxed_from),
-            relax_iters=prm.relax_iters, log=log)
+            relax_iters=prm.relax_iters, solvent_mask=None if prm.solvent_mask == "sphere" else prm.solvent_mask,
+            log=log)
         torch.cuda.synchronize()
         timing["particles"] += time.time() - t0
         Ak = _class_poses(A, kp, psi_p, len(Ak))
@@ -1572,7 +1675,8 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
     solvent = []
     for r, m in enumerate(order):
         sfx = "" if M == 1 else f"_{r + 1}"
-        smask = solvent_mask(maps[m], apix)
+        dm = getattr(refine_particles, "last_masks", None)
+        smask = dm[m] if dm is not None and len(dm) == M and dm[m] is not None else solvent_mask(maps[m], apix)
         solvent.append(smask)
         _save_mrc(os.path.join(outdir, f"map{sfx}.mrc"), maps[m] * smask, apix)          # automatic solvent mask
         _save_mrc(os.path.join(outdir, f"map_nomask{sfx}.mrc"), maps[m], apix)

@@ -72,7 +72,10 @@ Layers, bottom to top:
    `sharpen.py`: Sharpen, `ctfrefine.py`: per-particle defocus (CtfRefine, a particle job that points at the
    stacks it refined; `Project.particles` prefers per-particle defocus columns), `masking.py`: solvent masks
    (`auto_mask` also runs inside `refine_particles` every iteration: Refine3D `mask="auto"`; `make_mask` with user
-   regions / segments; `masks.py` is Sharpen's wrapper), `localres.py`: local resolution, `diagnostics.py`: FSC files, angular statistics): the
+   regions / segments; `masks.py` is Sharpen's wrapper; MaskCreate job), `nufilter.py`: non-uniform regularisation
+   (Refine3D `nu=True`: references filtered region by region, cutoffs by cross-validation - strict by default, from two
+   folds inside each half), `optics.py`: anisotropic magnification and odd / even aberrations fitted by gradient
+   (diagnostic; not applied in refinement yet), `localres.py`: local resolution, `diagnostics.py`: FSC files, angular statistics): the
    movies -> particles -> 3D project store and its jobs
    (layout and rules in docs/project-design.md: `jobs/NNN_<type>_<label>/` small results, `data/NNN/` heavy and
    purgeable, catalog `project.db`, particle uid/key, selections as uid lists); `pipeline.run` overlaps decoding
@@ -94,6 +97,13 @@ Layers, bottom to top:
   process there, so an overrun is an out-of-memory error instead of WSL spilling GPU memory into system RAM (many
   times slower). Big 3D intermediates: free what the next phase does not need (accumulators after the solve,
   references before back-projection), work in slabs, build projection-only volumes on the band's box.
+- **3D volumes** (`abinitio.Volume`): 2x-padded full complex grids, 64 b^3 bytes each; `refine_particles` picks
+  pad 1 (gridding-corrected) when pad 2 does not fit (box 512 in 16 GB), `Volume.real` / `set_real` work in slabs.
+  Symmetry in `refine_particles` (pad 2): each image inserted once, then `Volume.symmetrize` resamples the
+  accumulators (RELION's way; per-operator insertion was ~90 % of a C8 iteration).
+- **Refinement masks**: every refinement job has `mask` = auto (dynamic, from each model's map every iteration below
+  15 A) / static (once from the starting map) / none (particle sphere) / a MaskCreate job or .mrc
+  (`jobs.solvent_mask_arg`). NU refinements write `nu_cutoff.mrc`, `nu.png` and per-iteration `nu` statistics.
 - **TIFF orientation**: frames are read in file row order; RELION's micrographs of the same TIFF movies are their
   y-mirror (`MotionSettings.flip_y=True` matches RELION: coordinates, astigmatism angle, hand). Motion shifts are
   relative to the frame average (RELION: frame 1), so coordinates differ from RELION's by the mean drift.

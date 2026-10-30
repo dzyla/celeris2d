@@ -216,3 +216,32 @@ def test_optics_fit_recovers_magnification():
     fit = op.fit_optics(clf, torch.arange(n), A, t, half, vols, res_hi_a=2.5 * apix, res_lo_a=20 * apix, n_max=n,
                         fit_odd=False, fit_even=False, log=lambda *a: None)
     assert np.allclose(np.array(fit.mag), M.cpu().numpy(), atol=5e-4), (fit.mag, M)
+
+
+def test_symmetrize_accumulators_matches_symmetric_insertion():
+    """Inserting each image once and symmetrising the accumulators (refine_particles at pad 2) gives the same
+    reconstruction as inserting it at every symmetry-related pose. (Pad 1: 17 % apart, the resampled accumulators
+    lose a little at low and gain at high frequency, so refine_particles keeps the per-operator insertion there.)"""
+    pad = 2
+    dev = "cuda"
+    vol = _volume(_c3(BLOBS[:5])).to(dev)
+    ops = ab.symmetry_ops("C3").to(dev)
+    g = torch.Generator().manual_seed(3)
+    n = 300
+    A = ab.euler_to_matrix(torch.rand(n, generator=g) * 360, torch.rand(n, generator=g) * 180,
+                           torch.rand(n, generator=g) * 360).to(dev)
+    V = ab.Volume(BOX, dev, pad=2)
+    V.set_real(vol)
+    x = V.project(A)
+    w = torch.ones(x.shape, device=dev)
+    maps = []
+    for sym_after in (False, True):
+        R = ab.Volume(BOX, dev, pad=pad, grid_correct=True)
+        R.insert(x, w, A, kmax=BOX / 2 - 1, ops=None if sym_after else ops)
+        if sym_after:
+            R.symmetrize(ops)
+        ab._regularise_solve(R, 0.02)
+        maps.append(R.real())
+    rel = lambda a, b_: float((a - b_).norm() / b_.norm())
+    assert rel(maps[1], maps[0]) < 0.05, rel(maps[1], maps[0])
+    assert rel(maps[1], vol) < 1.1 * rel(maps[0], vol) + 0.01

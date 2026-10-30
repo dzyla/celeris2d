@@ -71,3 +71,82 @@ def adaptive_filter(h: torch.Tensor, h_ref: torch.Tensor, apix: float, res_a: fl
         info.update(cutoff_map_a=res_map, cutoff_p05_a=float(q[0]), cutoff_median_a=float(q[1]), cutoff_p95_a=float(q[2]),
                     candidates_a=[round(box_a / k, 2) for k in cuts], window_a=round(sig * apix, 1))
     return best
+
+
+def adaptive_filter_cv(h: torch.Tensor, fold_a: torch.Tensor, fold_b: torch.Tensor, apix: float, apix_s: float,
+                       res_a: float, mask: torch.Tensor | None = None, n_cut: int = 12, lo_a: float = 20.0,
+                       window_a: float | None = None, edge: float = 0.1, info: dict | None = None) -> torch.Tensor:
+    """Gold-standard version of adaptive_filter: the per-voxel cutoff for half map h (n^3, apix) is chosen by
+    cross-validation between two reconstructions from disjoint subsets of h's own particles (fold_a, fold_b: m^3 at
+    apix_s, the same box in A, usually a smaller band-limited box) - no information from the other half - and then
+    applied to h. The local error of each candidate is that of filtered fold_a against fold_b plus filtered fold_b
+    against fold_a (each fold's noise independent of the other's)."""
+    n, m = h.shape[0], fold_a.shape[0]
+    dev = h.device
+    box_a = n * apix
+    kk_s = _kk(m, dev)
+    Fa, Fb = torch.fft.rfftn(fold_a.float()), torch.fft.rfftn(fold_b.float())
+    k_hi = min(m / 2 - 1, box_a / (0.85 * res_a))
+    k_lo = max(2.0, box_a / lo_a)
+    cuts = torch.exp(torch.linspace(math.log(k_lo), math.log(max(k_hi, k_lo * 1.01)), n_cut)).tolist()
+    sig = max(window_a or 2.0 * res_a, 8.0) / apix_s
+    fa_, fb_ = fold_a.float(), fold_b.float()
+    best_err = best_i = None
+    for i, kc in enumerate(cuts):
+        w = torch.clamp((kk_s - kc * (1 - edge / 2)) / (kc * edge), 0, 1)
+        lp = 0.5 * (1 + torch.cos(math.pi * w))
+        ea = torch.fft.irfftn(Fa * lp, s=fold_a.shape) - fb_
+        eb = torch.fft.irfftn(Fb * lp, s=fold_b.shape) - fa_
+        err = _smooth(ea * ea + eb * eb, sig, kk_s)
+        if best_err is None:
+            best_err, best_i = err, torch.zeros_like(err)
+        else:
+            take = err < best_err
+            best_err = torch.where(take, err, best_err)
+            best_i = torch.where(take, torch.full_like(err, float(i)), best_i)
+        del ea, eb, err
+    # the choice on the full grid (nearest), then each candidate applied to h where it was chosen
+    idx = torch.nn.functional.interpolate(best_i[None, None], size=(n, n, n), mode="nearest")[0, 0]
+    kk = _kk(n, dev)
+    Fh = torch.fft.rfftn(h.float())
+    out = torch.zeros_like(h, dtype=torch.float32)
+    for i, kc in enumerate(cuts):
+        sel = idx == i
+        if not bool(sel.any()):
+            continue
+        w = torch.clamp((kk - kc * (1 - edge / 2)) / (kc * edge), 0, 1)
+        f = torch.fft.irfftn(Fh * (0.5 * (1 + torch.cos(math.pi * w))), s=h.shape)
+        out = torch.where(sel, f, out)
+        del f
+    if info is not None:
+        res_map = torch.tensor([box_a / k for k in cuts], device=dev)[idx.long()]
+        sel = res_map[mask > 0.5] if mask is not None and bool((mask > 0.5).any()) else res_map.reshape(-1)
+        q = torch.quantile(sel[torch.randperm(len(sel), device=dev)[:1_000_000]], torch.tensor([0.05, 0.5, 0.95], device=dev))
+        info.update(cutoff_map_a=res_map, cutoff_p05_a=float(q[0]), cutoff_median_a=float(q[1]),
+                    cutoff_p95_a=float(q[2]), candidates_a=[round(box_a / k, 2) for k in cuts],
+                    window_a=round(sig * apix_s, 1), strict=True)
+    return out
+
+
+def cutoff_stats(infos: list, mask: torch.Tensor, res_a: float) -> dict:
+    """Summary of one non-uniform filtering step from the two halves' infos (cutoff_map_a each) inside the mask
+    (> 0.5): percentiles of the mean cutoff, the share of the mask filtered at the global resolution or finer
+    (cutoff <= 1.05 x res_a) and at twice it or coarser (regions the filter treats as disordered), the share per
+    candidate cutoff, and how well the two halves' cutoff maps agree (Pearson r in the mask: near 1, the regions are
+    real; near 0, the choice follows noise)."""
+    sel = mask > 0.5
+    if not bool(sel.any()):
+        sel = torch.ones_like(mask, dtype=torch.bool)
+    c0, c1 = infos[0]["cutoff_map_a"][sel].float(), infos[1]["cutoff_map_a"][sel].float()
+    c = 0.5 * (c0 + c1)
+    g = torch.Generator(device=c.device).manual_seed(0)
+    sub = torch.randperm(len(c), generator=g, device=c.device)[:1_000_000]
+    q = torch.quantile(c[sub], torch.tensor([0.05, 0.5, 0.95], device=c.device))
+    a, b_ = c0 - c0.mean(), c1 - c1.mean()
+    r = float((a * b_).sum() / ((a * a).sum() * (b_ * b_).sum()).sqrt().clamp_min(1e-12))
+    cands = infos[0]["candidates_a"]
+    share = [round(float(((c0 - x).abs() < 0.006).float().mean()) * 100, 2) for x in cands]   # candidates_a: 2 decimals
+    return dict(p05_a=round(float(q[0]), 2), median_a=round(float(q[1]), 2), p95_a=round(float(q[2]), 2),
+                res_a=round(float(res_a), 3), at_global_pct=round(float((c <= 1.05 * res_a).float().mean()) * 100, 1),
+                coarse_pct=round(float((c >= 2 * res_a).float().mean()) * 100, 1), halves_r=round(r, 3),
+                share_pct=share)

@@ -56,3 +56,22 @@ def test_mask_report_flags_a_cut():
                            exclude=[mk.parse_region("sphere 122 96 96 30")])
     r = mk.mask_report(m, APIX, 0.5 * (h1 + h2))
     assert r["density_outside"] > 0.2
+
+
+def test_refinement_mask_modes():
+    """Refinement mask settings: auto (dynamic), static (made once from the starting map), none / sphere, and a clear
+    error for anything else."""
+    import pytest
+    from celeris2d.jobs import solvent_mask_arg
+    v, h1, h2 = _maps()
+    sig = 0.5 * (h1 + h2)
+    args = (None, N, APIX, [sig], 8.0, 150.0)
+    assert solvent_mask_arg(None, "auto", *args[1:], log=lambda *a: None) == "auto"
+    assert solvent_mask_arg(None, "none", *args[1:]) is None and solvent_mask_arg(None, "sphere", *args[1:]) is None
+    m = solvent_mask_arg(None, "static", *args[1:], log=lambda *a: None)
+    assert torch.is_tensor(m) and m.shape == sig.shape and 0.01 < float(m.mean()) < 0.6
+    assert float(m[v > 0.1 * v.max()].min()) > 0.99
+    two = solvent_mask_arg(None, "static", N, APIX, [sig, sig], 8.0, 150.0, log=lambda *a: None)
+    assert isinstance(two, list) and len(two) == 2
+    with pytest.raises(ValueError):
+        solvent_mask_arg(None, "bogus", *args[1:])

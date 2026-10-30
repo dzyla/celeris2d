@@ -231,6 +231,8 @@ class InitialModelSettings:
     sym: str = "C1"                 # the user's choice; never detected
     classes: tuple = ()             # 1-based classes of the Class2D job (empty: all populated classes)
     n_models: int = 1               # > 1: that many maps, particles classified among them (3D classes)
+    mask: str = "auto"              # solvent mask of the particle refinement: "auto" (dynamic, below 15 A) or "none"
+                                    # (the particle sphere only)
     seed: int = 0                   # random seed
     gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
@@ -275,7 +277,10 @@ def run_initial_model(project: Project, job, log=print) -> dict:
         r = copy.copy(r)
         r.labels = np.asarray(r.labels).copy()
         r.labels[np.flatnonzero(covered)[~keep]] = -1
-    prm = ab.AbinitioParams(sym=s.sym, n_models=s.n_models, seed=s.seed)
+    if str(s.mask).lower() not in ("auto", "dynamic", "none", "sphere"):
+        raise ValueError(f"InitialModel mask {s.mask!r}: 'auto' or 'none' (there is no starting map for a static mask)")
+    prm = ab.AbinitioParams(sym=s.sym, n_models=s.n_models, seed=s.seed,
+                            solvent_mask="auto" if str(s.mask).lower() in ("auto", "dynamic") else "sphere")
     summ = ab.run(ses.clf, r, job.path, prm, classes=mask, log=log, src=None)
     z = np.load(os.path.join(job.path, "poses.npz"))
     _write_results(project, job, src, z["idx"], dict(
@@ -308,14 +313,15 @@ class Refine3DSettings:
     global_res_a: float = 12.0      # resolution of that search
     diameter_a: float = 0.0         # particle diameter for the mask (0: from the extraction)
     classes: tuple = ()             # poses from a HeteroRefine: only the particles of these 1-based classes
-    mask: str = "auto"              # solvent mask during refinement: "auto" (made from the map every iteration below
-                                    # 15 A, masking.auto_mask), "sphere" (the particle sphere only), or a MaskCreate job
-                                    # / .mrc path (fixed)
+    mask: str = "auto"              # solvent mask during refinement: "auto" (dynamic: made from the map every iteration
+                                    # below 15 A, masking.auto_mask), "static" (made once from the starting map, then
+                                    # fixed), "none" (the soft particle sphere only), or a MaskCreate job / .mrc path
     grid_correct: bool = False      # gridding correction of the 3D spectra (more accurate projections and maps)
     reference_map: str = ""         # start from this map (.mrc) instead of the reference job's (low-passed to res_start_a,
                                     # default 30 A; poses from `poses`, so add global_iters when its frame differs)
     nu: bool = False                # non-uniform regularisation (cryoSPARC NU-refine's idea): each region of the
                                     # references low-passed at its own resolution, chosen by cross-validation
+    nu_strict: bool = True          # ... the cutoffs of each half from two folds of its own particles (gold standard)
     pad: int = 0                    # padding of the 3D spectra: 0 automatic (2 if it fits the GPU, else 1), 1 or 2
     align_symmetry: bool = True     # sym differs from the start job's: first rotate the map and the poses so the
                                     # group's axes (n-fold on z, 2-fold on x) lie on the map's (symalign.py); the
@@ -428,6 +434,34 @@ def load_mask(project: Project, ref: str, b: int, apix: float) -> np.ndarray:
     return np.clip(map_to_box(m, ap, b, apix).cpu().numpy(), 0, 1)
 
 
+MASK_MODES = ("auto", "static", "none")
+
+
+def solvent_mask_arg(project: Project, mode: str, b: int, apix: float, refs: list, res_a: float, diameter_a: float,
+                     log=print):
+    """A refinement's mask setting -> refine_particles(solvent_mask=...): "auto" (dynamic: made from each model's map
+    every iteration below 15 A), "static" (made once from each starting reference with masking.auto_mask, then
+    fixed), "none" (no solvent mask: the soft particle sphere only; "sphere" is the same), or a MaskCreate job /
+    .mrc path (that mask, fixed, for every model). refs: the starting maps (real, b^3), one per model."""
+    m = str(mode or "auto").strip()
+    if m.lower() in ("auto", "dynamic"):
+        return "auto"
+    if m.lower() in ("none", "sphere", "off", ""):
+        return None
+    if m.lower() == "static":
+        from .masking import auto_mask
+        out = []
+        for r in refs:
+            out.append(auto_mask(torch.as_tensor(r).float(), apix, res_a=max(res_a, 2.2 * apix), diameter_a=diameter_a))
+        log(f"[3d] static solvent mask from the starting map{'s' if len(out) > 1 else ''}: "
+            + ", ".join(f"{float(x.mean()) * 100:.1f}%" for x in out) + " of the box")
+        return out if len(out) > 1 else out[0]
+    try:
+        return torch.as_tensor(load_mask(project, m, b, apix))
+    except Exception as e:
+        raise ValueError(f"mask {mode!r}: not one of {MASK_MODES} and not a MaskCreate job / .mrc file ({e})") from e
+
+
 def _reference_map(rj: Job, cls: int = 0) -> tuple[np.ndarray, float, str]:
     """A job's map before masking: a HeteroRefine class (1-based cls), else map_nomask.mrc / map.mrc."""
     import mrcfile
@@ -486,15 +520,14 @@ def run_refine3d(project: Project, job, log=print) -> dict:
     init = vol.to(dev)                                  # the real map (a padded Volume at box 512 would be 8.6 GB)
     t0 = time.time()
     A_start = A.clone()
-    sm = None if s.mask == "sphere" else ("auto" if s.mask == "auto" else torch.as_tensor(
-        load_mask(project, s.mask, b, box_a / b)))
+    sm = solvent_mask_arg(project, s.mask, b, box_a / b, [init], res0, clf.p.diameter_a, log=log)
     maps, A, t, z, fscs, res, vols = ab.refine_particles(clf, idx, A, t, init, sym=s.sym, n_iter=s.n_iter, step_min=s.min_step_deg,
                                                          res_start=res0, n_local=s.n_local, drop_frac=s.drop_frac,
                                                          global_at=tuple(range(1, s.global_iters + 1)),
                                                          global_res=s.global_res_a, box=b,
                                                          half=None if half is None else torch.as_tensor(half),
                                                          solvent_mask=sm, grid_correct=s.grid_correct,
-                                                         pad=s.pad or None, nu=s.nu, log=log)
+                                                         pad=s.pad or None, nu=s.nu, nu_strict=s.nu_strict, log=log)
     seconds = time.time() - t0
     apix = box_a / b
     h1, h2 = vols[0][0].real(), vols[0][1].real()
@@ -523,13 +556,23 @@ def run_refine3d(project: Project, job, log=print) -> dict:
                                resolution_a=res_sol, maps=[maps[0].cpu().numpy()], masks=[smask.cpu().numpy()])
     if sym_frame:
         report["warnings"] = sym_frame.pop("warnings", []) + report.get("warnings", [])
+    nu_summ = {}
+    if s.nu and ab.refine_particles.last_nu_map is not None:   # non-uniform filter: cutoff map and its statistics
+        from . import plots3d
+        cmap_ = ab.refine_particles.last_nu_map.float()
+        ab._save_mrc(job.out("nu_cutoff.mrc"), cmap_, apix)
+        last = ab.refine_particles.last_nu
+        plots3d.nu_figure(job.out("nu.png"), ab.refine_particles.last_history, cmap_.numpy(), smask.cpu().numpy(),
+                          maps[0].cpu().numpy(), last["candidates_a"], tag)
+        nu_summ = dict(nu={k: last[k] for k in ("p05_a", "median_a", "p95_a", "at_global_pct", "coarse_pct",
+                                                 "halves_r", "strict", "window_a")})
     summ = dict(particles=int(clf.N), particles_used=int(used.sum()), duplicates_removed=n_dup,
                 duplicate_distance_a=round(dist, 1), sym=s.sym, symmetry_frame=sym_frame,
                 resolution_a=round(float(res[0]), 2),
                 resolution_solvent_mask_a=round(res_sol, 2),
                 resolution_unmasked_a=round(ab.resolution_from_fsc(fsc_unm, box_a), 2),
                 apix=round(apix, 4), box=b, res_start_a=round(res0, 1), seconds=round(seconds, 1), **report,
-                fsc_solvent=[round(float(x), 4) for x in fsc_sol.cpu()], map=project.rel(job.find("map.mrc")))
+                fsc_solvent=[round(float(x), 4) for x in fsc_sol.cpu()], map=project.rel(job.find("map.mrc")), **nu_summ)
     project.set_status(job, "finished", summ)
     ses.clf = None
     release_cache()
@@ -553,6 +596,9 @@ class HeteroRefineSettings:
     soft: bool = False              # soft: every particle in every class, weighted by its probability (RELION);
                                     # hard: in its best class only (each particle's probabilities are written either way)
     diameter_a: float = 0.0         # particle diameter for the mask (0: from the extraction)
+    mask: str = "auto"              # solvent mask during refinement, per class: "auto" (dynamic: from each class's map
+                                    # every iteration below 15 A), "static" (once from each reference), "none" (the
+                                    # particle sphere only), or a MaskCreate job / .mrc path (one mask for every class)
     seed: int = 0                   # random seed (noise added to repeated references)
     gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
@@ -664,9 +710,13 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
         z0 = torch.stack(lls, 1).argmax(1)
         log(f"[hetero] global search at {g_res:.0f} A ({step:.1f} deg): per class {torch.bincount(z0, minlength=K).tolist()}")
     A_init = A.clone()
+    sm = solvent_mask_arg(project, s.mask, b, box_a / b, [V.real() for V in inits], s.res_start_a,
+                          clf.p.diameter_a, log=log)
     maps, A, t, z, fscs, res, hv = ab.refine_particles(clf, idx, A, t, inits, z=z0, sym=s.sym, n_iter=s.n_iter,
                                                        res_start=s.res_start_a, n_local=s.n_local,
-                                                       drop_frac=s.drop_frac, box=b, half=half_t, soft=s.soft, log=log)
+                                                       drop_frac=s.drop_frac, box=b, half=half_t, soft=s.soft,
+                                                       solvent_mask=sm, log=log)
+    dyn_masks = ab.refine_particles.last_masks
     seconds = time.time() - t0
     fit = ab.refine_particles.last_score.cpu().numpy().astype(np.float32)
     used = (ab.refine_particles.last_weights > 0).numpy()
@@ -686,7 +736,8 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
     for k in range(K):
         nk = int((z == k).sum())
         h1, h2 = hv[k][0].real().nan_to_num(0), hv[k][1].real().nan_to_num(0)
-        smask = ab.solvent_mask(maps[k], apix) if nk else torch.zeros_like(maps[k])
+        smask = ((dyn_masks[k] if dyn_masks[k] is not None else ab.solvent_mask(maps[k], apix)) if nk
+                 else torch.zeros_like(maps[k]))
         f_c = ab.corrected_masked_fsc(h1, h2, smask) if nk else torch.zeros(b // 2 + 1, device=dev)
         fsc[f"class{k + 1}"] = fscs[k]
         fsc[f"class{k + 1}_corrected"] = f_c
@@ -829,7 +880,7 @@ def registry() -> dict[str, JobSpec]:
                  Input("poses", _POSES, doc="starting orientations, matched by particle uid"),
                  Input("reference", _POSES, optional=True, doc="starting map (default: the poses job's)")),
                 refine3d_job, run_refine3d, key=_res_key,
-                figures=("map_views.png", "fsc.png", "views.png", "progress.png", "particles.png")),
+                figures=("map_views.png", "fsc.png", "views.png", "progress.png", "particles.png", "nu.png")),
         JobSpec("HeteroRefine", "heterogeneous refinement: K maps, particles sorted among them (hard or soft)",
                 HeteroRefineSettings,
                 (Input("particles", _PARTICLES, doc="particles"),

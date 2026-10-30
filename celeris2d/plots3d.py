@@ -371,3 +371,74 @@ def localres_figure(path: str, vol: np.ndarray, lres: np.ndarray, mask: np.ndarr
                                    f"{stats['p95_a']:.2f} Å · window {stats['window_a']:.0f} Å · FSC {stats['threshold']}")
     fig.savefig(path)
     plt.close(fig)
+
+
+@themed
+def nu_figure(path: str, history: list[dict], cutoff_map: np.ndarray | None, mask: np.ndarray | None,
+              vmap: np.ndarray | None, candidates_a: list, title_: str):
+    """Non-uniform refinement: per iteration the cutoffs chosen inside the mask (median, 5-95 % band) beside the
+    global FSC resolution; the share of the mask filtered at the global resolution or finer and at twice it or
+    coarser; how well the two halves' cutoff maps agree (r); the last iteration's share per candidate cutoff; and
+    sections of the last cutoff map through the mask's centre (inside the mask, over the map)."""
+    hs = [h for h in history if "nu" in h]
+    fig = plt.figure(figsize=(16, 8.2))
+    gs = fig.add_gridspec(2, 4, height_ratios=[1, 1.05], hspace=0.42, wspace=0.3)
+    fig.subplots_adjust(left=0.05, right=0.97, top=top(fig, 0.8), bottom=0.07)
+    it = np.array([h["it"] for h in hs])
+    nu = [h["nu"] for h in hs]
+    a = fig.add_subplot(gs[0, 0:2])
+    if hs:
+        a.fill_between(it, [x["p05_a"] for x in nu], [x["p95_a"] for x in nu], color=T.series[0], alpha=0.25,
+                       lw=0, label="cutoffs 5–95 %")
+        a.plot(it, [x["median_a"] for x in nu], "o-", ms=3.5, color=T.series[0], label="median cutoff")
+        a.plot(it, [x["res_a"] for x in nu], "o--", ms=3, lw=1.4, color=T.ink3, label="global FSC resolution")
+        a.invert_yaxis()
+        a.legend(loc="lower right")
+    a.set(title="Local cutoffs in the mask (finer ↑)", xlabel="iteration", ylabel="Å")
+    grid_y(a)
+    a = fig.add_subplot(gs[0, 2])
+    if hs:
+        a.plot(it, [x["at_global_pct"] for x in nu], "o-", ms=3.5, color=T.series[0], label="≤ 1.05 × global")
+        a.plot(it, [x["coarse_pct"] for x in nu], "o-", ms=3.5, color=T.series[1], label="≥ 2 × global")
+        a.legend(loc="best")
+    a.set(title="Share of the mask", xlabel="iteration", ylabel="% of mask voxels", ylim=(0, 100))
+    grid_y(a)
+    a = fig.add_subplot(gs[0, 3])
+    if hs:
+        a.plot(it, [x["halves_r"] for x in nu], "o-", ms=3.5, color=T.series[0])
+    a.set(title="Halves agree (r of cutoff maps)", xlabel="iteration", ylabel="Pearson r", ylim=(-0.05, 1.05))
+    grid_y(a)
+    from matplotlib.ticker import MaxNLocator
+    for ax in fig.axes:
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+    a = fig.add_subplot(gs[1, 0])
+    if hs:
+        sh = nu[-1]["share_pct"]
+        x = np.arange(len(candidates_a))
+        a.bar(x, sh, width=0.8, color=T.series[0])
+        a.set_xticks(x[::2], [f"{c:.1f}" for c in candidates_a[::2]], rotation=45, fontsize=7.5)
+        note(a, f"median {nu[-1]['median_a']:.2f} Å\nglobal {nu[-1]['res_a']:.2f} Å", "upper right")
+    a.set(title="Last iteration: cutoffs (half 1)", xlabel="cutoff (Å)", ylabel="% of mask voxels")
+    grid_y(a)
+    if cutoff_map is not None and mask is not None:
+        m = mask > 0.5
+        b = cutoff_map.shape[0]
+        idx = np.argwhere(m)
+        cz, cy, cx = (np.round(idx.mean(0)).astype(int) if len(idx) else (b // 2,) * 3)
+        lo, hi = np.percentile(cutoff_map[m], [2, 98]) if m.any() else (0, 1)
+        secs = [("section z", cutoff_map[cz], m[cz], None if vmap is None else vmap[cz]),
+                ("section y", cutoff_map[:, cy], m[:, cy], None if vmap is None else vmap[:, cy]),
+                ("section x", cutoff_map[:, :, cx], m[:, :, cx], None if vmap is None else vmap[:, :, cx])]
+        im = None
+        for j, (nm, c, mk, v) in enumerate(secs):
+            a = fig.add_subplot(gs[1, 1 + j])
+            if v is not None:
+                a.imshow(norm_img(v), cmap=GRAY, alpha=0.6)
+            im = a.imshow(np.where(mk, c, np.nan), cmap=T.density.reversed(), vmin=lo, vmax=hi, alpha=0.85)
+            image_axes(a)
+            a.set_title(nm, fontsize=9, color=T.ink3, fontweight="normal")
+        cb = fig.colorbar(im, ax=fig.axes[-3:], fraction=0.025, pad=0.01)
+        cb.set_label("local cutoff (Å)", color=T.ink2)
+    title(fig, "Non-uniform refinement", title_)
+    fig.savefig(path)
+    plt.close(fig)

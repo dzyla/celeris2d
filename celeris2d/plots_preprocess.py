@@ -18,6 +18,23 @@ from .engine import release_cache
 from .plotstyle import GRAY, STATUS, T, plt, themed
 
 
+
+def display_blur(img: np.ndarray, apix: float, res_a: float) -> np.ndarray:
+    """A micrograph for display: Gaussian low-pass with half amplitude at res_a (A) - particles stand out of the
+    shot noise (cryoSPARC / RELION pickers show micrographs low-passed to ~20 A). res_a <= 2 apix: unchanged."""
+    if not res_a or res_a <= 2 * apix:
+        return img
+    ky = np.fft.fftfreq(img.shape[0])[:, None]
+    kx = np.fft.rfftfreq(img.shape[1])[None, :]
+    k2 = (kx * kx + ky * ky) / apix ** 2                                     # (1/A)^2
+    g = np.exp(-math.log(2) * k2 * res_a ** 2)                               # 0.5 at |k| = 1 / res_a
+    return np.fft.irfft2(np.fft.rfft2(img.astype(np.float32)) * g, s=img.shape).astype(np.float32)
+
+
+def _blur_a(diameter_a: float, blur_a: float | None) -> float:
+    """Display low-pass for picking figures: given, else a quarter of the particle diameter, at least 20 A."""
+    return max(20.0, diameter_a / 4) if blur_a is None else blur_a
+
 def _res_axis(ax, k):
     """Label a frequency axis (1/A) in Angstrom."""
     ticks, gap = [], 0.07 * (k[-1] - k[0])                         # keep labels apart on the linear k axis
@@ -257,19 +274,25 @@ def fsc_figure(path: str, curves: dict, apix: float, box: int, title: str = "Hal
 
 @themed
 def picks_figure(path: str, cand, keep: np.ndarray, diameter_a: float, threshold: float, title: str = "",
-                 ref_xy_a: np.ndarray | None = None):
+                 ref_xy_a: np.ndarray | None = None, blur_a: float | None = None):
     """Picks on the binned, phase-flipped micrograph used for picking (circles: kept picks; optional reference
-    positions as dots), the score map, and the candidate score distribution with the threshold."""
+    positions as dots), the score map, and the candidate score distribution with the threshold. blur_a: display
+    low-pass of the micrograph (A; None: _blur_a, 0: none)."""
     w = cand.work
-    fig, (a_img, a_sc, a_h) = plt.subplots(1, 3, figsize=(19, 6.4), gridspec_kw=dict(width_ratios=[1, 1, 0.8]))
-    img, wa = w["image"], w["apix"]
-    lo, hi = np.percentile(img, [1, 99])
+    # the micrograph large (the particles must be visible), score map and histogram beside it
+    fig = plt.figure(figsize=(17, 10.5))
+    gs = fig.add_gridspec(2, 2, width_ratios=[1.75, 1], height_ratios=[1.15, 0.85], wspace=0.08, hspace=0.25)
+    a_img, a_sc, a_h = fig.add_subplot(gs[:, 0]), fig.add_subplot(gs[0, 1]), fig.add_subplot(gs[1, 1])
+    wa = w["apix"]
+    bl = _blur_a(diameter_a, blur_a)
+    img = display_blur(w["image"], wa, bl)
+    lo, hi = np.percentile(img, [0.5, 99.5])
     a_img.imshow(img, cmap=GRAY, vmin=lo, vmax=hi)
     th = np.linspace(0, 2 * math.pi, 40)
     r = diameter_a / 2 / wa
     xy = cand.xy_a[keep] / wa
     for x, y in xy:
-        a_img.plot(x + r * np.cos(th), y + r * np.sin(th), color=T.series[0], lw=0.8)
+        a_img.plot(x + r * np.cos(th), y + r * np.sin(th), color=T.series[0], lw=0.7, alpha=0.75)
     if ref_xy_a is not None:
         a_img.scatter(ref_xy_a[:, 0] / wa, ref_xy_a[:, 1] / wa, s=6, color=T.series[1], edgecolors="none",
                       label="reference particles")
@@ -277,7 +300,8 @@ def picks_figure(path: str, cand, keep: np.ndarray, diameter_a: float, threshold
     a_img.set_xticks([])
     a_img.set_yticks([])
     a_img.set_title(f"Picks: {len(keep)} of {len(cand.score)} candidates")
-    a_img.set_xlabel(f"binned to {wa:.1f} Å/px, phase-flipped; circles: {diameter_a:g} Å")
+    a_img.set_xlabel(f"binned to {wa:.1f} Å/px, phase-flipped" + (f", low-passed to {bl:.0f} Å" if bl > 2 * wa else "")
+                     + f"; circles: {diameter_a:g} Å")
     sm = w["score"]
     v = np.percentile(np.abs(sm), 99.5)
     a_sc.imshow(sm, cmap=T.density, vmin=0, vmax=v)
@@ -293,7 +317,7 @@ def picks_figure(path: str, cand, keep: np.ndarray, diameter_a: float, threshold
     a_h.set_title("Score distribution")
     if title:
         fig.suptitle(title, x=0.01, ha="left", color=T.ink, fontsize=12, fontweight="bold")
-    fig.tight_layout()
+    fig.subplots_adjust(left=0.02, right=0.98, top=0.93, bottom=0.06)
     fig.savefig(path, dpi=100)
     plt.close(fig)
 
@@ -359,7 +383,7 @@ def size_survey(path: str, project, mic_job, movie_ids, diameters_a=(80, 120, 16
         sub = gs[1 + j, :-2].subgridspec(2, max(1, (n_gallery + 1) // 2), wspace=0.03, hspace=0.03)
         for g in range(ng):
             ax = fig.add_subplot(sub[g % 2, g // 2])
-            im = ims[g]
+            im = display_blur(ims[g], max(mics[0][1], 2 * d / box), 20.0)
             lo, hi = np.percentile(im, [1, 99])
             ax.imshow(im, cmap="gray", vmin=lo, vmax=hi)
             ax.add_patch(plt.Circle((box / 2, box / 2), box / 4, fill=False, color=colors[j], lw=0.8))
@@ -475,12 +499,13 @@ def shifts_figure(path: str, d: np.ndarray, per_mic: np.ndarray, title: str, dia
 @themed
 def regions_figure(path: str, img: np.ndarray, apix_img: float, cls: np.ndarray, area: dict, xy_kept: np.ndarray,
                    xy_removed: np.ndarray, diameter_a: float, title: str = "", ref_xy_a: np.ndarray | None = None,
-                   ref_removed: np.ndarray | None = None, p_ice: np.ndarray | None = None):
+                   ref_removed: np.ndarray | None = None, p_ice: np.ndarray | None = None, blur_a: float | None = None):
     """Regions of a micrograph (regions.py): the binned micrograph with the class map overlaid (ice unpainted), and
     the picks kept (circles) vs removed by the region filter (crosses); reference particles (refined / ground truth)
-    as dots, those removed in a warning colour."""
+    as dots, those removed in a warning colour. blur_a: display low-pass as in picks_figure."""
     from matplotlib.colors import ListedColormap
     from .regions import CLASSES
+    img = display_blur(img, apix_img, _blur_a(diameter_a, blur_a))
     fig, (a_map, a_pk) = plt.subplots(1, 2, figsize=(15, 6.6))
     lo, hi = np.percentile(img, [0.5, 99.5])
     for a in (a_map, a_pk):

@@ -264,6 +264,10 @@ def run_polish(project: Project, job, log=print) -> dict:
     n_fr = None
     for m, fr in frames_of(list(stat_ids)):
         mic = _movie_frames(project, mc, int(m), fr)
+        if mic.frames_ft is None or mic.frames_ft.shape[0] < 2:
+            raise ValueError(f"Polish needs movies: {project.movie(int(m))['stem']} is a single frame (a micrograph "
+                             f"aligned and summed elsewhere, e.g. CryoPPP / EMPIAR micrograph sets), so there are no "
+                             f"frames to track particles in")
         n_fr = mic.frames_ft.shape[0]
         if num is None:
             num = torch.zeros((n_fr, NS), device=dev, dtype=torch.float64)
