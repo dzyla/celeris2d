@@ -3,7 +3,7 @@ keep the orientations and shifts of a consensus refinement, and K maps are fitte
 maximisation over the class assignment only.
 
     start    (default) labels from the main directions of variability: every particle's residual against the
-             consensus, components found by EM-PCA over all particles at once (cryoSPARC 3DVA's algorithm), the
+             consensus, components found by EM-PCA over all particles at once (Punjani & Fleet 2021), the
              coefficients clustered into K groups. EM from random subsets (RELION) has to amplify noise into the
              first differences and at low SNR often splits by noise instead: simulated 30/70 mixture, noise 5,
              0.85 of particles right vs 0.59 (true maps: 0.90). Random subsets and consensus + noise are options.
@@ -246,7 +246,7 @@ def classify(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, n_classes
         return refs, res
 
     def variability_labels(n_comp: int, n_it: int = 10) -> torch.Tensor:
-        """Starting labels from the main directions of variability (cryoSPARC 3DVA's EM-PCA, Punjani & Fleet 2021): every
+        """Starting labels from the main directions of variability (EM-PCA, Punjani & Fleet 2021): every
         row's residual against the consensus (scaled per row), r_i = x_i - s_i CTF P_C, and components D found one at a
         time by alternating c_i = <r_i, CTF P_D> / |CTF P_D|^2 and D = the reconstruction of c_i r_i (weights c_i^2
         CTF^2) - power iteration on the covariance of the residuals, every particle at once. The coefficients are
@@ -521,7 +521,7 @@ class Class3DSettings:
                                     # at its pose before comparing (signal subtraction on the fly); off for particles
                                     # that are already subtracted (e.g. a Subtract job)
     init: str = "variability"       # starting classes: "variability" (particles clustered along the main directions of
-                                    # variability of their residuals against the consensus, 3DVA-style), "random"
+                                    # variability of their residuals against the consensus, EM-PCA), "random"
                                     # (random particle subsets, RELION) or "consensus" (the consensus map low-passed to
                                     # res_a, independent noise per class). Simulated 30/70 mixture, noise 3 / 4 / 5:
                                     # variability 0.98 / 0.93 / 0.85 of particles right (true maps: 0.98 / 0.94 /

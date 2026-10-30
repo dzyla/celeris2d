@@ -136,7 +136,7 @@ engine's model convention (the particle's centre is at +shift from the box centr
 - **Class3D** (3D classification without alignment, RELION Class3D `--skip_align`; `celeris2d/class3d.py`, method in
   its docstring; particles, poses from a Refine3D / HeteroRefine / Class3D, optional reference = the consensus, by
   default the poses job's map): the poses stay fixed, K maps are fitted by EM over the class assignment only. Start
-  (`init`): "variability" (default: residuals against the consensus, EM-PCA components as in cryoSPARC 3DVA,
+  (`init`): "variability" (default: residuals against the consensus, EM-PCA components (Punjani & Fleet 2021),
   k-means on the coefficients), "random" (random subsets, RELION) or "consensus" (consensus + noise per class).
   Hard M-step by default (posteriors still written), RELION's T (`reg_t`) regularises each class with its own
   half-map FSC. Focus `mask` (a MaskCreate job or .mrc): only the masked region is compared, and with `subtract` the
