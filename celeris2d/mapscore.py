@@ -10,7 +10,9 @@ particles' Class2D job, the share that fits with its binomial interval: a class 
 chance rate, a noise-attractor class at it - an objective class selection where class-average scores against map
 projections are fooled by round, textured averages. dz_2025_10 (152,932 template picks, Class2D K100 vs the D2 map at
 20 A, 6 min on one RTX PRO 4000): particles in the classes selected by class-average scores fit at 28.6 %, the rest
-at 2.7 %; the proposal (10x chance) shares 20 of those 26 classes and adds 5, two of them at 84 % and 70 % fit.
+at 2.7 %; classes such as two at 84 % and 70 % fit had been left out. J20 (198k particles, the whole stack, against
+its own ab initio map): particles of clean 2D classes fit at 40 %, of noisy ones at 15 %; the class proposal keeps
+97 % of the clean particles and removes 81 % of the noisy ones (3D classification at fixed poses: 80 % / 56 %).
 Decisions stay the user's: the job proposes, Select decides.
 
 At 16-20 A the score tells particle-like density of the right size from empty ice / noise, not one protein from
@@ -45,9 +47,14 @@ class MapScoreSettings:
     diameter_a: float = 0.0         # circle the correlation is taken in (A); 0: the extraction's particle size
     quantile: float = 0.99          # a particle fits when it beats this quantile of the phase-randomised controls
     propose_over_chance: float = 10.0   # propose a 2D class when the lower 95 % bound of its share that fits exceeds
-                                    # this x the chance rate. dz_2025_10 (153k template picks, K100, vs the 5.5 A map):
-                                    # class shares fall 0.5 ... 0.17, 0.14, 0.10 then 0.09, 0.07 ... 0.03 (chance
-                                    # 0.01); 3x proposes 40 classes / 58k particles, 10x 25 / 37k, 20x 21 / 31k
+                                    # this x the chance rate ...
+    propose_relative: float = 0.5   # ... and this x the median share of the 10 best classes (>= 100 particles): the
+                                    # share of real particles that fits depends on the SNR (dz_2025_10 ~0.45, J20 ~0.45
+                                    # but J20's noisy classes reach 0.29). J20 (198k, K50, my reading of its gallery:
+                                    # 21 noisy classes): 0.4 keeps 100 % of clean particles / removes 70 % of the noisy,
+                                    # 0.5 97 % / 81 %, 0.6 97 % / 96 %; 3D classification at the consensus poses (4
+                                    # models, best two kept) 80 % / 56 %. dz_2025_10: 10x chance alone proposes 25
+                                    # classes / 37k particles, 3x 40 / 58k
     max_particles: int = 0          # score a random subset of this many (0: all); class shares need ~200 per class
     seed: int = 0                   # control phases and subset
     gpus: str = "auto"              # GPU to use: "auto" or an index
@@ -172,12 +179,15 @@ def run_mapscore(project: Project, job, log=print) -> dict:
         cols["cls"] = cls
         shares = class_shares(cls[cls >= 0], fits[cls >= 0], chance)
     project.table(job, "particles").write(cols, src.parts["celMovie"].to_numpy(np.int64))
-    proposed = [c["cls"] for c in shares if c["lo"] > s.propose_over_chance * chance]
-    _figure(job.out("mapscore.png"), score, ctrl, thr, shares, s.propose_over_chance * chance, f"{job.name}: {fits.mean() * 100:.1f} % of "
+    top = sorted((c["fit"] for c in shares if c["n"] >= 100), reverse=True)[:10]
+    bar = max(s.propose_over_chance * chance, s.propose_relative * float(np.median(top)) if top else 0.0)
+    proposed = [c["cls"] for c in shares if c["lo"] > bar]
+    _figure(job.out("mapscore.png"), score, ctrl, thr, shares, bar, f"{job.name}: {fits.mean() * 100:.1f} % of "
             f"{len(uid):,} particles fit {mj.name} (chance {chance * 100:.0f} %)")
     summ = dict(particles=len(uid), fit=round(float(fits.mean()), 4), chance=chance, threshold=round(thr, 4),
                 score_median=round(float(np.median(score)), 4), control_median=round(float(np.median(ctrl)), 4),
-                seconds=round(time.time() - t0, 1), classes=shares, proposed_classes=proposed,
+                seconds=round(time.time() - t0, 1), classes=shares, proposal_bar=round(bar, 4),
+                proposed_classes=proposed,
                 proposed_particles=int(sum(c["n"] for c in shares if c["cls"] in proposed)))
     log(f"[mapscore] {summ['fit'] * 100:.1f} % fit (chance {chance * 100:.0f} %), median score {summ['score_median']} "
         f"vs control {summ['control_median']}; {len(proposed)} classes proposed; {summ['seconds']} s")

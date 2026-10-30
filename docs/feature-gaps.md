@@ -25,5 +25,9 @@ an agent branch in progress; ordered by what a typical project needs first.
 | live processing | cryoSPARC Live | partial (pipeline streams movies -> picks -> 2D; no live 3D) |
 | model building / validation | (external) | out of scope |
 
-Notes from runs: noise-attractor ("honeycomb") 2D classes whose texture period follows the alignment band limit are
+Notes from runs: J20 (198k particles, whole stack, no 2D selection): ab initio with 4 models / 3D classification at
+the consensus poses separates junk only partly (keeping the 2 best models: 80 % of clean particles kept, 56 % of
+noisy ones removed - junk has no pose to agree on, so it spreads over all models); MapScore's class proposal 97 % /
+81 %. cryoSPARC's way - heterogeneous refinement with per-class alignment and junk "decoy" references - is missing
+(HeteroRefine has per-class alignment but no decoys). Noise-attractor ("honeycomb") 2D classes whose texture period follows the alignment band limit are
 not particles - a per-particle score against the first map separates them where class-level scores fail.
