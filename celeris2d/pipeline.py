@@ -78,6 +78,8 @@ class PickSettings:
                                         # averages) or a Refine3D / InitialModel / HeteroRefine / Sharpen job (projections
                                         # of its map); diameter_a still sets the binning, window and spacing
     template_classes: tuple = ()        # Class2D: only these 1-based classes; HeteroRefine / Class3D: the class whose map (1)
+    template_file: str = ""             # templates from outside the project instead: an .mrcs of class averages (white
+                                        # protein, e.g. another collection's 2D; template_classes picks from it) or an .mrc map
     n_projections: int = 40             # map templates: directions over the sphere
     angle_step: float = 0.0             # in-plane step (deg); 0: one working pixel at the particle's edge (~6 deg)
     curate: int = 0                     # a Curate job: only the micrographs it accepts are picked (and extracted)
@@ -118,7 +120,7 @@ def motion_job(project: Project, movies: Job, s: MotionSettings, label: str = ""
 
 def pick_job(project: Project, micrographs: Job, s: PickSettings, label: str = "") -> Job:
     ins = [micrographs] + ([project.job(s.templates)] if s.templates else []) + ([project.job(s.curate)] if s.curate else [])
-    kind = f"tmpl{int(s.templates):03d}_" if s.templates else "blob"
+    kind = f"tmpl{int(s.templates):03d}_" if s.templates else "tmplfile" if s.template_file else "blob"
     return project.new_job("Pick", dict(asdict(s), micrographs=micrographs.id), ins,
                            label or f"{kind}{s.diameter_a:g}" + ("" if s.threshold is None else f"_th{s.threshold:g}"))
 
@@ -129,14 +131,26 @@ _tmpl_cache: dict = {}
 def pick_templates(project: Project, s: PickSettings) -> tuple[np.ndarray, float]:
     """Templates of a Pick job (white protein): class averages of a Class2D / Select job, or projections of a map."""
     import mrcfile
-    key = (int(s.templates), tuple(s.template_classes), s.n_projections, s.diameter_a)
+    key = (int(s.templates), s.template_file, tuple(s.template_classes), s.n_projections, s.diameter_a)
     if key in _tmpl_cache:
         return _tmpl_cache[key]
-    j = project.job(s.templates)
 
     def read(path):
         with mrcfile.open(path, permissive=True) as f:
             return np.array(f.data, np.float32), float(f.voxel_size.x)
+    if s.template_file:
+        imgs, apix = read(s.template_file)
+        if s.template_file.endswith(".mrcs") or imgs.ndim == 2:
+            imgs = imgs.reshape(-1, *imgs.shape[-2:])
+            if s.template_classes:
+                imgs = imgs[np.asarray(s.template_classes, int) - 1]
+            out = (imgs, apix)
+        else:
+            out = pk.templates_from_map(imgs, apix, s.n_projections, wa=s.diameter_a / 20)
+        _tmpl_cache.clear()
+        _tmpl_cache[key] = out
+        return out
+    j = project.job(s.templates)
     if j.type in ("Class2D", "Select"):
         path = j.find("classes.mrcs") if j.type == "Class2D" else j.find("selected_classes.mrcs")
         if path is None:
@@ -160,7 +174,7 @@ def pick_templates(project: Project, s: PickSettings) -> tuple[np.ndarray, float
 
 
 def pick_candidates(project: Project, s: PickSettings, img, apix, ctf, optics, keep_maps=False) -> pk.Candidates:
-    if s.templates:
+    if s.templates or s.template_file:
         t, ta = pick_templates(project, s)
         return pk.template_candidates(img, apix, s.diameter_a, t, ta, ctf, optics, s.dark, s.min_dist_frac,
                                       s.angle_step, keep_maps=keep_maps)

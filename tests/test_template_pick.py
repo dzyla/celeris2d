@@ -58,3 +58,18 @@ def test_valid_bounds_padding():
     img[:, -11:] = img[:, -12:-11]
     img[:17] = img[17:18]
     assert pk.valid_bounds(torch.from_numpy(img)) == (23, 389, 17, 300)
+
+
+def test_template_file(tmp_path):
+    """Templates from an .mrcs outside the project: all images, or the chosen 1-based classes, at the file's pixel size."""
+    import mrcfile
+    from celeris2d import pipeline as pl
+    imgs = np.random.default_rng(2).normal(size=(3, 32, 32)).astype(np.float32)
+    f = str(tmp_path / "classes.mrcs")
+    with mrcfile.new(f) as m:
+        m.set_data(imgs)
+        m.voxel_size = 3.5
+    t, apix = pl.pick_templates(None, pl.PickSettings(100.0, template_file=f))
+    assert t.shape == (3, 32, 32) and abs(apix - 3.5) < 1e-6
+    t, _ = pl.pick_templates(None, pl.PickSettings(100.0, template_file=f, template_classes=(2,)))
+    assert np.allclose(t[0], imgs[1])
