@@ -37,7 +37,7 @@ class SharpenSettings:
     fit_from_a: float = 10.0        # Guinier fit from this resolution to the map's resolution
     resolution_a: float = 0.0       # low-pass (A); 0: the corrected masked FSC at 0.143
     mask: str = "auto"              # "auto": made from the half maps (masks.auto_mask); "refine": the refinement's;
-                                    # else a mask .mrc (path, absolute or relative to the project)
+                                    # else a MaskCreate job (number) or a mask .mrc (path, absolute or relative to the project)
     edge_shells: int = 2            # cosine edge of the low-pass (Fourier shells)
     fsc_weight: bool = True         # weight each shell by sqrt(2 FSC / (1 + FSC)) (RELION)
     cls: int = 0                    # a HeteroRefine job: the class (1-based) to sharpen
@@ -208,8 +208,13 @@ def run_sharpen(project: Project, job, log=print) -> dict:
             f"{mask_info['pieces']} pieces kept, +{mask_info['dilate_a']} A, soft edge {mask_info['soft_a']} A, "
             f"{mask_info['volume_fraction'] * 100:.1f}% of the box")
     else:
-        mpath = rj.find(f"{pre}mask.mrc") if s.mask == "refine" else project.abs(s.mask)
-        mask, mapix = _read(mpath)
+        if s.mask == "refine":
+            mpath = rj.find(f"{pre}mask.mrc")
+            mask, mapix = _read(mpath)
+        else:                                        # a MaskCreate job or an .mrc path, resampled to the half maps
+            from .jobs import load_mask
+            mpath = s.mask
+            mask, mapix = load_mask(project, s.mask, h1.shape[0], apix), apix
     if mask.shape != h1.shape or abs(mapix - apix) > 1e-3 * apix:
         raise ValueError(f"mask {mpath}: {mask.shape} at {mapix:.4f} A/px, half maps {h1.shape} at {apix:.4f} A/px")
     r = postprocess(h1, h2, np.clip(mask, 0, 1), apix, s)

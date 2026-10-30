@@ -234,3 +234,186 @@ def mask_report(mask: torch.Tensor, apix: float, vmap: torch.Tensor | None = Non
                    resolution_unmasked_a=resolution_from_fsc(f_un, n * apix), randomised_fsc_at_res=float(f_r[i]),
                    fsc_corrected=f_c)
     return out
+
+
+# ------------------------------------------------------------------------------------------------ MaskCreate job
+from dataclasses import dataclass  # noqa: E402
+
+
+@dataclass
+class MaskCreateSettings:
+    cls: int = 0                    # a HeteroRefine: the class (1-based) whose map is masked
+    lowpass_a: float = 0.0          # low-pass before thresholding (A); 0: 1.5 x the map's resolution, within 8-15 A
+    threshold: float = 0.0          # threshold on the low-passed map (map units); 0: automatic, sigma_level x the noise
+    sigma_level: float = 5.0        # automatic threshold: noise standard deviations (from the half-map difference)
+    extend_a: float = 3.0           # the thresholded density grown by this (A) ...
+    soft_a: float = 6.0             # ... then given a cosine edge this wide (A)
+    keep_frac: float = 0.05         # connected pieces smaller than this share of the largest are dropped
+    n_segments: int = 12            # the density split into this many segments around its strongest peaks (figure)
+    segments: tuple = ()            # keep only these segments (numbers in the figure); empty: all
+    include: tuple = ()             # regions always in: "sphere x y z r" or "box x0 y0 z0 x1 y1 z1" (A, from the box corner)
+    exclude: tuple = ()             # regions taken out, same form (e.g. a detergent belt, a flexible domain)
+    invert: bool = False            # the mask of everything else (e.g. for signal subtraction)
+
+
+def parse_region(text: str) -> dict:
+    """'sphere x y z r' or 'box x0 y0 z0 x1 y1 z1' (A; commas allowed) -> the dict make_mask takes."""
+    parts = text.replace(",", " ").split()
+    kind, vals = parts[0].lower(), [float(v) for v in parts[1:]]
+    if kind == "sphere" and len(vals) == 4:
+        return {"sphere": vals}
+    if kind == "box" and len(vals) == 6:
+        return {"box": vals}
+    raise ValueError(f"region {text!r}: use 'sphere x y z r' or 'box x0 y0 z0 x1 y1 z1' (A)")
+
+
+def mask_job(project, source, s: MaskCreateSettings, label: str = ""):
+    from .jobspec import params_of
+    src = project.job(source)
+    if src.type == "HeteroRefine" and not s.cls:
+        raise ValueError(f"{src.name}: choose the class to mask (cls)")
+    for r in tuple(s.include) + tuple(s.exclude):
+        parse_region(r)
+    tag = "auto" if not (s.segments or s.include or s.exclude or s.threshold) else "custom"
+    return project.new_job("MaskCreate", dict(params_of(s), map=src.id), [src],
+                           label or f"{tag}_on{src.id:03d}" + (f"c{s.cls}" if s.cls else ""))
+
+
+def _source_maps(project, src, cls: int):
+    """(average map, half 1, half 2 or None, apix, resolution) of a job's map."""
+    import mrcfile
+    rj = project.job(src.params["refine"]) if src.type == "Sharpen" else src
+    pre = f"class{cls:02d}_" if rj.type == "HeteroRefine" else ""
+
+    def rd(name):
+        p = rj.find(pre + name)
+        if p is None:
+            return None, None
+        with mrcfile.open(p, permissive=True) as f:
+            return torch.as_tensor(np.asarray(f.data, np.float32)), float(f.voxel_size.x)
+    h1, apix = rd("half1_unfil.mrc")
+    h2, _ = rd("half2_unfil.mrc")
+    if h1 is not None and h2 is not None:
+        avg = 0.5 * (h1 + h2)
+    else:
+        avg, apix = rd("map_nomask.mrc")
+        if avg is None:
+            avg, apix = rd("map.mrc")
+        h1 = h2 = None
+    summ = project.summary_of(rj)
+    res = summ.get("resolution_a") or 8.0
+    return avg, h1, h2, apix, float(res)
+
+
+def run_mask(project, job, log=print) -> dict:
+    import time as _t
+    from .abinitio import _save_mrc
+    from .jobspec import settings_of
+    job = project.job(job)
+    s = settings_of(job, MaskCreateSettings)
+    src = project.job(job.params["map"])
+    t0 = _t.time()
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    avg, h1, h2, apix, res = _source_maps(project, src, s.cls)
+    avg = avg.to(dev)
+    halves = None if h1 is None else (h1.to(dev), h2.to(dev))
+    n = avg.shape[0]
+    lp_a = s.lowpass_a or min(15.0, max(8.0, 1.5 * res))
+    nb, vox = _grid(n, apix, lp_a)
+    if s.threshold:
+        thr = float(s.threshold)
+    else:                                                # automatic: as auto_mask, noise from the half maps
+        lp = _lowpass(_resize(avg.float(), nb), vox, lp_a)
+        mu, sd = (0.0, noise_sigma(halves[0], halves[1], nb, vox, lp_a)) if halves else solvent_stats(lp, vox, None)
+        thr = max(mu + s.sigma_level * sd, mu + 0.03 * (float(lp.max()) - mu))
+    m, info, labels = make_mask(avg, apix, lowpass_a=lp_a, threshold=thr, extend_a=s.extend_a, soft_a=s.soft_a,
+                                keep_frac=s.keep_frac, include=[parse_region(r) for r in s.include],
+                                exclude=[parse_region(r) for r in s.exclude], segments=tuple(s.segments),
+                                n_segments=s.n_segments, invert=s.invert)
+    if not s.threshold:                                  # the automatic threshold, in the noise sigma that set it
+        info["threshold_sigma"] = s.sigma_level
+    _save_mrc(job.out("mask.mrc"), m, apix)
+    seg_info = []
+    if labels is not None:
+        _save_mrc(job.out("segments.mrc"), labels.float(), apix)
+        lab = labels.cpu().numpy()
+        c = (np.arange(n) + 0.5) * apix
+        for k in range(1, int(lab.max()) + 1):
+            z, y, x = np.nonzero(lab == k)
+            if len(z):
+                seg_info.append(dict(segment=k, volume_a3=round(float(len(z) * apix ** 3)), centre_a=[
+                    round(float(c[x].mean()), 1), round(float(c[y].mean()), 1), round(float(c[z].mean()), 1)]))
+    rep = mask_report(m, apix, avg, *(halves or (None, None)))
+    summ = dict(source=src.name, apix=round(apix, 4), box=n, volume_a3=round(rep["volume_a3"]),
+                box_share=round(rep["box_share"], 4), density_outside=round(rep["density_outside"], 4),
+                threshold=info["threshold"], threshold_sigma=info["threshold_sigma"], lowpass_a=info["lowpass_a"],
+                extend_a=s.extend_a, soft_a=s.soft_a, segments=seg_info, segments_kept=list(s.segments),
+                include=list(s.include), exclude=list(s.exclude), invert=s.invert, seconds=round(_t.time() - t0, 1))
+    if halves:
+        summ.update(resolution_corrected_a=round(rep["resolution_corrected_a"], 2),
+                    resolution_unmasked_a=round(rep["resolution_unmasked_a"], 2),
+                    randomised_fsc_at_res=round(rep["randomised_fsc_at_res"], 3))
+    warnings = []
+    if rep["density_outside"] > 0.02 and not (s.segments or s.exclude or s.invert):
+        warnings.append(f"{rep['density_outside'] * 100:.1f} % of the low-passed density is outside the mask")
+    if halves and rep["randomised_fsc_at_res"] > 0.2:
+        warnings.append("the mask alone correlates phase-randomised half maps: widen soft_a")
+    summ["warnings"] = warnings
+    _figure(job.out("mask.png"), avg.cpu().numpy(), m.cpu().numpy(), None if labels is None else labels.cpu().numpy(),
+            apix, f"{job.name} · {src.name} · {rep['volume_a3'] / 1e6:.2f} M Å³ · threshold {info['threshold_sigma']} σ")
+    project.set_status(job, "finished", summ)
+    log(f"[mask] {job.name}: {rep['volume_a3'] / 1e6:.2f} M A^3 ({rep['box_share'] * 100:.1f}% of the box), "
+        f"threshold {info['threshold_sigma']} sd, {len(seg_info)} segments" +
+        (f", corrected FSC {summ['resolution_corrected_a']} A" if halves else ""))
+    return summ
+
+
+def _figure(path, vmap, mask, labels, apix, title_):
+    from .plotstyle import themed
+    themed(_draw)(path, vmap, mask, labels, apix, title_)
+
+
+def _draw(path, vmap, mask, labels, apix, title_):
+    """Top: central sections of the map with the mask's 0.5 contour (x, y, z). Bottom: projections of the
+    segments (each a colour, its number at its centre) - the numbers `segments` keeps."""
+    from .plotstyle import GRAY, T, norm_img, plt, title
+    n = vmap.shape[0]
+    fig, ax = plt.subplots(2, 3, figsize=(12, 8.6))
+    fig.subplots_adjust(left=0.02, right=0.98, top=0.9, bottom=0.02, wspace=0.05, hspace=0.12)
+    ext = [0, n * apix, 0, n * apix]
+    secs = [(vmap[n // 2], mask[n // 2], "z section (x right, y up)"),
+            (vmap[:, n // 2], mask[:, n // 2], "y section (x right, z up)"),
+            (vmap[:, :, n // 2], mask[:, :, n // 2], "x section (y right, z up)")]
+    for a, (im, mk, nm) in zip(ax[0], secs):
+        a.imshow(norm_img(im, 1, 99.5), cmap=GRAY, origin="lower", extent=ext)
+        a.contour(mk, levels=[0.5], colors=[T.series[1]], linewidths=1.2, origin="lower", extent=ext)
+        a.set_title(nm, fontsize=9, fontweight="normal", loc="center")
+        a.set_xticks([])
+        a.set_yticks([])
+    if labels is not None and labels.max() > 0:
+        from matplotlib.colors import ListedColormap
+        k = int(labels.max())
+        cols = plt.get_cmap("tab20")(np.arange(k) % 20)
+        cmap = ListedColormap(np.vstack([[0, 0, 0, 0], cols]))
+        for i, (a, axis, nm) in enumerate(zip(ax[1], (0, 1, 2), ("along z", "along y", "along x"))):
+            # the segment nearest the viewer along the axis: the last non-zero label
+            lab = np.moveaxis(labels, axis, 0)
+            nz = lab > 0
+            last = np.where(nz.any(0), n - 1 - np.argmax(nz[::-1], axis=0), 0)
+            top = np.take_along_axis(lab, last[None], 0)[0]
+            a.imshow(norm_img(vmap.sum(axis), 1, 99.5), cmap=GRAY, origin="lower", extent=ext)
+            a.imshow(top, cmap=cmap, vmin=0, vmax=k, origin="lower", extent=ext, alpha=0.55, interpolation="nearest")
+            for s in range(1, k + 1):
+                yy, xx = np.nonzero(top == s)
+                if len(yy):
+                    a.text((xx.mean() + 0.5) * apix, (yy.mean() + 0.5) * apix, str(s), color=T.ink, fontsize=10,
+                           fontweight="bold", ha="center", va="center")
+            a.set_title(f"segments, seen {nm}", fontsize=9, fontweight="normal", loc="center")
+            a.set_xticks([])
+            a.set_yticks([])
+    else:
+        for a in ax[1]:
+            a.axis("off")
+    title(fig, "Mask", title_)
+    fig.savefig(path)
+    plt.close(fig)

@@ -789,6 +789,7 @@ def registry() -> dict[str, JobSpec]:
     """Every particle job type (see jobspec.py): rerun, the dashboard's New job form, MCP new_job / job_types, the
     job list's key numbers and the reports all read this table."""
     from .ctfrefine import CtfRefineSettings, ctf_refine_job, run_ctf_refine
+    from .masking import MaskCreateSettings, mask_job, run_mask
     from .polish import PolishSettings, polish_job, run_polish
     from .sharpen import SharpenSettings, run_sharpen, sharpen_job
     specs = [
@@ -821,6 +822,13 @@ def registry() -> dict[str, JobSpec]:
                 ctf_refine_job, run_ctf_refine,
                 key=lambda s: f"{_n(s.get('refined'))} ptcls · |Δdf| {_n(s.get('delta_abs_median_a'))} Å",
                 figures=("ctfrefine.png",)),
+        JobSpec("MaskCreate", "a mask from a map: automatic, or with a chosen threshold, regions and segments",
+                MaskCreateSettings,
+                (Input("map", ("Refine3D", "HeteroRefine", "InitialModel", "Sharpen"),
+                       doc="the job whose map is masked (its half maps set the automatic threshold)"),),
+                mask_job, run_mask,
+                key=lambda s: (f"{_n((s.get('volume_a3') or 0) / 1e6, 2)} M Å³" + warn_mark(s)) if s.get("volume_a3") else "",
+                figures=("mask.png",)),
         JobSpec("Sharpen", "post-processing: corrected masked FSC, B-factor, local resolution", SharpenSettings,
                 (Input("refine", ("Refine3D", "HeteroRefine"), doc="the refinement (a HeteroRefine: set cls)"),),
                 sharpen_job, run_sharpen,

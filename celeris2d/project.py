@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 """
 
 JOB_TYPES = ("Import", "MotionCtf", "Pick", "Extract", "Select", "Class2D", "InitialModel", "Refine3D", "HeteroRefine",
-             "Polish", "CtfRefine", "Sharpen")
+             "Polish", "CtfRefine", "Sharpen", "MaskCreate")
 PER_MOVIE = dict(MotionCtf="micrographs", Pick="picks", Extract="chunks", Polish="chunks")
 HEAVY = dict(MotionCtf=(".mrc",), Extract=(".mrcs",), Polish=(".mrcs",))   # purgeable files of a job's data folder
 REBUILDABLE = ("MotionCtf", "Extract")         # purged files can be made again from the recorded parameters
