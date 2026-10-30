@@ -19,27 +19,36 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
+from typing import ClassVar
 
 import numpy as np
 import torch
 
 from .plotstyle import GRAY, STATUS, T, grid_y, image_axes, plt, themed, title, top, warnings_text
+from .jobspec import params_of, settings_of
 from .project import Job, Project, logged
 
 
 @dataclass
 class SharpenSettings:
+    VERSION: ClassVar[int] = 2      # 2: mask "" no longer means the refinement's mask ("auto" is the default)
     b_factor: float = 0.0           # applied B-factor (A^2, RELION sign: negative sharpens); 0: automatic (Guinier fit)
     fit_from_a: float = 10.0        # Guinier fit from this resolution to the map's resolution
     resolution_a: float = 0.0       # low-pass (A); 0: the corrected masked FSC at 0.143
     mask: str = "auto"              # "auto": made from the half maps (masks.auto_mask); "refine": the refinement's;
                                     # else a mask .mrc (path, absolute or relative to the project)
     edge_shells: int = 2            # cosine edge of the low-pass (Fourier shells)
-    fsc_weight: bool = True
+    fsc_weight: bool = True         # weight each shell by sqrt(2 FSC / (1 + FSC)) (RELION)
     cls: int = 0                    # a HeteroRefine job: the class (1-based) to sharpen
     local_res: bool = True          # local resolution (localres.py): localres.mrc + localres_filtered.mrc + figure
     local_window_a: float = 0.0     # its window (0: ~7x the resolution)
+
+    @classmethod
+    def migrate(cls, params: dict, from_version: int) -> dict:
+        if from_version < 2 and not params.get("mask"):   # version 1 used the refinement's mask by default
+            params = dict(params, mask="refine")
+        return params
 
 
 def sharpen_job(project: Project, refine, s: SharpenSettings, label: str = "") -> Job:
@@ -49,7 +58,7 @@ def sharpen_job(project: Project, refine, s: SharpenSettings, label: str = "") -
         raise ValueError(f"{r.name} is not a Refine3D or HeteroRefine job")
     if r.type == "HeteroRefine" and not s.cls:
         raise ValueError(f"{r.name}: choose the class to sharpen (cls)")
-    return project.new_job("Sharpen", dict(asdict(s), refine=r.id), [r],
+    return project.new_job("Sharpen", dict(params_of(s), refine=r.id), [r],
                            label or (f"on{r.id:03d}" + (f"c{s.cls}" if s.cls else "")))
 
 
@@ -191,15 +200,10 @@ def postprocess(h1: np.ndarray, h2: np.ndarray, mask: np.ndarray, apix: float, s
                 fsc_dips_a=dips, warnings=warnings, content_to_a=round(box_a / max(k_end, 1), 2))
 
 
-def _settings_of(job, cls):
-    from .jobs import settings_of
-    return settings_of(job, cls)
-
-
 @logged
 def run_sharpen(project: Project, job, log=print) -> dict:
     job = project.job(job)
-    s = _settings_of(job, SharpenSettings)
+    s = settings_of(job, SharpenSettings)
     rj = project.job(job.params["refine"])
     t0 = time.time()
     pre = f"class{s.cls:02d}_" if rj.type == "HeteroRefine" else ""

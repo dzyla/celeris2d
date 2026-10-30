@@ -274,6 +274,29 @@ def _background_job(job, fn):
 
 
 @server.tool()
+def job_types() -> str:
+    """Every particle job type this version can run: what it does, its inputs (and the job types each accepts) and
+    its settings (kind, default, help). new_job makes any of them; the specific tools (classify_job, refine3d, ...)
+    are shortcuts for the common settings."""
+    from .jobs import registry
+    from .jobspec import describe
+    return _js([describe(sp) for sp in registry().values()])
+
+
+@server.tool()
+def new_job(job_type: str, inputs: dict, settings: dict | None = None, label: str = "") -> str:
+    """Make and run (in the background; job_status / job_report) a job of any type listed by job_types, e.g.
+    new_job("Sharpen", {"refine": "14"}, {"mask": "auto", "local_res": true}). Settings not given take their
+    defaults; unknown inputs or settings are an error. Symmetry is the user's choice, never guessed."""
+    from .jobs import new_job as _new, registry
+    prj = _p()
+    j = _new(prj, job_type, inputs, settings or {}, label)
+    spec = registry()[job_type]
+    _background_job(j, lambda: spec.run(prj, j, log=lambda *a: None))
+    return _js(dict(job=j.name, params=j.params))
+
+
+@server.tool()
 def classify_job(particles_job: str, n_classes: int = 50, max_res_a: float = 0.0, diameter_a: float = 0.0,
                  seeds: int = 1, label: str = "") -> str:
     """A Class2D job on the particles of an Extract, Polish or Select job, in the background (job_status; then

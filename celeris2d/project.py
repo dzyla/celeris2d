@@ -420,12 +420,15 @@ class Project:
 
     def write_index(self):
         """JOBS.md: one line per job, readable without any tool."""
+        from .jobspec import key_of
+        try:
+            from .jobs import registry
+            reg = registry()
+        except ImportError:                              # no torch: the movie jobs' key numbers only
+            reg = {}
         rows = ["| job | status | inputs | key numbers |", "|---|---|---|---|"]
         for r in self.jobs().itertuples():
-            s = self.summary_of(int(r.id))
-            key = ", ".join(f"{k} {v}" if not isinstance(v, dict) else f"{k} {v['median']:g}"
-                            for k, v in s.items()
-                            if isinstance(v, (int, float, str)) or (isinstance(v, dict) and "median" in v))[:200]
+            key = key_of(r.type, self.summary_of(int(r.id)), reg).replace("|", "/")
             ins = ", ".join(f"{i:03d}" for i in json.loads(r.inputs))
             rows.append(f"| {r.name} | {r.status} | {ins} | {key} |")
         _atomic(os.path.join(self.root, "JOBS.md"), lambda t: open(t, "w").write("\n".join(rows) + "\n"))

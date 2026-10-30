@@ -21,11 +21,12 @@ import json
 import os
 import shutil
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 import numpy as np
 import torch
 
+from .jobspec import Input, JobSpec, _n, params_of, settings_of, warn_mark
 from .project import PARTICLE_JOBS, Job, Project, logged
 
 
@@ -122,16 +123,16 @@ def _write_results(project: Project, job: Job, src, idx, cols: dict, name="parti
 # ------------------------------------------------------------------------------------------------ Class2D
 @dataclass
 class Class2DSettings:
-    n_classes: int = 50
+    n_classes: int = 50             # number of classes (K)
     max_res_a: float = 0.0          # finest resolution used (0: Nyquist of the particles, but not finer than 6 A)
     diameter_a: float = 0.0         # mask (0: 1.25 x the extraction's particle size)
     seeds: int = 1                  # > 1: independent repeats, per-particle P(good) after selection
-    gpus: str = "auto"
+    gpus: str = "auto"              # GPUs to use: "auto" (all free ones) or a list like "0,2"
 
 
 def class2d_job(project: Project, particles, s: Class2DSettings, label: str = "") -> Job:
     p = project.job(particles)
-    return project.new_job("Class2D", dict(asdict(s), particles=p.id), [p], label or f"K{s.n_classes}_on{p.id:03d}")
+    return project.new_job("Class2D", dict(params_of(s), particles=p.id), [p], label or f"K{s.n_classes}_on{p.id:03d}")
 
 
 @logged
@@ -227,14 +228,14 @@ def _draw_selection(path, imgs, pops, chosen, title_, ncol):
 class InitialModelSettings:
     sym: str = "C1"                 # the user's choice; never detected
     classes: tuple = ()             # 1-based classes of the Class2D job (empty: all populated classes)
-    n_models: int = 1
-    seed: int = 0
-    gpus: str = "auto"
+    n_models: int = 1               # > 1: that many maps, particles classified among them (3D classes)
+    seed: int = 0                   # random seed
+    gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
 
 def initial_model_job(project: Project, class2d, s: InitialModelSettings, label: str = "") -> Job:
     c = project.job(class2d)
-    return project.new_job("InitialModel", dict(asdict(s), class2d=c.id), [c], label or f"{s.sym}_from{c.id:03d}")
+    return project.new_job("InitialModel", dict(params_of(s), class2d=c.id), [c], label or f"{s.sym}_from{c.id:03d}")
 
 
 @logged
@@ -294,24 +295,25 @@ def run_initial_model(project: Project, job, log=print) -> dict:
 # ---------------------------------------------------------------------------------------------- Refine3D
 @dataclass
 class Refine3DSettings:
-    sym: str = "C1"
-    n_iter: int = 10
+    sym: str = "C1"                 # point-group symmetry, the user's choice (C1, Cn, Dn, T, O, I)
+    n_iter: int = 10                # iterations of local orientation search
     res_start_a: float = 0.0        # first alignment resolution (0: the reference job's resolution, at least 8 A)
     max_res_a: float = 0.0          # finest resolution loaded (0: Nyquist)
-    n_local: int = 1
-    drop_frac: float = 0.1
+    n_local: int = 1                # local search rounds per iteration
+    drop_frac: float = 0.1          # share of worst-fitting particles left out of each reconstruction
     global_iters: int = 0           # first iterations that also search all orientations (for starts with pose errors)
     global_res_a: float = 12.0      # resolution of that search
-    diameter_a: float = 0.0
+    diameter_a: float = 0.0         # particle diameter for the mask (0: from the extraction)
     classes: tuple = ()             # poses from a HeteroRefine: only the particles of these 1-based classes
-    gpus: str = "auto"
+    gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
 
 def refine3d_job(project: Project, particles, poses, reference, s: Refine3DSettings, label: str = "") -> Job:
     """particles: an Extract job (e.g. re-centred, full box); poses: the job whose per-particle orientations start
     the refinement (InitialModel / Refine3D, matched by uid); reference: the job whose map.mrc starts it."""
-    p, q, r = project.job(particles), project.job(poses), project.job(reference)
-    return project.new_job("Refine3D", dict(asdict(s), particles=p.id, poses=q.id, reference=r.id),
+    p, q = project.job(particles), project.job(poses)
+    r = project.job(reference) if reference not in (None, "", 0) else q
+    return project.new_job("Refine3D", dict(params_of(s), particles=p.id, poses=q.id, reference=r.id),
                            [p, q] + ([r] if r.id != q.id else []), label or f"{s.sym}_on{p.id:03d}")
 
 
@@ -487,20 +489,20 @@ def run_refine3d(project: Project, job, log=print) -> dict:
 class HeteroRefineSettings:
     references: tuple = ()          # maps, one per class: job numbers ("12") or "job:class" ("25:2" = InitialModel
                                     # model 2, "30:3" = HeteroRefine class 3); a reference can be given several times
-    sym: str = "C1"
-    n_iter: int = 12
+    sym: str = "C1"                 # point-group symmetry, the user's choice
+    n_iter: int = 12                # iterations
     res_start_a: float = 20.0       # first alignment / comparison resolution
     max_res_a: float = 0.0          # finest resolution loaded (0: Nyquist)
     global_search: bool = True      # first iteration: every class searches all orientations (references in their own
                                     # frames, e.g. separate ab initio runs); off: all start from the poses' orientation
-    global_res_a: float = 15.0
-    n_local: int = 1
-    drop_frac: float = 0.0
+    global_res_a: float = 15.0      # resolution of that search (A)
+    n_local: int = 1                # local search rounds per iteration
+    drop_frac: float = 0.0          # share of worst-fitting particles left out of each reconstruction
     soft: bool = False              # soft: every particle in every class, weighted by its probability (RELION);
                                     # hard: in its best class only (each particle's probabilities are written either way)
-    diameter_a: float = 0.0
-    seed: int = 0
-    gpus: str = "auto"
+    diameter_a: float = 0.0         # particle diameter for the mask (0: from the extraction)
+    seed: int = 0                   # random seed (noise added to repeated references)
+    gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
 
 def hetero_refine_job(project: Project, particles, poses, s: HeteroRefineSettings, label: str = "") -> Job:
@@ -512,7 +514,7 @@ def hetero_refine_job(project: Project, particles, poses, s: HeteroRefineSetting
     p, q = project.job(particles), project.job(poses)
     refs = [project.job(str(r).split(":")[0]) for r in s.references]
     ins = [p, q] + [r for i, r in enumerate(refs) if r.id not in [x.id for x in [p, q] + refs[:i]]]
-    return project.new_job("HeteroRefine", dict(asdict(s), references=[str(r) for r in s.references], particles=p.id,
+    return project.new_job("HeteroRefine", dict(params_of(s), references=[str(r) for r in s.references], particles=p.id,
                                                 poses=q.id), ins, label or f"K{len(s.references)}_on{p.id:03d}")
 
 
@@ -732,42 +734,86 @@ def refinement_report(job, tag: str, sym: str, box_a: float, apix: float, A_star
 
 
 # ---------------------------------------------------------------------------------------------- registry
-@dataclass
-class JobSpec:
-    """How a particle job type is made and run. Every front end (rerun, MCP, dashboard) goes through this table, so a
-    new job type is one entry here plus its settings dataclass and functions; nothing else changes.
-    settings: dataclass of the job's parameters (unknown keys in a stored job are ignored and missing ones take the
-    defaults, so parameters can be added or retired without breaking old jobs); inputs: the parameter names that hold
-    input job numbers, in the order make() takes them; make(project, *inputs, settings, label) -> Job;
-    run(project, job, log) -> summary."""
-    settings: type
-    inputs: tuple
-    make: object
-    run: object
+_PARTICLES = ("Extract", "Polish", "Select")
+_POSES = ("InitialModel", "Refine3D", "HeteroRefine")
+
+
+def _res_key(s: dict) -> str:
+    return (f"{_n(s.get('resolution_a'), 2)} Å {s.get('sym', '')}" + warn_mark(s)) if s.get("resolution_a") else ""
+
+
+def _hetero_key(s: dict) -> str:
+    c = s.get("classes") or []
+    if not c:
+        return ""
+    best = min((x.get("resolution_solvent_mask_a") or x.get("resolution_a") or float("inf")) for x in c)
+    return f"K{len(c)} · best {_n(best, 2)} Å" + warn_mark(s) if best < float("inf") else f"K{len(c)}"
 
 
 def registry() -> dict[str, JobSpec]:
+    """Every particle job type (see jobspec.py): rerun, the dashboard's New job form, MCP new_job / job_types, the
+    job list's key numbers and the reports all read this table."""
     from .polish import PolishSettings, polish_job, run_polish
     from .sharpen import SharpenSettings, run_sharpen, sharpen_job
-    return {
-        "Class2D": JobSpec(Class2DSettings, ("particles",), class2d_job, run_class2d),
-        "InitialModel": JobSpec(InitialModelSettings, ("class2d",), initial_model_job, run_initial_model),
-        "Refine3D": JobSpec(Refine3DSettings, ("particles", "poses", "reference"), refine3d_job, run_refine3d),
-        "HeteroRefine": JobSpec(HeteroRefineSettings, ("particles", "poses"), hetero_refine_job, run_hetero_refine),
-        "Polish": JobSpec(PolishSettings, ("refine",), polish_job, run_polish),
-        "Sharpen": JobSpec(SharpenSettings, ("refine",), sharpen_job, run_sharpen),
-    }
+    specs = [
+        JobSpec("Class2D", "2D classification of the particles of an extraction or selection", Class2DSettings,
+                (Input("particles", _PARTICLES, doc="particles to classify"),), class2d_job, run_class2d,
+                key=lambda s: f"{_n(s.get('particles'))} ptcls · K{s.get('classes', '')}",
+                figures=("gallery.png",)),
+        JobSpec("InitialModel", "ab initio 3D from 2D classes and their particles", InitialModelSettings,
+                (Input("class2d", ("Class2D",), doc="the 2D classification (classes chosen in settings)"),),
+                initial_model_job, run_initial_model, key=_res_key,
+                figures=("map_views.png", "fsc.png", "views.png", "reprojections.png")),
+        JobSpec("Refine3D", "local 3D refinement with gold-standard halves", Refine3DSettings,
+                (Input("particles", _PARTICLES, doc="particles (e.g. re-centred, full box)"),
+                 Input("poses", _POSES, doc="starting orientations, matched by particle uid"),
+                 Input("reference", _POSES, optional=True, doc="starting map (default: the poses job's)")),
+                refine3d_job, run_refine3d, key=_res_key,
+                figures=("map_views.png", "fsc.png", "views.png", "progress.png", "particles.png")),
+        JobSpec("HeteroRefine", "heterogeneous refinement: K maps, particles sorted among them (hard or soft)",
+                HeteroRefineSettings,
+                (Input("particles", _PARTICLES, doc="particles"),
+                 Input("poses", _POSES, doc="starting orientations, matched by particle uid")),
+                hetero_refine_job, run_hetero_refine, key=_hetero_key,
+                figures=("map_views.png", "views_classes.png", "fsc.png", "progress.png")),
+        JobSpec("Polish", "per-particle motion tracks and per-frame dose weights from a refinement", PolishSettings,
+                (Input("refine", ("Refine3D",), doc="the refinement (its particles and map)"),),
+                polish_job, run_polish,
+                key=lambda s: f"{_n(s.get('particles'))} ptcls · {s.get('box', '')} px", figures=("polish.png",)),
+        JobSpec("Sharpen", "post-processing: corrected masked FSC, B-factor, local resolution", SharpenSettings,
+                (Input("refine", ("Refine3D", "HeteroRefine"), doc="the refinement (a HeteroRefine: set cls)"),),
+                sharpen_job, run_sharpen,
+                key=lambda s: (f"{_n(s.get('resolution_a'), 2)} Å · B {_n(s.get('b_factor'))}" + warn_mark(s))
+                if s.get("resolution_a") else "",
+                figures=("postprocess.png", "localres.png")),
+    ]
+    return {sp.type: sp for sp in specs}
 
 
-def settings_of(job: Job, cls: type):
-    """A job's settings from its stored parameters: unknown keys ignored, missing ones at their defaults, lists back
-    to the tuples the dataclass declares."""
-    out = {}
-    for k, f in cls.__dataclass_fields__.items():
-        if k in job.params:
-            v = job.params[k]
-            out[k] = tuple(v) if isinstance(v, list) and isinstance(f.default, tuple) else v
-    return cls(**out)
+def new_job(project: Project, job_type: str, inputs: dict, settings: dict | None = None, label: str = "") -> Job:
+    """Make a job of any registered type from input job references and settings values (checked and converted
+    against the settings dataclass; unknown names are an error). Returns the job; spec.run(project, job) runs it."""
+    from .jobspec import coerce
+    spec = registry().get(job_type)
+    if spec is None:
+        raise ValueError(f"unknown job type {job_type!r} (known: {sorted(registry())})")
+    args = []
+    for i in spec.inputs:
+        ref = inputs.get(i.name)
+        if ref in (None, "", 0):
+            if not i.optional:
+                raise ValueError(f"{job_type}: input {i.name!r} is required ({'/'.join(i.types)} job)")
+            args.append(None)
+            continue
+        j = project.job(ref)
+        if j.type not in i.types:
+            raise ValueError(f"{job_type}: input {i.name!r} must be a {'/'.join(i.types)} job, not {j.name}")
+        args.append(j.id)
+    extra = set(inputs) - {i.name for i in spec.inputs}
+    if extra:
+        raise ValueError(f"{job_type}: unknown inputs {sorted(extra)}")
+    s = spec.settings(**coerce(spec.settings, settings or {}))
+    return spec.make(project, *args, s, label)
 
 
 # ------------------------------------------------------------------------------------------------- rerun
@@ -784,5 +830,5 @@ def rerun(project: Project, ref, log=print):
     spec = registry().get(old.type)
     if spec is None:
         raise ValueError(f"{old.type} jobs are not run again (make a new one)")
-    j = spec.make(project, *(old.params[k] for k in spec.inputs), settings_of(old, spec.settings))
+    j = spec.make(project, *(old.params.get(i.name) for i in spec.inputs), settings_of(old, spec.settings))
     return j, lambda: spec.run(project, j, log=log)

@@ -880,13 +880,17 @@ def create(workdir, project_dir=None):
     @app.get("/api/project")
     def project_jobs(root: str = ""):
         """Every job: number, type, label, status, inputs, key numbers; newest last."""
+        from .jobs import registry
+        from .jobspec import key_of
         prj = _prj(root or None)
+        reg = registry()
         out = []
         for r in prj.jobs().itertuples():
+            summ = prj.summary_of(int(r.id))
             out.append(dict(id=int(r.id), name=r.name, type=r.type, label=r.label, status=r.status,
                             inputs=[prj.job(int(i)).name for i in json.loads(r.inputs)],
                             created=float(r.created), updated=float(r.updated),
-                            summary=_small(prj.summary_of(int(r.id)))))
+                            key=key_of(r.type, summ, reg), summary=_small(summ)))
         running = [k for k, t in proj_state["runs"].items() if t["thread"].is_alive()]
         return dict(root=prj.root, jobs=out, running=running)
 
@@ -936,16 +940,44 @@ def create(workdir, project_dir=None):
         mt = "image/png" if full.endswith(".png") else "application/octet-stream"
         return Response(data, media_type=mt, headers={"Cache-Control": "no-cache"})
 
+    @app.get("/api/project/jobtypes")
+    def project_jobtypes():
+        """Every particle job type (jobs.registry()): title, inputs with the job types they accept, settings with
+        their kinds, defaults and help (from the settings dataclasses) - the New job form is built from this."""
+        from .jobs import registry
+        from .jobspec import describe
+        return [describe(sp) for sp in registry().values()]
+
+    @app.post("/api/project/new")
+    def project_new(body: dict = Body(...)):
+        """Make and run a job of any registered type: {type, inputs: {name: job}, settings: {...}, label}."""
+        from .jobs import new_job, registry
+        spec = registry().get(body.get("type"))
+        if spec is None:
+            raise HTTPException(400, f"unknown job type {body.get('type')!r}")
+        return _start_job(lambda prj: (lambda j: (j, lambda: spec.run(prj, j, log=st._log)))(
+            new_job(prj, spec.type, body.get("inputs") or {}, body.get("settings") or {}, body.get("label") or "")),
+            body.get("type"))
+
     @app.post("/api/project/rerun")
     def project_rerun(body: dict = Body(...)):
         """Run a job again (jobs.rerun): particle jobs as a new job with the same parameters, movie jobs carry on
         with movies they do not have. One run at a time."""
         from .jobs import rerun
+        return _start_job(lambda prj: rerun(prj, body["job"], log=st._log), body["job"])
+
+    def _start_job(make, what):
+        """make(project) -> (job, fn) under the GPU-job lock (no second job is made while one runs); fn runs on the
+        job thread, a failure marks the job failed."""
         prj = _prj()
         rec = dict(error=None)
 
-        def prepare():                               # under the GPU-job lock: no second job is made while one runs
-            j, fn = rerun(prj, body["job"], log=st._log)
+        def prepare():
+            try:
+                j, fn = make(prj)
+            except ValueError as e:
+                rec["bad"] = str(e)
+                raise
             rec["job"] = j
 
             def work():
@@ -957,9 +989,9 @@ def create(workdir, project_dir=None):
                     raise
             return j.name, work
         try:
-            name, rec["thread"] = submit("project", body["job"], None, prepare=prepare)
+            name, rec["thread"] = submit("project", what, None, prepare=prepare)
         except ValueError as e:
-            raise HTTPException(400, str(e))
+            raise HTTPException(400, rec.get("bad") or str(e))
         j = rec["job"]
         proj_state["runs"][name] = rec
         return dict(job=j.name)

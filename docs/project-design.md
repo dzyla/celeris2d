@@ -177,10 +177,16 @@ particles in processing order) and `micrographs.csv`; per-micrograph figures for
 `x.png` and `x.light.png`; the project page switches both. Colours come from the theme (validated categorical
 slots, sequential blue ramp, blue/red diverging, fixed status colours), never literals.
 
-**Job registry** (`jobs.registry()`): per particle job type its settings dataclass, input parameters, make and
-run functions. Rerun (and anything else that handles jobs generically) goes through it, so a new job type is one
-entry; stored parameters are read with `settings_of` (unknown keys ignored, missing ones at their defaults), so
-settings can be added or retired without breaking old jobs.
+**Job registry** (`jobs.registry()`, types in `jobspec.py`): one `JobSpec` per particle job type - title, settings
+dataclass, inputs (with the job types each accepts), make / run functions, key numbers, main figures. Every front
+end reads it: rerun, the project page's "New job" / "Change settings and run" form (`/api/project/jobtypes`,
+`/api/project/new`; fields, defaults and help come from the settings dataclass and its comments), MCP `job_types`
+/ `new_job`, the job list's key numbers and JOBS.md. A new job type is one entry plus its settings and functions;
+`tests/test_registry.py` checks every entry (form round trip, help on every field, unknown / missing stored keys,
+input types, key numbers) without running it. Stored parameters carry `settings_version`; a settings class with
+`VERSION` > 1 has `migrate(params, from_version)` for renamed or re-meant fields (Sharpen 2: an empty mask used to
+mean the refinement's mask, now "auto"). Adding a field needs no migration: unknown keys are ignored and missing
+ones take their defaults.
 
 **Gold-standard halves are never mixed.** A particle keeps the half of the refinement its poses come from
 (Refine3D reads the poses job's `half` column; RELION's rlnRandomSubset), so a polished or re-refined particle is

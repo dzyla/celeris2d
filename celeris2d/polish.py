@@ -19,7 +19,7 @@ import json
 import math
 import os
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -27,6 +27,7 @@ import torch
 from . import picking as pk
 from . import preprocess as pp
 from .engine import ctf_2d, freqs
+from .jobspec import params_of, settings_of
 from .project import Job, PARTICLE_JOBS, Project, logged
 
 
@@ -38,8 +39,8 @@ class PolishSettings:
     sigma_c2_a: float = 4.0         # curvature coefficient (A): ~0.17 x this at the first and last frames
     stats_movies: int = 100         # movies used to fit the per-frame weights (random)
     batch: int = 24                 # particles per GPU batch
-    dtype: str = "float16"
-    seed: int = 0
+    dtype: str = "float16"         # precision of the polished particle stacks
+    seed: int = 0                   # random seed (movies used for the weights)
 
 
 def polish_job(project: Project, refine, s: PolishSettings, label: str = "") -> Job:
@@ -49,7 +50,7 @@ def polish_job(project: Project, refine, s: PolishSettings, label: str = "") -> 
         raise ValueError(f"{rj.name}: its particles ({ex.name}) are not an extraction")
     e = ex.params
     keep = {k: e[k] for k in ("picks", "micrographs", "box", "out_apix", "box_a_used", "particle_a", "dark")}
-    return project.new_job("Polish", dict(asdict(s), refine=rj.id, particles=ex.id, **keep), [rj, ex],
+    return project.new_job("Polish", dict(params_of(s), refine=rj.id, particles=ex.id, **keep), [rj, ex],
                            label or f"{e['box_a_used']:.0f}A_{e['out_apix']:.3g}apx_on{rj.id:03d}")
 
 

@@ -103,6 +103,9 @@ Layers, bottom to top:
   expose it.
 - **Figures**: every figure function is decorated with `plotstyle.themed` and takes its colours from
   `plotstyle.T` (dark default `x.png`, light `x.light.png`); no colour literals in figure code. A new particle job
-  type is an entry in `jobs.registry()` (settings dataclass, inputs, make, run).
+  type is an entry in `jobs.registry()` (`jobspec.JobSpec`: settings dataclass with a help comment per field,
+  inputs, make, run, key numbers, figures); forms, MCP `new_job`, rerun and the job list are built from it.
+  Result files go through `job.out(name)` / `job.find(name)` (maps/ figures/ data/, `jNNN_` prefix); run
+  functions are `@logged` (run log).
 - `Params` comments record what was tried and why defaults are what they are (e.g. `march_margin=0`,
   `online_decay=0`, `sigma_init_factor=1`, `polish` off). Read them before changing a default.
