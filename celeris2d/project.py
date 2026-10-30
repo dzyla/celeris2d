@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     created REAL, PRIMARY KEY (job_id, movie_id));
 """
 
-JOB_TYPES = ("Import", "MotionCtf", "Curate", "Pick", "Extract", "Select", "Class2D", "InitialModel", "Refine3D", "HeteroRefine",
+JOB_TYPES = ("Import", "ImportParticles", "MotionCtf", "Curate", "Pick", "Extract", "Select", "Class2D", "InitialModel", "Refine3D", "HeteroRefine",
              "Polish", "CtfRefine", "Sharpen", "MaskCreate", "MapScore", "Class3D", "Subtract", "LocalRefine", "SymExpand",
              "Modes3D", "ModeMaps")
 PER_MOVIE = dict(MotionCtf="micrographs", Pick="picks", Extract="chunks", Polish="chunks", Subtract="chunks")
@@ -72,6 +72,9 @@ CLASS_JOBS = ("HeteroRefine", "Class3D", "ModeMaps")    # 3D jobs with several m
 
 def movie_fingerprint(path: str, chunk: int = 1 << 20) -> str:
     h = hashlib.sha256()
+    if not os.path.exists(path):                     # an imported particle set's micrograph that is not here: its path
+        h.update(path.encode())
+        return h.hexdigest()
     size = os.path.getsize(path)
     h.update(os.path.basename(path).encode())
     h.update(str(size).encode())
@@ -582,8 +585,9 @@ class Project:
         """Delete a job's heavy files (micrographs / particle stacks) and keep everything else; rebuild() makes
         them again from the recorded parameters. Returns GB freed."""
         job = self.job(ref)
-        if job.type not in REBUILDABLE:
-            raise ValueError(f"{job.name}: {job.type} jobs cannot be purged (rebuild could not make their files again)")
+        if job.type not in REBUILDABLE or job.params.get("imported"):
+            raise ValueError(f"{job.name}: {'imported' if job.params.get('imported') else job.type} jobs cannot be "
+                             "purged (rebuild could not make their files again)")
         self._not_running(job, "purged")
         n = 0
         for ext in HEAVY.get(job.type, ()):
@@ -837,9 +841,9 @@ class Project:
         if not len(mi):
             return dict(micrographs=0)
         meta = [json.loads(m) for m in mi["meta"]]
-        cols = dict(defocus_a=(mi["defocus_u"] + mi["defocus_v"]).to_numpy() / 2,
-                    astigmatism_a=(mi["defocus_u"] - mi["defocus_v"]).to_numpy(),
-                    ctf_fit_res_a=mi["ctf_fit_res"].to_numpy(),
+        cols = dict(defocus_a=(mi["defocus_u"] + mi["defocus_v"]).to_numpy(float) / 2,
+                    astigmatism_a=(mi["defocus_u"] - mi["defocus_v"]).to_numpy(float),
+                    ctf_fit_res_a=mi["ctf_fit_res"].to_numpy(float),      # (none for imported micrographs)
                     drift_a=np.array([m.get("motion_path_a", np.nan) for m in meta], dtype=float))
         st = dict(micrographs=len(mi), apix=round(float(mi["apix"].iloc[0]), 4))
         for k, v in cols.items():

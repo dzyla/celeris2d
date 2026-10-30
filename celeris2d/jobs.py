@@ -1270,6 +1270,7 @@ def registry() -> dict[str, JobSpec]:
     from .ctfrefine import CtfRefineSettings, ctf_refine_job, run_ctf_refine
     from .curate import CurateSettings, curate_job, run_curate
     from .masking import MaskCreateSettings, mask_job, run_mask
+    from .importparticles import ImportParticlesSettings, import_job, run_import
     from .polish import PolishSettings, polish_job, run_polish
     from .sharpen import SharpenSettings, run_sharpen, sharpen_job
     from .mapscore import MapScoreSettings, mapscore_job, run_mapscore
@@ -1324,6 +1325,10 @@ def registry() -> dict[str, JobSpec]:
                 ctf_refine_job, run_ctf_refine,
                 key=lambda s: f"{_n(s.get('refined'))} ptcls · |Δdf| {_n(s.get('delta_abs_median_a'))} Å",
                 figures=("ctfrefine.png",)),
+        JobSpec("ImportParticles", "particles from RELION (.star) or cryoSPARC (.cs / .csg) into the project: their "
+                "micrographs, CTF and images become Import / MotionCtf / Extract jobs, used like our own extraction",
+                ImportParticlesSettings, (), import_job, run_import,
+                key=lambda s: f"{_n(s.get('particles'))} particles → {s.get('particles_job', '')}" if s.get("particles") else ""),
         JobSpec("MaskCreate", "a mask from a map: automatic, or with a chosen threshold, regions and segments",
                 MaskCreateSettings,
                 (Input("map", ("Refine3D", *CLASS_JOBS, "InitialModel", "Sharpen", "LocalRefine"),
