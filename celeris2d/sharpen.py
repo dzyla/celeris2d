@@ -27,7 +27,7 @@ import torch
 
 from .plotstyle import GRAY, STATUS, T, grid_y, image_axes, plt, themed, title, top, warnings_text
 from .jobspec import params_of, settings_of
-from .project import Job, Project, logged
+from .project import CLASS_JOBS, Job, Project, logged
 
 
 @dataclass
@@ -40,7 +40,7 @@ class SharpenSettings:
                                     # else a MaskCreate job (number) or a mask .mrc (path, absolute or relative to the project)
     edge_shells: int = 2            # cosine edge of the low-pass (Fourier shells)
     fsc_weight: bool = True         # weight each shell by sqrt(2 FSC / (1 + FSC)) (RELION)
-    cls: int = 0                    # a HeteroRefine job: the class (1-based) to sharpen
+    cls: int = 0                    # a HeteroRefine / Class3D job: the class (1-based) to sharpen
     local_res: bool = True          # local resolution (localres.py): localres.mrc + localres_filtered.mrc + figure
     local_window_a: float = 0.0     # its window (0: ~7x the resolution)
 
@@ -52,11 +52,11 @@ class SharpenSettings:
 
 
 def sharpen_job(project: Project, refine, s: SharpenSettings, label: str = "") -> Job:
-    """Sharpen the half maps of a Refine3D job (or of class s.cls of a HeteroRefine job)."""
+    """Sharpen the half maps of a Refine3D job (or of class s.cls of a HeteroRefine / Class3D job)."""
     r = project.job(refine)
-    if r.type not in ("Refine3D", "HeteroRefine"):
-        raise ValueError(f"{r.name} is not a Refine3D or HeteroRefine job")
-    if r.type == "HeteroRefine" and not s.cls:
+    if r.type not in ("Refine3D", *CLASS_JOBS):
+        raise ValueError(f"{r.name} is not a Refine3D, HeteroRefine or Class3D job")
+    if r.type in CLASS_JOBS and not s.cls:
         raise ValueError(f"{r.name}: choose the class to sharpen (cls)")
     return project.new_job("Sharpen", dict(params_of(s), refine=r.id), [r],
                            label or (f"on{r.id:03d}" + (f"c{s.cls}" if s.cls else "")))
@@ -193,7 +193,7 @@ def run_sharpen(project: Project, job, log=print) -> dict:
     s = settings_of(job, SharpenSettings)
     rj = project.job(job.params["refine"])
     t0 = time.time()
-    pre = f"class{s.cls:02d}_" if rj.type == "HeteroRefine" else ""
+    pre = f"class{s.cls:02d}_" if rj.type in CLASS_JOBS else ""
     h1, apix = _read(rj.find(f"{pre}half1_unfil.mrc"))
     h2, _ = _read(rj.find(f"{pre}half2_unfil.mrc"))
     mask_info = {}

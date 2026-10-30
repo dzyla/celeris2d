@@ -29,7 +29,7 @@ import torch
 
 from .engine import release_cache
 from .jobspec import Input, JobSpec, _n, params_of, settings_of, warn_mark
-from .project import PARTICLE_JOBS, Job, Project, logged
+from .project import CLASS_JOBS, PARTICLE_JOBS, Job, Project, logged
 
 
 # ------------------------------------------------------------------------------------------ particle sources
@@ -168,7 +168,8 @@ def run_class2d(project: Project, job, log=print) -> dict:
 
 
 def select_classes(project: Project, class2d, classes: list[int], label: str = "", note: str = "") -> Job:
-    """A Select job with the particles of these classes (1-based numbers, as in the gallery) of a Class2D job."""
+    """A Select job with the particles of these classes (1-based numbers, as in the gallery) of a Class2D job (or a
+    HeteroRefine / Class3D: its table `particles` has the same uid / cls columns)."""
     c = project.job(class2d)
     t = project.table(c, "particles").read(["uid", "cls"])
     keep = np.isin(t["cls"], np.asarray(classes, int) - 1)
@@ -463,9 +464,9 @@ def solvent_mask_arg(project: Project, mode: str, b: int, apix: float, refs: lis
 
 
 def _reference_map(rj: Job, cls: int = 0) -> tuple[np.ndarray, float, str]:
-    """A job's map before masking: a HeteroRefine class (1-based cls), else map_nomask.mrc / map.mrc."""
+    """A job's map before masking: a HeteroRefine / Class3D class (1-based cls), else map_nomask.mrc / map.mrc."""
     import mrcfile
-    if rj.type == "HeteroRefine":
+    if rj.type in CLASS_JOBS:
         names = [f"class{cls:02d}_map_nomask.mrc"]
     else:
         names = ["map_nomask.mrc", "map.mrc"]
@@ -492,12 +493,12 @@ def run_refine3d(project: Project, job, log=print) -> dict:
                            torch.as_tensor(poses["psi"])).float()
     t = torch.as_tensor(t_start).float()
     ref_cls = 0
-    if rj.type == "HeteroRefine":   # the class the particles come from (the largest of them)
+    if rj.type in CLASS_JOBS:       # the class the particles come from (the largest of them)
         cl = poses["cls"] if "cls" in poses else np.zeros(len(t_start), int)
         ref_cls = int(np.bincount(cl).argmax()) + 1
     ref, ref_apix, _ = _reference_map(rj, ref_cls)
     rsum = project.summary_of(rj)
-    r_ref = rsum.get("resolution_a", 8.0) if rj.type != "HeteroRefine" else \
+    r_ref = rsum.get("resolution_a", 8.0) if rj.type not in CLASS_JOBS else \
         next((c["resolution_a"] for c in rsum.get("classes", []) if c["cls"] == ref_cls), None) or 8.0
     if s.reference_map:                              # an external map (e.g. a deposited one), low-passed to start
         import mrcfile
@@ -621,7 +622,7 @@ def _reference(project: Project, ref: str):
     import mrcfile
     jid, _, k = str(ref).partition(":")
     rj = project.job(jid)
-    if rj.type == "HeteroRefine":
+    if rj.type in CLASS_JOBS:
         return (*_reference_map(rj, int(k or 1))[:2], f"{rj.name} class {k or 1}")
     if k and rj.type == "InitialModel":
         path = rj.find(f"map_nomask_{int(k)}.mrc")
@@ -838,7 +839,7 @@ def refinement_report(job, tag: str, sym: str, box_a: float, apix: float, A_star
 
 # ---------------------------------------------------------------------------------------------- registry
 _PARTICLES = ("Extract", "Polish", "CtfRefine", "Select")
-_POSES = ("InitialModel", "Refine3D", "HeteroRefine")
+_POSES = ("InitialModel", "Refine3D", "HeteroRefine", "Class3D")
 
 
 def _res_key(s: dict) -> str:
@@ -853,9 +854,21 @@ def _hetero_key(s: dict) -> str:
     return f"K{len(c)} · best {_n(best, 2)} Å" + warn_mark(s) if best < float("inf") else f"K{len(c)}"
 
 
+def _class3d_key(s: dict) -> str:
+    c = s.get("classes") or []
+    if not c or not isinstance(c, list):
+        return ""
+    n = sum(x.get("particles", 0) for x in c) or 1
+    big = max(c, key=lambda x: x.get("particles", 0))
+    res = [x.get("resolution_solvent_mask_a") for x in c if x.get("resolution_solvent_mask_a")]
+    return (f"K{len(c)} · largest {big.get('particles', 0) / n * 100:.0f}%"
+            + (f" · best {_n(min(res), 2)} Å" if res else "") + warn_mark(s))
+
+
 def registry() -> dict[str, JobSpec]:
     """Every particle job type (see jobspec.py): rerun, the dashboard's New job form, MCP new_job / job_types, the
     job list's key numbers and the reports all read this table."""
+    from .class3d import Class3DSettings, class3d_job, run_class3d
     from .ctfrefine import CtfRefineSettings, ctf_refine_job, run_ctf_refine
     from .curate import CurateSettings, curate_job, run_curate
     from .masking import MaskCreateSettings, mask_job, run_mask
@@ -888,6 +901,14 @@ def registry() -> dict[str, JobSpec]:
                  Input("poses", _POSES, doc="starting orientations, matched by particle uid")),
                 hetero_refine_job, run_hetero_refine, key=_hetero_key,
                 figures=("map_views.png", "views_classes.png", "fsc.png", "progress.png")),
+        JobSpec("Class3D", "3D classification without alignment: K maps at the consensus poses (optionally focused "
+                "on a mask, symmetry-expanded)", Class3DSettings,
+                (Input("particles", _PARTICLES, doc="particles"),
+                 Input("poses", _POSES, doc="the consensus orientations and shifts, matched by particle uid (kept fixed)"),
+                 Input("reference", _POSES, optional=True,
+                       doc="consensus map for init=consensus and signal subtraction (default: the poses job's)")),
+                class3d_job, run_class3d, key=_class3d_key,
+                figures=("map_views.png", "progress.png", "fsc.png", "views_classes.png")),
         JobSpec("Polish", "per-particle motion tracks and per-frame dose weights from a refinement", PolishSettings,
                 (Input("refine", ("Refine3D",), doc="the refinement (its particles and map)"),),
                 polish_job, run_polish,
@@ -899,13 +920,13 @@ def registry() -> dict[str, JobSpec]:
                 figures=("ctfrefine.png",)),
         JobSpec("MaskCreate", "a mask from a map: automatic, or with a chosen threshold, regions and segments",
                 MaskCreateSettings,
-                (Input("map", ("Refine3D", "HeteroRefine", "InitialModel", "Sharpen"),
+                (Input("map", ("Refine3D", "HeteroRefine", "Class3D", "InitialModel", "Sharpen"),
                        doc="the job whose map is masked (its half maps set the automatic threshold)"),),
                 mask_job, run_mask,
                 key=lambda s: (f"{_n((s.get('volume_a3') or 0) / 1e6, 2)} M Å³" + warn_mark(s)) if s.get("volume_a3") else "",
                 figures=("mask.png",)),
         JobSpec("Sharpen", "post-processing: corrected masked FSC, B-factor, local resolution", SharpenSettings,
-                (Input("refine", ("Refine3D", "HeteroRefine"), doc="the refinement (a HeteroRefine: set cls)"),),
+                (Input("refine", ("Refine3D", *CLASS_JOBS), doc="the refinement (a HeteroRefine / Class3D: set cls)"),),
                 sharpen_job, run_sharpen,
                 key=lambda s: (f"{_n(s.get('resolution_a'), 2)} Å · B {_n(s.get('b_factor'))}" + warn_mark(s))
                 if s.get("resolution_a") else "",

@@ -237,10 +237,12 @@ def mask_report(mask: torch.Tensor, apix: float, vmap: torch.Tensor | None = Non
 # ------------------------------------------------------------------------------------------------ MaskCreate job
 from dataclasses import dataclass  # noqa: E402
 
+from .project import CLASS_JOBS  # noqa: E402
+
 
 @dataclass
 class MaskCreateSettings:
-    cls: int = 0                    # a HeteroRefine: the class (1-based) whose map is masked
+    cls: int = 0                    # a HeteroRefine / Class3D: the class (1-based) whose map is masked
     lowpass_a: float = 0.0          # low-pass before thresholding (A); 0: 1.5 x the map's resolution, within 8-15 A
     threshold: float = 0.0          # threshold on the low-passed map (map units); 0: automatic, sigma_level x the noise
     sigma_level: float = 5.0        # automatic threshold: noise standard deviations (from the half-map difference)
@@ -268,7 +270,7 @@ def parse_region(text: str) -> dict:
 def mask_job(project, source, s: MaskCreateSettings, label: str = ""):
     from .jobspec import params_of
     src = project.job(source)
-    if src.type == "HeteroRefine" and not s.cls:
+    if src.type in CLASS_JOBS and not s.cls:
         raise ValueError(f"{src.name}: choose the class to mask (cls)")
     for r in tuple(s.include) + tuple(s.exclude):
         parse_region(r)
@@ -281,7 +283,7 @@ def _source_maps(project, src, cls: int):
     """(average map, half 1, half 2 or None, apix, resolution) of a job's map."""
     import mrcfile
     rj = project.job(src.params["refine"]) if src.type == "Sharpen" else src
-    pre = f"class{cls:02d}_" if rj.type == "HeteroRefine" else ""
+    pre = f"class{cls:02d}_" if rj.type in CLASS_JOBS else ""
 
     def rd(name):
         p = rj.find(pre + name)

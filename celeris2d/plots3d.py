@@ -265,6 +265,57 @@ def refine_history_figure(path: str, history: list[dict], title_: str, classes: 
 
 
 @themed
+def class3d_progress_figure(path: str, history: list[dict], post: np.ndarray, title_: str):
+    """3D classification without alignment: class sizes per iteration (share of the particles, stacked; class
+    number at the right of each band), convergence (particles that changed class, mean of the largest posterior)
+    and the final posterior distribution (each particle's largest posterior; near 1 = a clear assignment)."""
+    from matplotlib.ticker import MaxNLocator
+    it = np.array([h["it"] for h in history])
+    P = np.array([h["pops"] for h in history], float)
+    P = P / np.maximum(P.sum(1, keepdims=True), 1) * 100
+    K = P.shape[1]
+    fig, axs = plt.subplots(1, 3, figsize=(12.6, 3.6))
+    fig.subplots_adjust(left=0.06, right=0.97, top=top(fig, 0.8), bottom=0.16, wspace=0.3)
+    a = axs[0]
+    bottom = np.zeros(len(it))
+    for m in range(K):
+        a.bar(it, P[:, m], bottom=bottom, width=0.8, color=T.series[m % 8], edgecolor=T.surface, linewidth=1)
+        if P[-1, m] >= 5:
+            a.text(it[-1] + 0.55, bottom[-1] + P[-1, m] / 2, f"{m + 1}", ha="left", va="center", fontsize=8,
+                   color=T.ink2)
+        bottom += P[:, m]
+    a.set(title="Class sizes (class number at the right)", xlabel="iteration", ylabel="% of particles", ylim=(0, 100))
+    a.set_xlim(it[0] - 0.6, it[-1] + 1.4)
+    a = axs[1]
+    a.plot(it, [h["changed"] * 100 for h in history], "o-", ms=3.5, color=T.series[0], label="changed class (%)")
+    a.set(title="Convergence", xlabel="iteration", ylabel="% of particles")
+    a.set_ylim(bottom=0)
+    grid_y(a)
+    a2 = a.twinx()
+    a2.plot(it, [h["max_posterior"] for h in history], "o--", ms=3, lw=1.4, color=T.series[1],
+            label="mean max posterior")
+    a2.set_ylim(0, 1.02)
+    a2.set_ylabel("mean max posterior", color=T.ink2)
+    a2.spines["right"].set_visible(True)
+    h1, l1 = a.get_legend_handles_labels()
+    h2, l2 = a2.get_legend_handles_labels()
+    a.legend(h1 + h2, l1 + l2, loc="upper right")
+    a = axs[2]
+    mp = np.asarray(post).max(1)
+    a.hist(mp, bins=np.linspace(1.0 / max(K, 1), 1, 41), color=T.series[0])
+    a.set(title="Largest posterior per particle", xlabel="posterior of the best class", ylabel="particles")
+    note(a, f"median {np.median(mp):.2f}\n> 0.9: {(mp > 0.9).mean() * 100:.0f}%\n< 0.6: {(mp < 0.6).mean() * 100:.0f}%",
+         "upper left")
+    grid_y(a)
+    for a in axs[:2]:
+        a.xaxis.set_major_locator(MaxNLocator(integer=True))
+    tot = history[-1].get("seconds", 0) if history else 0
+    title(fig, "3D classification", title_ + (f" · {len(history)} iterations · {tot:.0f} s" if tot else ""))
+    fig.savefig(path)
+    plt.close(fig)
+
+
+@themed
 def particle_stats_figure(path: str, fit: np.ndarray, used: np.ndarray, shift_a: np.ndarray, moved_deg: np.ndarray,
                           title_: str, cls: np.ndarray | None = None):
     """Per-particle diagnostics: fit to the map (normalised correlation) of particles used and left out, distance of

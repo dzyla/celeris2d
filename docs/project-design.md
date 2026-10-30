@@ -133,6 +133,23 @@ engine's model convention (the particle's centre is at +shift from the box centr
   D7 map against the C1 ab initio map (a worse map of the same particle) 54 / 46 %, and the C1 class holds a narrow
   set of views (SCF 0.11) - a poor reference can keep the particles whose views it matches, so judge classes by
   their maps, FSC and angular distribution, not by size alone.
+- **Class3D** (3D classification without alignment, RELION Class3D `--skip_align`; `celeris2d/class3d.py`, method in
+  its docstring; particles, poses from a Refine3D / HeteroRefine / Class3D, optional reference = the consensus, by
+  default the poses job's map): the poses stay fixed, K maps are fitted by EM over the class assignment only. Start
+  (`init`): "variability" (default: residuals against the consensus, EM-PCA components as in cryoSPARC 3DVA,
+  k-means on the coefficients), "random" (random subsets, RELION) or "consensus" (consensus + noise per class).
+  Hard M-step by default (posteriors still written), RELION's T (`reg_t`) regularises each class with its own
+  half-map FSC. Focus `mask` (a MaskCreate job or .mrc): only the masked region is compared, and with `subtract` the
+  consensus outside it is subtracted from every particle at its pose on the fly (off for particles subtracted
+  already). `sym` imposes a symmetry, `sym_expand` classifies every symmetry copy of a particle separately (table
+  column `copy`); both only as the user sets them, never detected. Iterations run on a small box (Nyquist just
+  beyond `res_a`); final maps per class at the working box, a few classes at a time. Writes the HeteroRefine layout
+  (`classNN_map` / `_map_nomask` / `_mask` / `_half1_unfil` / `_half2_unfil`, `classNN_fsc`) and table `particles`
+  = uid, pose, `cls`, `fit`, `half`, `prob_1..K` (`copy` with expansion), so `select_classes`, Refine3D
+  `classes=(k,)`, MaskCreate and Sharpen take it like a HeteroRefine. Figures: class map views, sizes and
+  convergence per iteration with the posterior histogram, FSC. Simulated 30/70 mixture (3000 particles, known poses):
+  0.98 of particles right at noise 3 (the true maps allow 0.98), 0.85 at noise 5 (true maps 0.90; random subsets
+  0.59).
 - **Polish** (on a Refine3D job): per-particle tracks and per-frame weights from the movies (method in
   `polish.py`'s docstring); a particle job like an extraction, same uids, centred at the refined centre, and the
   table keeps each particle's half (its track was fitted against that half map).
