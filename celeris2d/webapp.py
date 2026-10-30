@@ -883,11 +883,19 @@ def create(workdir, project_dir=None):
         from .jobs import registry
         from .jobspec import key_of
         prj = _prj(root or None)
+        live = {t["job"].name for t in proj_state["runs"].values() if t.get("job") and t["thread"].is_alive()}
+        try:                                         # jobs whose process died: failed, not running for ever
+            prj.reap_stale()
+        except Exception:                            # noqa: BLE001 - the list must still load
+            pass
         reg = registry()
+        finals = prj.final_marks()
         out = []
         for r in prj.jobs().itertuples():
             summ = prj.summary_of(int(r.id))
-            out.append(dict(id=int(r.id), name=r.name, type=r.type, label=r.label, status=r.status,
+            out.append(dict(id=int(r.id), name=r.name, type=r.type, label=r.label,
+                            status="running" if r.name in live else r.status, final=int(r.id) in finals,
+                            final_note=finals.get(int(r.id), {}).get("note", ""),
                             inputs=[prj.job(int(i)).name for i in json.loads(r.inputs)],
                             created=float(r.created), updated=float(r.updated),
                             key=key_of(r.type, summ, reg), summary=_small(summ)))
@@ -937,8 +945,8 @@ def create(workdir, project_dir=None):
             raise HTTPException(404, path)
         with open(full, "rb") as fh:
             data = fh.read()
-        mt = "image/png" if full.endswith(".png") else "image/gif" if full.endswith(".gif") else \
-            "application/octet-stream"
+        mt = {".png": "image/png", ".gif": "image/gif", ".svg": "image/svg+xml", ".md": "text/markdown",
+              ".csv": "text/csv"}.get(os.path.splitext(full)[1], "application/octet-stream")
         return Response(data, media_type=mt, headers={"Cache-Control": "no-cache"})
 
     @app.get("/api/project/jobtypes")
@@ -959,6 +967,55 @@ def create(workdir, project_dir=None):
         return _start_job(lambda prj: (lambda j: (j, lambda: spec.run(prj, j, log=st._log)))(
             new_job(prj, spec.type, body.get("inputs") or {}, body.get("settings") or {}, body.get("label") or "")),
             body.get("type"))
+
+    @app.post("/api/project/open")
+    def project_open(body: dict = Body(...)):
+        """Open another project (a folder with project.db): {root}."""
+        root = os.path.expanduser(str(body.get("root", "")).strip())
+        if os.name != "nt" and len(root) > 2 and root[1] == ":":           # a Windows path typed into WSL: E:\x -> /mnt/e/x
+            root = "/mnt/" + root[0].lower() + root[2:].replace("\\", "/")
+        prj = _prj(root)
+        return dict(root=prj.root)
+
+    @app.post("/api/project/final")
+    def project_final(body: dict = Body(...)):
+        """Mark a job final (or not): {job, final: bool, note}; final jobs and their lineage make the report."""
+        prj = _prj()
+        marks = prj.mark_final(body["job"], bool(body.get("final", True)), str(body.get("note", "")))
+        return dict(finals=[prj.job(i).name for i in sorted(marks)])
+
+    @app.post("/api/project/delete")
+    def project_delete(body: dict = Body(...)):
+        """Move a job to the project's Trash/ (refused while it runs, or when other jobs used it unless force)."""
+        prj = _prj()
+        try:
+            return dict(trash=prj.delete_job(body["job"], force=bool(body.get("force", False))))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/api/project/report")
+    def project_report_api(body: dict = Body(default={})):
+        """The publication report of the final jobs (report.project_report): flowchart, methods, settings."""
+        from .report import project_report
+        prj = _prj()
+        try:
+            r = project_report(prj, finals=body.get("jobs") or None)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        with open(prj.abs(r["methods"])) as fh:
+            r["methods_text"] = fh.read()
+        return r
+
+    @app.get("/api/project/flow")
+    def project_flow(job: str):
+        """Flowchart of one job's lineage (report/flow_<job>.png)."""
+        from .report import chain, flowchart
+        prj = _prj()
+        j = prj.job(job)
+        os.makedirs(os.path.join(prj.root, "report"), exist_ok=True)
+        base = os.path.join(prj.root, "report", f"flow_{j.id:03d}")
+        flowchart(prj, chain(prj, [j.id]), [i for i in prj.final_marks()], base, title=f"How {j.name} was made")
+        return dict(png=prj.rel(base + ".png"), svg=prj.rel(base + ".svg"))
 
     @app.post("/api/project/rerun")
     def project_rerun(body: dict = Body(...)):

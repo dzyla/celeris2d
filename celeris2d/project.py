@@ -413,6 +413,40 @@ class Project:
             pass
         return True
 
+    def reap_stale(self) -> list[str]:
+        """Jobs marked running whose process on this host is gone (crashed, killed, the machine restarted): marked
+        failed, so the job list does not show them running for ever. Returns their names."""
+        out = []
+        for r in self.jobs().itertuples():
+            if r.status == "running":
+                j = self.job(int(r.id))
+                if not self.is_running(j):
+                    summ = dict(self.summary_of(j), error="the process ended without finishing (crashed or killed)")
+                    self.set_status(j, "failed", summ)
+                    out.append(j.name)
+        return out
+
+    # ------------------------------------------------------------------ final jobs (publication report)
+    def final_marks(self) -> dict:
+        """{job id: {"note", "marked"}} of the jobs marked final (final.json in the project): the datasets / maps a
+        publication reports; report.py draws the flowchart and the methods from their lineage."""
+        p = os.path.join(self.root, "final.json")
+        if not os.path.exists(p):
+            return {}
+        with open(p) as f:
+            return {int(k): v for k, v in json.load(f).items()}
+
+    def mark_final(self, ref, final: bool = True, note: str = "") -> dict:
+        job = self.job(ref)
+        marks = self.final_marks()
+        if final:
+            marks[job.id] = dict(note=note, marked=time.time())
+        else:
+            marks.pop(job.id, None)
+        _atomic(os.path.join(self.root, "final.json"),
+                lambda t: _write_text(t, json.dumps({str(k): v for k, v in sorted(marks.items())}, indent=1)))
+        return marks
+
     def _not_running(self, job: Job, what: str):
         if self.is_running(job):
             raise ValueError(f"{job.name} is running: it cannot be {what} now")

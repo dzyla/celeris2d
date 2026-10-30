@@ -59,6 +59,13 @@
   .files a { display: block; font: 12px ui-monospace, Menlo, monospace; padding: 2px 0; }
   .bar { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
   .empty { color: var(--ink3); padding: 40px; text-align: center; }
+  .star { color: var(--serious); font-weight: 700; margin-left: 6px; font-size: 11px; letter-spacing: .5px; }
+  button.danger { border-color: var(--bad); color: var(--bad); }
+  button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
+  .bar { flex-wrap: wrap; }
+  .methods { white-space: pre-wrap; font-size: 12.5px; background: var(--panel2); padding: 10px 14px; border-radius: 6px; }
+  .flow img { max-width: min(100%, 560px); background: #fff; border-radius: 6px; display: block; }
+  table.kv table.kv { margin: 0; } table.kv table.kv td { border-bottom: none; padding: 1px 12px 1px 0; }
   @media (max-width: 760px) { .wrap { grid-template-columns: 1fr; height: auto; } aside { max-height: 45vh; } }
 </style>
 </head>
@@ -67,13 +74,15 @@
   <h1>Celeris<span>2D</span> project</h1>
   <div id="root">loading...</div>
   <a href="/">2D dashboard</a>
+  <button id="open" title="open another project folder (the one with project.db)">Open project…</button>
+  <button id="report" title="flowchart, methods text and settings of the jobs marked final and everything they came from">Report</button>
   <button id="newjob" class="primary" title="make a job of any type, its form built from the job type's settings">New job</button>
   <button id="theme" title="switch the page and its figures between dark and light">Light</button>
   <button id="refresh">Refresh</button>
 </header>
 <div class="wrap">
   <aside>
-    <div class="filter"><input id="q" placeholder="filter: number, type, label, status"></div>
+    <div class="filter"><input id="q" placeholder="filter: number, type, label, status, final"></div>
     <div id="list"></div>
   </aside>
   <main id="detail"><div class="empty">Select a job.</div></main>
@@ -113,21 +122,28 @@ async function load() {
 
 function renderList() {
   const q = $('#q').value.trim().toLowerCase();
-  const rows = jobs.filter(j => !q || `${j.name} ${j.type} ${j.status}`.toLowerCase().includes(q)).reverse();
+  const rows = jobs.filter(j => !q || `${j.name} ${j.type} ${j.status} ${j.final ? 'final' : ''}`.toLowerCase().includes(q)).reverse();
   $('#list').innerHTML = rows.map(j => `
     <div class="job ${j.name === current ? 'sel' : ''}" data-n="${esc(j.name)}">
       <div class="n">${String(j.id).padStart(3, '0')}</div>
-      <div><div class="t"><span class="st ${esc(j.status)}" title="${esc(j.status)}"></span>${esc(j.type)}</div>
+      <div><div class="t"><span class="st ${esc(j.status)}" title="${esc(j.status)}"></span>${esc(j.type)}${j.final ? `<span class="star" title="${esc(j.final_note || 'final')}">★ FINAL</span>` : ''}</div>
            <div class="l">${esc(j.label || '')}</div></div>
       <div class="k">${esc(key(j))}</div>
     </div>`).join('') || '<div class="empty">No jobs.</div>';
   document.querySelectorAll('.job').forEach(e => e.onclick = () => showJob(e.dataset.n));
 }
 
-function kv(obj) {
-  return '<table class="kv">' + Object.entries(obj).map(([k, v]) =>
-    `<tr><td>${esc(k)}</td><td>${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</td></tr>`).join('') + '</table>';
+function kv(obj, depth = 0) {   // nested results (nu, sharpened, ...) as tables, not JSON
+  const cell = v => (v && typeof v === 'object' && !Array.isArray(v) && depth < 2) ? kv(v, depth + 1)
+    : esc(Array.isArray(v) ? v.map(x => typeof x === 'object' ? JSON.stringify(x) : x).join(', ') : (typeof v === 'object' ? JSON.stringify(v) : v));
+  return '<table class="kv">' + Object.entries(obj).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${cell(v)}</td></tr>`).join('') + '</table>';
 }
+const post = async (url, body) => {
+  const r = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.detail || r.statusText);
+  return d;
+};
 
 async function showJob(name, scroll = true) {
   current = name;
@@ -144,6 +160,7 @@ async function showJob(name, scroll = true) {
   const figs = j.files.filter(f => isFig(f.path) && !isVariant(f.path));
   const other = j.files.filter(f => !isFig(f.path));
   const canRerun = !['Import', 'Select'].includes(j.type);
+  const fin = (jobs.find(x => x.name === j.name) || {}).final;
   const chips = (arr) => arr.length ? `<div class="chips">${arr.map(n => `<span class="chip" data-n="${esc(n)}">${esc(n)}</span>`).join('')}</div>` : '<span class="muted">none</span>';
   $('#detail').innerHTML = `
     <h2>${esc(j.name)}</h2>
@@ -151,9 +168,13 @@ async function showJob(name, scroll = true) {
     ${j.error ? `<p class="err">${esc(j.error)}</p>` : ''}
     ${warns.length ? `<div class="warnbox">${warns.map(w => `<div><b>⚠ warning</b> ${esc(w)}</div>`).join('')}</div>` : ''}
     <div class="bar">
+      ${canRerun ? `<button class="primary" id="rerun" ${j.status === 'running' ? 'disabled' : ''} title="the same inputs and settings">${j.status === 'failed' ? 'Restart (same settings)' : ['MotionCtf', 'Pick', 'Extract'].includes(j.type) ? 'Continue (new movies)' : 'Run again as a new job'}</button>` : ''}
       ${types[j.type] ? `<button id="edit" title="the New job form with this job's inputs and settings">Change settings and run</button>` : ''}
-      ${canRerun ? `<button class="primary" id="rerun" ${j.status === 'running' ? 'disabled' : ''}>${['MotionCtf', 'Pick', 'Extract'].includes(j.type) ? 'Continue (new movies)' : 'Run again as a new job'}</button>` : ''}
+      <button id="final" title="final jobs and everything they came from make the publication report">${fin ? '★ Unmark final' : '☆ Mark final'}</button>
+      <button id="flow" title="flowchart of this job and every job it was made from">Flowchart</button>
+      <button id="del" class="danger" ${j.status === 'running' ? 'disabled' : ''} title="move the job (folder and data) to the project's Trash/">Delete</button>
     </div>
+    <div id="flowbox" class="flow"></div>
     <h3>Comes from</h3>${chips(j.lineage.slice(1))}
     <h3>Used by</h3>${chips(j.dependents)}
     <h3>Results</h3>${kv(summ)}
@@ -176,8 +197,53 @@ async function showJob(name, scroll = true) {
     current = d.job;
     load();
   };
+  $('#final').onclick = async () => {
+    let note = '';
+    if (!fin) { note = prompt('Mark final - a note for the report (e.g. "final map, Figure 2"):', ''); if (note === null) return; }
+    try { await post('/api/project/final', {job: j.name, final: !fin, note}); } catch (e) { alert(e.message); return; }
+    await load();
+  };
+  $('#flow').onclick = async () => {
+    $('#flowbox').innerHTML = '<p class="muted">drawing…</p>';
+    const r = await fetch('/api/project/flow?job=' + encodeURIComponent(j.name));
+    const d = await r.json();
+    if (!r.ok) { $('#flowbox').innerHTML = `<p class="err">${esc(d.detail)}</p>`; return; }
+    $('#flowbox').innerHTML = `<h3>Flowchart</h3><img src="/api/project/file?path=${encodeURIComponent(d.png)}&t=${Date.now()}">
+      <p><a href="/api/project/file?path=${encodeURIComponent(d.svg)}" download>flowchart (SVG, editable text)</a></p>`;
+  };
+  $('#del').onclick = async () => {
+    if (!confirm(`Delete ${j.name}? It moves to the project's Trash/ folder (recoverable by hand).`)) return;
+    try { await post('/api/project/delete', {job: j.name}); }
+    catch (e) {
+      if (!/input of/.test(e.message) || !confirm(e.message + '\n\nDelete anyway? Those jobs keep their own results.')) { if (!/input of/.test(e.message)) alert(e.message); return; }
+      try { await post('/api/project/delete', {job: j.name, force: true}); } catch (e2) { alert(e2.message); return; }
+    }
+    current = null; $('#detail').innerHTML = '<div class="empty">Deleted.</div>'; load();
+  };
   if (scroll) $('#detail').scrollTop = 0;
 }
+
+async function showReport() {
+  current = null; renderList();
+  $('#detail').innerHTML = '<p class="muted">making the report…</p>';
+  const r = await fetch('/api/project/report', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+  const d = await r.json();
+  if (!r.ok) { $('#detail').innerHTML = `<h2>Report</h2><p class="err">${esc(d.detail)}</p><p class="muted">Open a job and press "☆ Mark final" on the maps / particle sets the publication reports.</p>`; return; }
+  const f = p => `/api/project/file?path=${encodeURIComponent(p)}`;
+  $('#detail').innerHTML = `<h2>Report</h2>
+    <p class="muted">${d.jobs.length} jobs lead to the final job(s) ${d.finals.map(esc).join(', ')}. Written to <b>report/</b> in the project.</p>
+    <div class="bar"><a href="${f(d.flowchart_svg)}" download>flowchart.svg</a> · <a href="${f(d.flowchart)}" download>flowchart.png</a> ·
+      <a href="${f(d.methods)}" download>methods.md</a> · <a href="${f(d.settings)}" download>settings.csv</a></div>
+    <div class="flow"><img src="${f(d.flowchart)}&t=${Date.now()}"></div>
+    <h3>Methods</h3><div class="methods">${esc(d.methods_text)}</div>`;
+}
+$('#report').onclick = showReport;
+$('#open').onclick = async () => {
+  const root = prompt('Project folder (the one with project.db; Windows paths like E:\\linux\\celeris\\inx6 work too):', '');
+  if (!root) return;
+  try { await post('/api/project/open', {root}); } catch (e) { alert(e.message); return; }
+  current = null; $('#detail').innerHTML = '<div class="empty">Select a job.</div>'; load();
+};
 
 // ------------------------------------------------------------------ New job (built from /api/project/jobtypes)
 let types = {};
