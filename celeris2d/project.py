@@ -766,6 +766,18 @@ class Project:
             mad = float(np.nanmedian(np.abs(v - med))) * 1.4826 + 1e-9
             st[k] = dict(median=round(med, 2), min=round(float(np.nanmin(v)), 2), max=round(float(np.nanmax(v)), 2),
                          outliers=mi["stem"][np.abs(v - med) > 4 * mad].tolist())
+        # plausibility: a pixel size 2x too small makes every defocus 4x too small (EMPIAR-10291's headers say 0.616 A
+        # for 1.232 A K2 images: 0.3-0.7 um fitted for 1.2-2.8 um; refinements stalled at the first CTF zero, ~10 A)
+        warnings = []
+        if "defocus_a" in st and st["defocus_a"]["median"] < 6000:
+            warnings.append(f"median defocus {st['defocus_a']['median'] / 1e4:.2f} um is unusually low: check the pixel "
+                            f"size ({st['apix']} A here; 2x too small gives 4x too little defocus) unless a phase plate "
+                            f"was used")
+        if "ctf_fit_res_a" in st and st["ctf_fit_res_a"]["median"] < 2.2 * st["apix"]:
+            warnings.append(f"CTF fits reach {st['ctf_fit_res_a']['median']} A, near Nyquist ({2 * st['apix']:.2f} A): "
+                            f"the micrographs may be binned less than the pixel size says")
+        if warnings:
+            st["warnings"] = warnings
         return st
 
     def find(self, key_or_uid) -> dict:
