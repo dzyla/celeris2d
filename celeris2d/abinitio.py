@@ -1309,129 +1309,35 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
 def classify3d(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, n_models: int, res_a: float,
                sym: str = "C1", n_iter: int = 20, z0: torch.Tensor | None = None, seed: int = 0,
                expand_ops: torch.Tensor | None = None, box: int | None = None, log=print):
-    """3D classification at fixed poses (from a consensus refinement): M models seeded from random particle subsets
-    (or the labels z0), soft assignment (posterior over models), every model filtered to the same resolution res_a.
+    """3D classification at fixed poses (from a consensus refinement), class3d.classify with the ab initio settings:
+    M models seeded from random particle subsets (or the labels z0), soft assignment (posterior over models, no
+    class priors), every model low-passed to the same resolution res_a.
     expand_ops: operators R of a (pseudo-)symmetry of the consensus map (S, 3, 3): each particle is also tried at
     A @ R (equally good for the consensus, not for a model that breaks the symmetry) and keeps its best per model.
-    Returns (maps (M, b, b, b), z (n,), posteriors (n, M), per-model half-map resolution, half Volumes, poses (n, 3, 3))."""
+    Returns (maps (M, b, b, b), z (n,), posteriors (n, M), per-model half-map resolution, half maps [[h1, h2] per
+    model, each with .real()], poses (n, 3, 3))."""
+    from .class3d import classify
     dev = clf.dev
-    box_a, diam, b = clf.box_a, clf.p.diameter_a, box or clf.bmax
-    n, M = len(idx), int(n_models)
-    ops = symmetry_ops(sym).to(dev)
-    A, t = A.to(dev).float(), t.to(dev).float()
-    fy, fx = freqs(b, dev)
-    kr = torch.sqrt(fy[:, None] ** 2 + fx[None, :] ** 2)
-    ph = TWO_PI / box_a
-    mask = sphere_mask(b, diam / 2 / (box_a / b), 3.0, dev)
-    g = torch.Generator().manual_seed(seed + 7)
-    half = (torch.randperm(n, generator=g) % 2).to(dev)
-    if z0 is None:
-        z0 = torch.randperm(n, generator=g) % M
-    post = F.one_hot(z0.to(dev).long(), M).float()
-    kal = box_a / res_a
-    band = (kr >= 1) & (kr <= kal)
-    shb = torch.round(kr[band]).long()
-    kmax = min(b / 2 - 1, kal + 4)
-    vols = [[Volume(b, dev), Volume(b, dev)] for _ in range(M)]
-    sigma2 = None
-    t0 = time.time()
-    X = torch.eye(3, device=dev)[None] if expand_ops is None else expand_ops.to(dev).float()
-    S = len(X)
-    B = int(max(32, min(1024, _free(dev) / 4 / (b * (b // 2 + 1) * 8 * 5 + S * int(band.sum()) * 8 * 3))))
-    s_best = torch.zeros((n, M), dtype=torch.long, device=dev)   # which symmetry-related pose, per particle and model
+    b = box or clf.bmax
+    r = classify(clf, idx, A, t, n_models, res_a, sym=sym, n_iter=n_iter, z0=z0, seed=seed, init="random", reg_t=None,
+                 soft=True, priors=False, ll_scale=0.5, relax_ops=expand_ops, final_box=b, log=log)
+    zero = torch.zeros((b, b, b))
+    maps = torch.stack([(m if m is not None else zero) for m in r.maps]).to(dev)
+    halves = [[_RealMap(h[0] if h else zero, dev), _RealMap(h[1] if h else zero, dev)] for h in r.halves]
+    return maps, r.z.to(dev), r.post.to(dev), r.res, halves, r.A.to(dev)
 
-    def batches():
-        for i in range(0, n, B):
-            j = idx[i:i + B]
-            x = clf._fetch(j, dev, b)
-            ctf = ctf_2d(clf.ctf_p[j].to(dev), clf.optics, fy, fx, box_a)
-            tt = t[i:i + B]
-            yield i, x, ctf, tt
 
-    z_prev, T0, T = None, None, 1.0
-    for it in range(n_iter + 1):
-        # ---- M-step: weighted reconstructions per model and half
-        for vm in vols:
-            for v in vm:
-                v.clear()
-        for i, x, ctf, tt in batches():
-            xs = x * torch.exp(1j * ph * (fx[None, None, :] * tt[:, 0, None, None] + fy[None, :, None] * tt[:, 1, None, None]))
-            hh = half[i:i + B]
-            for m in range(M):
-                w = post[i:i + B, m]
-                # first reconstruction with symmetry expansion: every particle at all its related poses, so the
-                # starting models are symmetric and no pose is favoured (RELION's relax_sym); later only its best one
-                first = it == 0 and S > 1
-                Am = A[i:i + B] if first else A[i:i + B] @ X[s_best[i:i + B, m]]
-                for h in (0, 1):
-                    sel = (hh == h) & (w > 1e-3)
-                    if sel.any():
-                        ww = w[sel][:, None, None] / (S if first else 1)
-                        Ain = Am[sel]
-                        if first:
-                            Ain = (Ain[:, None] @ X[None]).reshape(-1, 3, 3)
-                            vols[m][h].insert((xs[sel] * ctf[sel] * ww).repeat_interleave(S, 0),
-                                              (ctf[sel] ** 2 * ww).repeat_interleave(S, 0), Ain, kmax=kmax, ops=ops)
-                        else:
-                            vols[m][h].insert(xs[sel] * ctf[sel] * ww, ctf[sel] ** 2 * ww, Ain, kmax=kmax, ops=ops)
-        refs = []
-        for m in range(M):
-            for v in vols[m]:
-                _regularise_solve(v, 0.02)
-                v.free_acc()
-            r = Volume(b, dev, ft=0.5 * (vols[m][0].ft + vols[m][1].ft))
-            lowpass(r, res_a, box_a)
-            _real_space_constraints(r, mask, positive=False, center=False)
-            refs.append(r)
-        if it == n_iter:
-            break
-        # ---- E-step at the consensus poses
-        lls = torch.zeros((n, M), device=dev)
-        res_pow = torch.zeros(int(kr.max()) + 2, device=dev)
-        res_cnt = torch.zeros_like(res_pow)
-        isig = None if sigma2 is None else 1.0 / sigma2[shb]
-        for i, x, ctf, tt in batches():
-            xb = x[:, band]
-            e_t = torch.exp(-1j * ph * (fx[None, None, :] * tt[:, 0, None, None] + fy[None, :, None] * tt[:, 1, None, None]))[:, band]
-            nb = len(xb)
-            for m in range(M):
-                if isig is None:                 # noise estimate at the consensus pose
-                    mdl = refs[m].project(A[i:i + B], band) * ctf[:, band] * e_t
-                    r2 = (xb - mdl).abs() ** 2
-                    res_pow.index_add_(0, shb, r2.sum(0))
-                    res_cnt.index_add_(0, shb, torch.full_like(shb, nb, dtype=torch.float32))
-                    continue
-                As = (A[i:i + B][:, None] @ X[None]).reshape(-1, 3, 3)
-                mdl = refs[m].project(As, band).reshape(nb, S, -1) * (ctf[:, band] * e_t)[:, None]
-                ll = -0.5 * (((xb[:, None] - mdl).abs() ** 2) * isig).sum(-1)          # (nb, S)
-                lls[i:i + B, m], s_best[i:i + B, m] = ll.max(1)
-        if sigma2 is None:                       # first pass only measures the noise; assignments start next pass
-            sigma2 = (res_pow / res_cnt.clamp_min(1)).clamp_min(1e-12)
-            continue
-        # annealing: the first assignments are kept soft (the typical particle starts near 60/40), then the
-        # temperature falls to 1 (the true posterior) over the first half of the iterations
-        if T0 is None:
-            top2 = lls.topk(2, dim=1).values
-            T0 = max(1.0, float((top2[:, 0] - top2[:, 1]).median()) / 0.4)
-        f = min(1.0, (it - 1) / max(1.0, n_iter / 2))
-        T = T0 ** (1 - f)
-        post = torch.softmax(lls / T, dim=1)
-        z = post.argmax(1)
-        pops = torch.bincount(z, minlength=M).tolist()
-        moved = float((z != z_prev).float().mean()) if z_prev is not None else 1.0
-        z_prev = z
-        log(f"[3d] 3D classification it {it}/{n_iter}: per class {pops}, {moved * 100:.1f}% changed, "
-            f"mean max posterior {float(post.max(1).values.mean()):.3f}, T {T:.1f} ({time.time() - t0:.1f}s)")
-        if moved < 0.005 and T <= 1.0:
-            break
-    res, maps = [], []
-    for m in range(M):
-        c = masked_fsc(vols[m][0], vols[m][1], mask)
-        res.append(resolution_from_fsc(c, box_a) if int((z == m).sum()) > 10 else float("nan"))
-        out = Volume(b, dev, ft=0.5 * (vols[m][0].ft + vols[m][1].ft))
-        out.filter_shells(torch.sqrt((2 * c / (1 + c)).clamp(0, 1).nan_to_num(0)))
-        maps.append((out.real() * mask).nan_to_num(0))
-    return torch.stack(maps), z, post, res, vols, A @ X[s_best[torch.arange(n, device=dev), z]]
+class _RealMap:
+    """A half map where code expects a half Volume (only .real() is used)."""
+
+    def __init__(self, v: torch.Tensor, dev):
+        self.v, self.dev = v, dev
+
+    def real(self) -> torch.Tensor:
+        return self.v.to(self.dev)
+
+    def free_acc(self):
+        pass
 
 
 def _class_poses(A: torch.Tensor, kp: torch.Tensor, psi: torch.Tensor, K: int) -> torch.Tensor:

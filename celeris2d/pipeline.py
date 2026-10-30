@@ -34,7 +34,7 @@ from . import picking as pk
 from . import regions as rg
 from . import preprocess as pp
 from .engine import Optics
-from .project import PARTICLE_JOBS, Job, Project, particle_uids, run_log
+from .project import CLASS_JOBS, PARTICLE_JOBS, Job, Project, particle_uids, run_log
 
 
 @dataclass
@@ -75,7 +75,7 @@ class PickSettings:
     templates: int = 0                  # template picking instead of the blob: a Class2D / Select job (its class
                                         # averages) or a Refine3D / InitialModel / HeteroRefine / Sharpen job (projections
                                         # of its map); diameter_a still sets the binning, window and spacing
-    template_classes: tuple = ()        # Class2D: only these 1-based classes; HeteroRefine: the class whose map (1)
+    template_classes: tuple = ()        # Class2D: only these 1-based classes; HeteroRefine / Class3D: the class whose map (1)
     n_projections: int = 40             # map templates: directions over the sphere
     angle_step: float = 0.0             # in-plane step (deg); 0: one working pixel at the particle's edge (~6 deg)
     curate: int = 0                     # a Curate job: only the micrographs it accepts are picked (and extracted)
@@ -145,7 +145,7 @@ def pick_templates(project: Project, s: PickSettings) -> tuple[np.ndarray, float
         out = (imgs, apix)
     else:
         cls = int(s.template_classes[0]) if s.template_classes else 1
-        names = ([f"class{cls:02d}_map.mrc", f"class{cls:02d}_map_nomask.mrc"] if j.type == "HeteroRefine"
+        names = ([f"class{cls:02d}_map.mrc", f"class{cls:02d}_map_nomask.mrc"] if j.type in CLASS_JOBS
                  else ["map.mrc", "map_nomask.mrc", "map_sharp.mrc"])
         path = next((j.find(n) for n in names if j.find(n)), None)
         if path is None:

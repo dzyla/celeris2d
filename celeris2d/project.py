@@ -57,12 +57,13 @@ CREATE TABLE IF NOT EXISTS chunks (
 """
 
 JOB_TYPES = ("Import", "MotionCtf", "Curate", "Pick", "Extract", "Select", "Class2D", "InitialModel", "Refine3D", "HeteroRefine",
-             "Polish", "CtfRefine", "Sharpen", "MaskCreate", "MapScore")
+             "Polish", "CtfRefine", "Sharpen", "MaskCreate", "MapScore", "Class3D")
 PER_MOVIE = dict(MotionCtf="micrographs", Pick="picks", Extract="chunks", Polish="chunks")
 HEAVY = dict(MotionCtf=(".mrc",), Extract=(".mrcs",), Polish=(".mrcs",))   # purgeable files of a job's data folder
 REBUILDABLE = ("MotionCtf", "Extract")         # purged files can be made again from the recorded parameters
 PARTICLE_JOBS = ("Extract", "Polish", "CtfRefine")   # jobs that hold particle images (a "particles" table + stacks;
                                                       # a CtfRefine job's are those of the job it refined)
+CLASS_JOBS = ("HeteroRefine", "Class3D")    # 3D jobs with several maps: classNN_map.mrc ..., table "particles" with cls
 
 
 def movie_fingerprint(path: str, chunk: int = 1 << 20) -> str:
@@ -451,10 +452,10 @@ class Project:
 
     def aligned_particles(self, ref) -> Job:
         """The particle job (Extract / Polish) whose box centres an alignment job's shifts are relative to: a
-        Refine3D / HeteroRefine job's particles, or the extraction a Class2D (or the Class2D of an InitialModel) was
-        run on."""
+        Refine3D / HeteroRefine / Class3D job's particles, or the extraction a Class2D (or the Class2D of an
+        InitialModel) was run on."""
         job = self.job(ref)
-        if job.type in ("Refine3D", "HeteroRefine"):
+        if job.type in ("Refine3D", *CLASS_JOBS):
             src = self.job(job.params["particles"])
             return src if src.type in PARTICLE_JOBS else self.ancestor(src, PARTICLE_JOBS)
         if job.type == "InitialModel":
