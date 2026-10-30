@@ -789,10 +789,16 @@ def registry() -> dict[str, JobSpec]:
     """Every particle job type (see jobspec.py): rerun, the dashboard's New job form, MCP new_job / job_types, the
     job list's key numbers and the reports all read this table."""
     from .ctfrefine import CtfRefineSettings, ctf_refine_job, run_ctf_refine
+    from .curate import CurateSettings, curate_job, run_curate
     from .masking import MaskCreateSettings, mask_job, run_mask
     from .polish import PolishSettings, polish_job, run_polish
     from .sharpen import SharpenSettings, run_sharpen, sharpen_job
     specs = [
+        JobSpec("Curate", "micrographs kept for picking: limits on CTF fit, defocus, astigmatism and motion",
+                CurateSettings, (Input("micrographs", ("MotionCtf",), doc="the motion-corrected, CTF-fitted micrographs"),),
+                curate_job, run_curate,
+                key=lambda s: f"{_n(s.get('accepted'))} of {_n(s.get('micrographs'))} mics" + warn_mark(s),
+                figures=("curate.png",)),
         JobSpec("Class2D", "2D classification of the particles of an extraction or selection", Class2DSettings,
                 (Input("particles", _PARTICLES, doc="particles to classify"),), class2d_job, run_class2d,
                 key=lambda s: f"{_n(s.get('particles'))} ptcls · K{s.get('classes', '')}",
