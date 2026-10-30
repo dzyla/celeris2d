@@ -25,7 +25,9 @@ def _files(d):
     return sorted(os.listdir(d))
 
 
-def test_refine3d_report(tmp_path):
+def test_refine3d_report(tmp_path, monkeypatch):
+    from celeris2d import plotstyle
+    monkeypatch.setattr(plotstyle, "THEMES", ("dark", "light"))      # both themes drawn when asked
     A, hist, f, maps, masks = _inputs()
     n = len(A)
     out = refinement_report(str(tmp_path), "test", "D7", 100.0, 100.0 / 32, A, A, torch.zeros(n, 2),

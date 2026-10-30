@@ -41,10 +41,16 @@ class PolishSettings:
     batch: int = 24                 # particles per GPU batch
     dtype: str = "float16"         # precision of the polished particle stacks
     seed: int = 0                   # random seed (movies used for the weights)
+    min_resolution_a: float = 4.0   # refused unless the refinement reaches this (A): per-particle tracks need
+                                    # high-resolution signal; first improve the map (classes, symmetry); 0: no check
 
 
 def polish_job(project: Project, refine, s: PolishSettings, label: str = "") -> Job:
     rj = project.job(refine)
+    res = project.summary_of(rj).get("resolution_solvent_mask_a") or project.summary_of(rj).get("resolution_a")
+    if s.min_resolution_a and (res is None or res > s.min_resolution_a):
+        raise ValueError(f"{rj.name} is at {res} A, worse than {s.min_resolution_a} A: polishing needs a "
+                         f"high-resolution map (improve it first - classes, symmetry - or set min_resolution_a 0)")
     ex = project.job(rj.params["particles"])
     if ex.type not in PARTICLE_JOBS:
         raise ValueError(f"{rj.name}: its particles ({ex.name}) are not an extraction")

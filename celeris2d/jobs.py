@@ -305,6 +305,9 @@ class Refine3DSettings:
     global_res_a: float = 12.0      # resolution of that search
     diameter_a: float = 0.0         # particle diameter for the mask (0: from the extraction)
     classes: tuple = ()             # poses from a HeteroRefine: only the particles of these 1-based classes
+    align_symmetry: bool = True     # sym differs from the start job's: first rotate the map and the poses so the
+                                    # group's axes (n-fold on z, 2-fold on x) lie on the map's (symalign.py); the
+                                    # symmetry itself is the user's choice, the scores say how well it holds
     gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
 
@@ -438,6 +441,13 @@ def run_refine3d(project: Project, job, log=print) -> dict:
         next((c["resolution_a"] for c in rsum.get("classes", []) if c["cls"] == ref_cls), None) or 8.0
     res0 = s.res_start_a or max(8.0, float(r_ref))
     vol = map_to_box(ref, ref_apix, b, box_a / b)
+    start_sym = str(qj.params.get("sym") or "C1").upper()
+    sym_frame = None
+    if s.align_symmetry and s.sym.upper() != "C1" and s.sym.upper() != start_sym:
+        from .symalign import apply_frame, sym_frame as _frame
+        R, sym_frame = _frame(vol, box_a / b, s.sym, log=log)
+        vol, A = apply_frame(vol, A, R)
+        sym_frame["from"] = start_sym
     idx = torch.arange(clf.N)
     vol *= _scale_to_data(clf, idx, A, t, vol, b, max(res0, 10.0))
     init = ab.Volume(b, dev)
@@ -472,8 +482,11 @@ def run_refine3d(project: Project, job, log=print) -> dict:
                                ab.refine_particles.last_history,
                                fsc=dict(corrected=fsc_sol, unmasked=fsc_unm, masked=fsc_msk, sphere_masked=fscs[0]),
                                resolution_a=res_sol, maps=[maps[0].cpu().numpy()], masks=[smask.cpu().numpy()])
+    if sym_frame:
+        report["warnings"] = sym_frame.pop("warnings", []) + report.get("warnings", [])
     summ = dict(particles=int(clf.N), particles_used=int(used.sum()), duplicates_removed=n_dup,
-                duplicate_distance_a=round(dist, 1), sym=s.sym, resolution_a=round(float(res[0]), 2),
+                duplicate_distance_a=round(dist, 1), sym=s.sym, symmetry_frame=sym_frame,
+                resolution_a=round(float(res[0]), 2),
                 resolution_solvent_mask_a=round(res_sol, 2),
                 resolution_unmasked_a=round(ab.resolution_from_fsc(fsc_unm, box_a), 2),
                 apix=round(apix, 4), box=b, res_start_a=round(res0, 1), seconds=round(seconds, 1), **report,
