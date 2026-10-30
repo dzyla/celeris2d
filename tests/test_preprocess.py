@@ -98,3 +98,40 @@ def test_dose_weights_keep_noise_level():
     assert bool((w[-1] < w[0]).all())                    # later frames count less, most at high frequency
     assert float(w[-1, -1] / w[0, -1]) < float(w[-1, 0] / w[0, 0])
     assert math.isfinite(float(w.sum()))
+
+
+def _tiled_micrograph(dev, du, dv, ang, slope_x, slope_y, apix=1.3, region=1024, grid=3, seed=2):
+    """A micrograph whose grid x grid regions each have the defocus of a plane at the region's centre."""
+    from celeris2d.engine import ctf_2d
+    optics = Optics(300, 2.7, 0.1)
+    fy, fx = freqs(region, dev)
+    k = torch.sqrt((fy[:, None] / (region * apix)) ** 2 + (fx[None] / (region * apix)) ** 2)
+    g = torch.Generator(device=dev).manual_seed(seed)
+    n = grid * region
+    mic = torch.zeros(n, n, device=dev)
+    for gy in range(grid):
+        for gx in range(grid):
+            x, y = ((gx + 0.5) * region - n / 2) * apix, ((gy + 0.5) * region - n / 2) * apix
+            off = slope_x * x + slope_y * y
+            p = torch.tensor([[du + off, dv + off, ang, 0.0, 0.0, 1.0]], device=dev)
+            c = ctf_2d(p, optics, fy, fx, region * apix)[0]
+            sig = torch.fft.rfft2(torch.randn(region, region, generator=g, device=dev)) * c * torch.exp(-60 * k ** 2)
+            noise = torch.fft.rfft2(torch.randn(region, region, generator=g, device=dev)) * (0.6 + 0.4 * torch.exp(-200 * k ** 2))
+            mic[gy * region:(gy + 1) * region, gx * region:(gx + 1) * region] = torch.fft.irfft2(sig + noise, s=(region, region))
+    return mic, optics, apix
+
+
+def test_patch_ctf_recovers_ice_tilt():
+    """Local defocus: a plane of slope 0.1 A/A (5.7 deg tilt) is recovered and called significant; a flat micrograph
+    gives a small, non-significant tilt (MotionSettings.patch_ctf 'auto' would not apply it)."""
+    dev = "cuda"
+    du, dv, ang = 15400.0, 14900.0, 35.0
+    mic, optics, apix = _tiled_micrograph(dev, du, dv, ang, 0.08, -0.06)
+    fit = pp.CTFFit(du, dv, ang, 4.0, 0.0, {})
+    pz = pp.patch_defocus(mic, apix, optics, fit, grid=3)
+    a, bx, by = pz["plane"]
+    assert abs(bx - 0.08) < 0.01 and abs(by + 0.06) < 0.01 and pz["significant"], pz
+    assert abs(pz["tilt_deg"] - math.degrees(math.atan(0.1))) < 0.6, pz
+    flat, _, _ = _tiled_micrograph(dev, du, dv, ang, 0.0, 0.0, seed=3)
+    pf = pp.patch_defocus(flat, apix, optics, fit, grid=3)
+    assert pf["tilt_deg"] < 1.0, pf

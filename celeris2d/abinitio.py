@@ -137,12 +137,26 @@ class Volume:
         self.ft = torch.view_as_real(ft).permute(3, 0, 1, 2).contiguous()
 
     def real(self) -> torch.Tensor:
-        b, G = self.b, self.G
-        ft = torch.fft.ifftshift(torch.complex(self.ft[0], self.ft[1]))
-        v = torch.fft.ifftn(ft, norm="forward").real
-        del ft
-        c = (torch.arange(b, device=self.dev) - b // 2) % G   # crop the centre of the fftshifted map without a copy
-        return v[c][:, c][:, :, c] / (b * self.pad ** 3)
+        """The real-space map (b^3): the inverse transform done axis by axis, keeping only the central b of each
+        axis after its transform, in slabs (the whole padded grid at once held ~4 complex G^3 arrays: 4 GB at box 256,
+        out of memory beside a refinement)."""
+        b, G, dev = self.b, self.G, self.dev
+        idx = (torch.arange(G, device=dev) + G // 2) % G             # ifftshift as an index
+        c = (torch.arange(b, device=dev) - b // 2) % G               # the centre of the (fftshifted) result
+        s = max(1, int(16e6 // (G * G)))
+        out = torch.empty((b, G, G), dtype=torch.complex64, device=dev)
+        for j in range(0, G, s):                                     # axis 0, slabs of axis 1
+            jj = idx[j:j + s]
+            x = torch.complex(self.ft[0][:, jj], self.ft[1][:, jj])[idx][:, :, idx]
+            out[:, j:j + s] = torch.fft.ifft(x, dim=0, norm="forward")[c]
+        out2 = torch.empty((b, b, G), dtype=torch.complex64, device=dev)
+        for i in range(0, b, s):                                     # axis 1
+            out2[i:i + s] = torch.fft.ifft(out[i:i + s], dim=1, norm="forward")[:, c]
+        del out
+        v = torch.empty((b, b, b), device=dev)
+        for i in range(0, b, s):                                     # axis 2
+            v[i:i + s] = torch.fft.ifft(out2[i:i + s], dim=2, norm="forward")[:, :, c].real
+        return v / (b * self.pad ** 3)
 
     def shell_index(self) -> torch.Tensor:
         return _shells(self.G, self.pad, self.dev)

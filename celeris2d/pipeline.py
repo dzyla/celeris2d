@@ -45,6 +45,12 @@ class MotionSettings:
     cs_mm: float = 2.7
     amp_contrast: float = 0.1
     patches: int = 5                    # local motion grid (0: whole-frame only)
+    patch_ctf: str = "auto"             # local defocus from grid x grid regions, a plane per micrograph (ice tilt):
+                                        # "auto" measures it and gives particles their local defocus only for a
+                                        # significant tilt >= 5 deg (tilted collection; on flat ice the plane is at
+                                        # the regions' noise: beta-gal 1 deg, +-28 A, CtfRefine measures it better);
+                                        # "apply" always, "measure" records it only, "off"
+    patch_ctf_grid: int = 3             # regions per side
     flip_y: bool = False                # mirror the frames in y after reading. RELION reads TIFF movies y-flipped
                                         # relative to the file's row order: on the RELION 5 tutorial movies its
                                         # micrographs are the y-mirror of ours (cc 0.32 vs -0.01), with the gain
@@ -267,6 +273,13 @@ def _motion(project: Project, job: Job, mv: dict, frames=None, log=print, keep_f
                             keep_frames=keep_frames, kv=s.kv)
     optics = Optics(s.kv, s.cs_mm, s.amp_contrast)
     fit = pp.estimate_ctf(mic.sum, mic.apix, optics) if ctf else None
+    if fit is not None and s.patch_ctf != "off":
+        pz = pp.patch_defocus(mic.sum, mic.apix, optics, fit, grid=s.patch_ctf_grid)
+        apply = s.patch_ctf == "apply" or (s.patch_ctf == "auto" and pz["significant"] and pz["tilt_deg"] >= 5.0)
+        fit.patch = dict(plane=[round(v, 6) for v in pz["plane"]], plane_se=[round(v, 6) for v in pz["plane_se"]],
+                         tilt_deg=round(pz["tilt_deg"], 3), significant=pz["significant"], applied=bool(apply),
+                         residual_a=round(pz.get("residual_a", float("nan")), 1),
+                         centre_a=[0.5 * mic.sum.shape[1] * mic.apix, 0.5 * mic.sum.shape[0] * mic.apix])
     torch.cuda.synchronize()
     t["motion_ctf"] = time.time() - t0
     return s, fr, mic, fit, t
@@ -282,6 +295,7 @@ def process_movie_motion(project: Project, job: Job, movie_id: int, frames: np.n
     sh = mic.shifts
     stats = dict(frames=len(fr), motion_path_a=round(float(np.linalg.norm(np.diff(sh, axis=0), axis=1).sum()), 2),
                  local_rms_a=round(mic.local["rms_a"], 3) if mic.local else None, ctf_score=round(fit.score, 4),
+                 ctf_patch=fit.patch, ctf_tilt_deg=fit.patch["tilt_deg"] if fit.patch else None,
                  seconds={k: round(v, 2) for k, v in t.items()})
     _mem.clear()
     _mem[movie_id] = (mic.sum_dw, mic.apix, fit)
@@ -333,6 +347,35 @@ def process_movie_pick(project: Project, job: Job, movie_id: int, log=print,
     return dict(candidates=len(keep), kept=int(keep.sum()), threshold=th)
 
 
+_ctf_cache: dict = {}      # MotionCtf job id -> movie id -> (du, dv, angle, patch)
+
+
+def _local_ctf(project: Project, mic_job: Job, movie_id: int, xy: np.ndarray) -> dict:
+    """Per-particle defocus columns at positions xy (A) when the MotionCtf job can apply local defocus (patch_ctf
+    "auto" / "apply"): the micrograph's defocus plus its plane where it was applied, else plus 0 (every micrograph
+    of the job gets the columns, so the table's columns stay the same). {} for jobs that never apply it."""
+    if mic_job.params.get("patch_ctf", "off") not in ("auto", "apply"):
+        return {}
+    if mic_job.id not in _ctf_cache:
+        _ctf_cache.clear()
+        mi = project.micrographs(mic_job)
+        _ctf_cache[mic_job.id] = {int(r.movie_id): (r.defocus_u, r.defocus_v, r.defocus_angle,
+                                                    (json.loads(r.meta or "{}") or {}).get("ctf_patch"))
+                                  for r in mi.itertuples()}
+    rows = _ctf_cache[mic_job.id]
+    if movie_id not in rows:                         # a micrograph processed after the cache was filled
+        _ctf_cache.pop(mic_job.id)
+        return _local_ctf(project, mic_job, movie_id, xy)
+    du, dv, an, pz = rows[movie_id]
+    off = np.zeros(len(xy))
+    if pz and pz.get("applied"):
+        a, bx, by = pz["plane"]
+        cx, cy = pz["centre_a"]
+        off = a + bx * (xy[:, 0] - cx) + by * (xy[:, 1] - cy)
+    return dict(defocus_u=(du + off).astype(np.float32), defocus_v=(dv + off).astype(np.float32),
+                defocus_angle=np.full(len(xy), an, np.float32))
+
+
 def process_movie_extract(project: Project, job: Job, movie_id: int, io: ThreadPoolExecutor | None = None):
     if project.done(job, movie_id):
         return None
@@ -347,7 +390,9 @@ def process_movie_extract(project: Project, job: Job, movie_id: int, io: ThreadP
         if movie_id not in _rc_cache[job.id]:
             imgs = np.zeros((0, p["box"], p["box"]), np.float32)
             _io(io, project.add_particles, job, movie_id, np.zeros((0, 2)), imgs, out_apix, dtype=p["dtype"],
-                uid=np.zeros(0, np.int64), pick_xy_a=np.zeros((0, 2)), columns=dict(score=np.zeros(0)))
+                uid=np.zeros(0, np.int64), pick_xy_a=np.zeros((0, 2)),
+                columns=dict(score=np.zeros(0), **_local_ctf(project, project.job(p["micrographs"]), movie_id,
+                                                             np.zeros((0, 2)))))
             return dict(particles=0)
         uid, xy, pick, score = _rc_cache[job.id][movie_id]
         d = p.get("dedup_a", -1.0)
@@ -356,7 +401,8 @@ def process_movie_extract(project: Project, job: Job, movie_id: int, io: ThreadP
         k &= (xy[:, 0] >= 0) & (xy[:, 1] >= 0) & (xy[:, 0] < nx * apix) & (xy[:, 1] < ny * apix)
         imgs = pk.extract(img, apix, xy[k], p["box"], out_apix=out_apix if out_apix > apix * 1.001 else None,
                           dark=p["dark"], diameter_a=pick_job_.params["diameter_a"])
-        _io(io, project.add_particles, job, movie_id, xy[k], imgs, out_apix, columns=dict(score=score[k]),
+        cols = dict(score=score[k], **_local_ctf(project, project.job(p["micrographs"]), movie_id, xy[k]))
+        _io(io, project.add_particles, job, movie_id, xy[k], imgs, out_apix, columns=cols,
             dtype=p["dtype"], uid=uid[k], pick_xy_a=pick[k])
         return dict(particles=int(k.sum()), duplicates=int((~k).sum()))
     z = _mem_picks.get((pick_job_.id, movie_id)) or project.picks(pick_job_, movie_id)
@@ -369,8 +415,9 @@ def process_movie_extract(project: Project, job: Job, movie_id: int, io: ThreadP
         k &= np.isin(uid, _sel_cache[p["select"]])
     imgs = pk.extract(img, apix, z["xy_a"][k], p["box"], out_apix=out_apix if out_apix > apix * 1.001 else None,
                       dark=p["dark"], diameter_a=pick_job_.params["diameter_a"])
-    _io(io, project.add_particles, job, movie_id, z["xy_a"][k], imgs, out_apix,
-        columns=dict(score=z["score"][k], local_std=z["local_std"][k]), dtype=p["dtype"])
+    cols = dict(score=z["score"][k], local_std=z["local_std"][k],
+                **_local_ctf(project, project.job(p["micrographs"]), movie_id, z["xy_a"][k]))
+    _io(io, project.add_particles, job, movie_id, z["xy_a"][k], imgs, out_apix, columns=cols, dtype=p["dtype"])
     return dict(particles=int(k.sum()))
 
 

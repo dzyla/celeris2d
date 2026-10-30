@@ -379,6 +379,7 @@ class CTFFit:
     fit_res_a: float            # resolution to which the fitted CTF agrees with the Thon rings (A)
     score: float
     profile: dict               # for figures (plots_preprocess): ring correlation, 2D and equal-phase 1D fit
+    patch: dict | None = None   # local defocus (patch_defocus): plane, its errors, tilt, whether it is applied
 
 
 def power_spectrum(mic: torch.Tensor, apix: float, tile: int = 512) -> torch.Tensor:
@@ -475,6 +476,69 @@ def estimate_ctf(mic: torch.Tensor, apix: float, optics: Optics, res_lo: float =
     an = an % 180.0
     fit_res, prof = _fit_resolution(ps, k, du, dv, an, optics, fy, fx, box_a, res_lo, deg)
     return CTFFit(du, dv, an, fit_res, sc, prof)
+
+
+def patch_defocus(mic: torch.Tensor, apix: float, optics: Optics, fit: CTFFit, grid: int = 3, tile: int = 512,
+                  res_lo: float = 30.0, res_hi: float = 5.0, span_a: float = 2000.0, step_a: float = 20.0,
+                  deg: int = 4) -> dict:
+    """Local defocus (cryoSPARC Patch CTF): the micrograph in grid x grid regions, each region's tile power spectrum
+    scored like estimate_ctf for defocus offsets -span..span (astigmatism, its angle and the envelope / background
+    model as the global fit's), the best offset refined by a parabola. A plane is fitted to the offsets (weighted by
+    each region's fit score, residual-based standard errors): offset(x, y) = a + bx x + by y with x, y in A from the
+    micrograph centre. Returns centres (P, 2) A, offsets (P,), scores (P,), plane (a, bx, by), its standard errors,
+    tilt (deg) and whether the tilt is significant (> 3 standard errors)."""
+    dev = mic.device
+    ny, nx = mic.shape
+    fy, fx = freqs(tile, dev)
+    box_a = tile * apix
+    k = torch.sqrt((fy[:, None] / box_a) ** 2 + (fx[None, :] / box_a) ** 2)
+    band = (k >= 1 / res_lo) & (k <= 1 / res_hi)
+    kn = (k[band] - 1 / res_lo) / (1 / res_hi - 1 / res_lo)
+    B = _basis(kn, deg)
+    offs = torch.arange(-span_a, span_a + 0.5 * step_a, step_a, device=dev)
+    cen, off, scr = [], [], []
+    hy, hx = ny // grid, nx // grid
+    for gy in range(grid):
+        for gx in range(grid):
+            sub = mic[gy * hy:(gy + 1) * hy, gx * hx:(gx + 1) * hx]
+            if min(sub.shape) < tile:
+                continue
+            ps = power_spectrum(sub, apix, tile).sqrt()
+            y = ps[band]
+            y = (y - y.mean()) / y.std()
+            sc = []
+            for i in range(0, len(offs), 24):
+                o = offs[i:i + 24]
+                c2 = _ctf2(fit.defocus_u + o, fit.defocus_v + o, torch.full_like(o, fit.angle), optics, fy, fx,
+                           box_a)[:, band]
+                sc.append(_fit_score(y, c2, B))
+            sc = torch.cat(sc)
+            j = int(sc.argmax().clamp(1, len(offs) - 2))
+            y0, y1, y2 = float(sc[j - 1]), float(sc[j]), float(sc[j + 1])
+            den = y0 - 2 * y1 + y2
+            frac = 0.5 * (y0 - y2) / den if den < 0 else 0.0
+            cen.append(((gx + 0.5) * hx * apix - 0.5 * nx * apix, (gy + 0.5) * hy * apix - 0.5 * ny * apix))
+            off.append(float(offs[j]) + max(-1.0, min(1.0, frac)) * step_a)
+            scr.append(y1)
+    cen, off, scr = np.array(cen), np.array(off), np.array(scr)
+    out = dict(centres_a=cen, offsets_a=off, scores=scr, plane=(0.0, 0.0, 0.0), plane_se=(np.inf,) * 3,
+               tilt_deg=0.0, significant=False)
+    if len(off) >= 4:
+        w = np.clip(scr, 1e-3, None)
+        X = np.c_[np.ones(len(off)), cen]
+        sw = np.sqrt(w)
+        coef, *_ = np.linalg.lstsq(X * sw[:, None], off * sw, rcond=None)
+        r = off - X @ coef
+        dof = max(1, len(off) - 3)
+        s2 = float((w * r * r).sum() / w.sum()) * len(off) / dof
+        cov = s2 * np.linalg.pinv((X * w[:, None]).T @ X / w.mean())
+        se = np.sqrt(np.clip(np.diag(cov), 0, None))
+        slope = np.hypot(coef[1], coef[2])
+        slope_se = np.hypot(se[1], se[2]) / math.sqrt(2)
+        out.update(plane=tuple(float(c) for c in coef), plane_se=tuple(float(x) for x in se),
+                   tilt_deg=float(np.degrees(np.arctan(slope))), significant=bool(slope > 3 * slope_se),
+                   residual_a=float(np.sqrt(np.mean(r * r))))
+    return out
 
 
 def _fit_resolution(ps, k, du, dv, an, optics, fy, fx, box_a, res_lo, deg, z=3.0):
