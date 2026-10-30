@@ -138,7 +138,13 @@
   .ramp { height: 8px; border-radius: 4px; background: linear-gradient(90deg, #296bd1, #ededeb, #d94038); }
   .hint { position: absolute; left: 12px; bottom: 10px; font-size: 12px; color: #9aa; pointer-events: none; }
   .launch { display: grid; place-items: center; min-height: 300px; gap: 12px; text-align: center; color: var(--ink2); padding: 14px; }
-  .launch img { max-height: 210px; max-width: 100%; border-radius: 6px; }
+  .launch img.fallback { max-width: 100%; border-radius: 6px; }
+  .views { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; width: 100%; max-width: 1800px; }
+  .views figure { margin: 0; }
+  .views .tile { aspect-ratio: 1; background: #0a0a0a; border-radius: 4px; overflow: hidden; }
+  .views .tile img { width: 100%; height: 100%; display: block; object-fit: contain; }
+  .views figcaption { font-size: 12px; color: var(--ink3); margin-top: 4px; }
+  @media (max-width: 1400px) { .views { grid-template-columns: repeat(3, minmax(0, 1fr)); max-width: 900px; } }
   .mic { display: grid; grid-template-columns: 1fr; }
   .mic img { width: 100%; display: block; }
   .mic .nav { display: flex; gap: 10px; align-items: center; padding: 10px 14px; background: var(--surface); }
@@ -235,11 +241,16 @@ function renderQueue() {
   const rows = [...queue.running.map(n => [n, 'running']), ...queue.queued.map(n => [n, 'queued'])];
   $('#queue').innerHTML = `<h2>Queue <span class="muted" style="font-weight:400">${rows.length ? rows.length + ' job' + (rows.length > 1 ? 's' : '') : 'empty'}</span></h2>` +
     rows.map(([n, s]) => `<div class="q"><span class="who" data-n="${esc(n)}"><span class="dot ${s}"></span>${esc(n)}</span>` +
-      (s === 'queued' ? `<button class="quiet" data-c="${esc(n)}" title="take it out of the queue">Cancel</button>` : `<span class="st">running</span>`) + '</div>').join('') +
+      (s === 'queued' ? `<button class="quiet" data-c="${esc(n)}" title="take it out of the queue">Cancel</button>` : `<button class="quiet" data-s="${esc(n)}" title="end the running job">Stop</button>`) + '</div>').join('') +
     `<label class="tog"><input type="checkbox" id="autosel" ${autoSelect ? 'checked' : ''}> Ask me to choose classes after each classification</label>`;
   document.querySelectorAll('#queue .who').forEach(e => e.onclick = () => showJob(e.dataset.n));
   document.querySelectorAll('#queue [data-c]').forEach(b => b.onclick = async () => {
     try { await api('/api/project/cancel', {job: b.dataset.c}); } catch (e) { alert(e.message); }
+    load();
+  });
+  document.querySelectorAll('#queue [data-s]').forEach(b => b.onclick = async () => {
+    if (!confirm(`Stop ${b.dataset.s}? Its process ends now; Restart runs it again.`)) return;
+    try { await api('/api/project/stop', {job: b.dataset.s}); } catch (e) { alert(e.message); }
     load();
   });
   $('#autosel').onchange = async e => { await api('/api/project/queue', {auto_select: e.target.checked}); };
@@ -285,15 +296,16 @@ async function showJob(name, scroll = true) {
   const s = j.summary || {};
   const warns = s.warnings || [];
   const canRerun = !['Import', 'Select'].includes(j.type);
-  const runLabel = j.status === 'failed' ? 'Restart' : ['MotionCtf', 'Pick', 'Extract'].includes(j.type) ? 'Continue with new movies' : 'Run again';
+  const runLabel = ['failed', 'cancelled'].includes(j.status) ? 'Restart' : ['MotionCtf', 'Pick', 'Extract'].includes(j.type) ? 'Continue with new movies' : 'Run again';
   $('#main').innerHTML = `
     <div class="head">
       <div><h1>${esc(j.type)} <span class="muted" style="font-weight:500">${esc(j.name.slice(0, 3))}</span></h1>
         <div class="sub"><span class="dot ${esc(j.status)}"></span>${esc(j.status === 'waiting' ? 'waiting for your choice' : j.status)}${meta.label ? ' · ' + esc(meta.label) : ''}${j.final ? ' · <span style="color:var(--you)">★ final</span>' : ''}</div></div>
       <div class="acts">
-        ${canRerun ? `<button id="rerun" class="${j.status === 'failed' ? 'go' : ''}" ${['running', 'queued', 'waiting'].includes(j.status) ? 'disabled' : ''} title="a new job with the same inputs and settings, through the queue">${runLabel}</button>` : ''}
+        ${canRerun ? `<button id="rerun" class="${['failed', 'cancelled'].includes(j.status) ? 'go' : ''}" ${['running', 'queued', 'waiting'].includes(j.status) ? 'disabled' : ''} title="a new job with the same inputs and settings, through the queue">${runLabel}</button>` : ''}
         ${types[j.type] ? `<button id="edit" title="the New job form with this job's inputs and settings">Change settings…</button>` : ''}
         ${['queued', 'waiting'].includes(j.status) ? `<button id="cancel">Cancel</button>` : ''}
+        ${j.status === 'running' ? `<button id="stop" class="danger" title="end the job's process now; it is kept, marked cancelled, and can be restarted">Stop</button>` : ''}
         <button id="final" title="final jobs and everything they came from make the publication report">${j.final ? '★ Final' : '☆ Mark final'}</button>
         <button id="del" class="danger" ${j.status === 'running' ? 'disabled' : ''} title="move the job to the project's Trash folder">Delete</button>
       </div>
@@ -310,6 +322,10 @@ async function showJob(name, scroll = true) {
   const on = (id, fn) => { const b = $('#' + id); if (b) b.onclick = fn; };
   on('rerun', async () => { try { const d = await api('/api/project/rerun', {job: j.name}); current = d.job; await load(); showJob(d.job); } catch (e) { alert(e.message); } });
   on('edit', () => jobForm(j.type, j.params));
+  on('stop', async () => {
+    if (!confirm(`Stop ${j.name}? Its process ends now; what it wrote so far stays, and Restart runs it again.`)) return;
+    try { await api('/api/project/stop', {job: j.name}); await load(); showJob(j.name, false); } catch (e) { alert(e.message); }
+  });
   on('cancel', async () => { try { await api('/api/project/cancel', {job: j.name}); await load(); showJob(j.name, false); } catch (e) { alert(e.message); } });
   on('final', async () => {
     let note = '';
@@ -391,11 +407,19 @@ function stageVolume(st, j, maps) {
   maps.sort((a, b) => (rank(a.path) < 0 ? 9 : rank(a.path)) - (rank(b.path) < 0 ? 9 : rank(b.path)));
   const localres = j.files.find(f => /localres\.mrc$/.test(f.path));
   const preview = j.files.find(f => /map_views\.png$/.test(f.path)) || j.files.find(f => /postprocess\.png$/.test(f.path));
+  const names = ['projection z', 'projection y', 'projection x', 'section z', 'section y', 'section x'];
   st.innerHTML = `<div class="launch">
-      ${preview ? `<img src="${file(preview.path)}" alt="map preview">` : ''}
+      <div class="views" id="mviews">${names.map(n => `<figure><div class="tile"></div><figcaption>${n}</figcaption></figure>`).join('')}</div>
       <div><button class="go" id="go3d">Show the map in 3D</button>
-      <div class="muted" style="font-size:12px;margin-top:6px">${maps.length} map${maps.length > 1 ? 's' : ''} in this job; the viewer loads a downsampled copy (~8 MB)</div></div></div>`;
+      <div class="muted" id="mvname" style="font-size:12px;margin-top:6px">${maps.length} map${maps.length > 1 ? 's' : ''} in this job; the viewer loads a downsampled copy (~8 MB)</div></div></div>`;
   $('#go3d').onclick = () => openViewer(st, j, maps, localres);
+  api('/api/project/mapviews?path=' + encodeURIComponent(maps[0].path)).then(d => {
+    if (!$('#mviews')) return;
+    $('#mviews').innerHTML = d.views.map(v => `<figure><div class="tile"><img src="${v.src}" alt="${esc(v.label)}"></div><figcaption>${esc(v.label)}</figcaption></figure>`).join('');
+    $('#mvname').textContent = `${d.name} · box ${d.box[0]} · ${d.apix.toFixed(2)} Å/px · ${maps.length} map${maps.length > 1 ? 's' : ''} in this job; the 3D viewer loads a downsampled copy`;
+  }).catch(() => {
+    if ($('#mviews') && preview) $('#mviews').outerHTML = `<img class="fallback" src="${file(preview.path)}" alt="map preview">`;
+  });
 }
 async function openViewer(st, j, maps, localres) {
   st.innerHTML = `<div class="v3"><div style="position:relative"><canvas id="v3c" aria-label="3D map"></canvas><div class="hint">drag to rotate · wheel to zoom · double-click to reset</div></div>

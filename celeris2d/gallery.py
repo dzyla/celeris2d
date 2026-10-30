@@ -5,6 +5,8 @@ class_gallery(project, job): the classes of a Class2D job (its class averages) o
 (three projections of each class map), largest first, with particles, share and resolution; for a Select job, the
 classes of its source and which it keeps.
 
+map_views(path): projections and central sections of a map, as pictures for the job page.
+
 volume_payload(path, size, color): a map downsampled to <= size^3 as 8-bit voxels for the browser's raymarcher -
 bytes: uint32 header length, JSON header (shape, apix, value range, suggested isosurface levels, colour range),
 the voxels (z, y, x order, uint8), then optionally a colour volume (e.g. local resolution) on the same grid.
@@ -84,6 +86,34 @@ def class_gallery(project: Project, job) -> dict:
     else:
         raise ValueError(f"{src.name} is not a classification (Class2D, HeteroRefine, Class3D)")
     return out
+
+
+def map_views(path: str, px: int = 384) -> dict:
+    """Projections along z, y, x and central sections of a map (as in plots3d.map_views_figure), large PNG data URIs
+    for the job page's preview before the 3D viewer is opened."""
+    import mrcfile
+    with mrcfile.mmap(path, permissive=True) as f:
+        v = np.asarray(f.data, np.float32)
+        apix = float(f.voxel_size.x)
+    b = v.shape[0]
+    ims = [v.sum(0), v.sum(1), v.sum(2), v[b // 2], v[:, b // 2], v[:, :, b // 2]]
+    names = ["projection z", "projection y", "projection x", "section z", "section y", "section x"]
+    # the same centred square crop for every view, around the particle (the box is mostly solvent)
+    r = 0
+    for im in ims[:3]:
+        h, w = im.shape
+        yy, xx = np.ogrid[:h, :w]
+        d = np.sqrt((yy - h / 2) ** 2 + (xx - w / 2) ** 2)
+        bg = np.median(im[d > 0.45 * min(h, w)]) if (d > 0.45 * min(h, w)).any() else 0.0
+        a = im - bg
+        on = a > 0.06 * max(float(a.max()), 1e-12)
+        if on.any():
+            r = max(r, float(d[on].max()))
+    half = int(min(b / 2, max(b * 0.2, r * 1.12 + 2)))
+    c = b // 2
+    ims = [im[max(c - half, 0):c + half, max(c - half, 0):c + half] for im in ims]
+    return dict(name=os.path.basename(path), box=list(v.shape), apix=apix, crop=2 * half,
+                views=[dict(label=n, src=_thumb(im, px)) for n, im in zip(names, ims)])
 
 
 def _downsample(v: np.ndarray, size: int) -> np.ndarray:

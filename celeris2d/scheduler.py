@@ -5,9 +5,17 @@ waits for the user to choose the classes in the dashboard (complete_select), and
 Agents (MCP) and scripts call the jobs directly and get no waiting selections.
 
 Statuses: queued (waits for its inputs / the GPU), waiting (waits for the user), running, finished, failed,
-cancelled. The queue is the project's catalog itself, so it survives a restart of the dashboard.
+cancelled. Each queued job runs in a process of its own (start), so a running job can be stopped (stop). The queue is the project's catalog itself, so it survives a restart of the dashboard.
 """
 from __future__ import annotations
+
+import os
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
 
 from .project import Job, Project
 
@@ -115,3 +123,78 @@ def queue_state(project: Project) -> dict:
     jobs = project.jobs()
     pick = lambda st: [n for n in jobs[jobs["status"] == st]["name"]]
     return dict(running=pick("running"), queued=pick("queued"), waiting=pick("waiting"))
+
+
+def start(project: Project, job, auto_select: bool = True, **popen) -> subprocess.Popen:
+    """Run a queued job in a process of its own (main() below), so that stop() can end it - GPU memory and the
+    movie reader processes with it. The caller waits for the process; the job records its status itself."""
+    import celeris2d
+    j = project.job(job)
+    env = dict(os.environ)
+    pkg = os.path.dirname(os.path.dirname(os.path.abspath(celeris2d.__file__)))
+    env["PYTHONPATH"] = os.pathsep.join([pkg] + [p for p in [env.get("PYTHONPATH")] if p])
+    cmd = [sys.executable, "-u", "-m", "celeris2d.scheduler", project.root, str(j.id)]
+    if not auto_select:
+        cmd.append("--no-auto-select")
+    proc = subprocess.Popen(cmd, env=env, start_new_session=True, **popen)   # its own process group: stop() ends all
+    project.set_status(j, "running", pid=proc.pid)
+    return proc
+
+
+def stop(project: Project, job, grace: float = 15.0) -> Job:
+    """Stop a running job: its process (and the processes it started) gets SIGTERM, SIGKILL after `grace` seconds;
+    the job becomes cancelled ("stopped by the user") and jobs queued on it fail. Only processes on this host, and
+    not the dashboard / an MCP server itself (a job run inside it cannot be stopped without stopping that)."""
+    j = project.job(job)
+    if j.status != "running":
+        raise ValueError(f"{j.name} is {j.status}, not running")
+    pid, host = j.params.get("run_pid"), j.params.get("run_host")
+    if pid is None or host != socket.gethostname():
+        raise ValueError(f"{j.name} runs on {host or 'an unknown host'}: stop it there")
+    pid = int(pid)
+    if pid == os.getpid():
+        raise ValueError(f"{j.name} runs inside the dashboard itself: it cannot be stopped from here")
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            cmdline = f.read().replace(b"\0", b" ").decode(errors="replace")
+    except OSError:
+        cmdline = ""
+    if "mcp" in cmdline:
+        raise ValueError(f"{j.name} runs inside the MCP server (process {pid}): stop it from there")
+    group = os.getpgid(pid) == pid if cmdline else False             # a process started by start(): its group
+    kill = (lambda s: os.killpg(pid, s)) if group else (lambda s: os.kill(pid, s))
+    try:
+        kill(signal.SIGTERM)
+    except ProcessLookupError:
+        pass                                                          # already gone: just record it
+    project.set_status(j, "cancelled", dict(project.summary_of(j), error="stopped by the user"))
+
+    def finish():
+        t0 = time.time()
+        while time.time() - t0 < grace:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.5)
+        try:
+            kill(signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    threading.Thread(target=finish, daemon=True, name=f"stop-{j.id}").start()
+    return j
+
+
+def main(argv=None):
+    """python -m celeris2d.scheduler <project> <job id> [--no-auto-select]: run one queued job (start())."""
+    import argparse
+    ap = argparse.ArgumentParser(description=main.__doc__)
+    ap.add_argument("project")
+    ap.add_argument("job", type=int)
+    ap.add_argument("--no-auto-select", action="store_true")
+    a = ap.parse_args(argv)
+    run_job(Project(a.project), a.job, auto_select=not a.no_auto_select)
+
+
+if __name__ == "__main__":
+    main()

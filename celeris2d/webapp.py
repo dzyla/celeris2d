@@ -15,6 +15,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import threading
 import time
 import traceback
@@ -1063,7 +1064,7 @@ def create(workdir, project_dir=None):
     def _scheduler():
         """Runs the open project's queued jobs one at a time, when the GPU is free."""
         from .project import Project
-        from .scheduler import next_job, run_job
+        from .scheduler import next_job, start
         while True:
             wake.wait(3.0)
             wake.clear()
@@ -1079,11 +1080,20 @@ def create(workdir, project_dir=None):
                 rec = dict(error=None, job=j)
 
                 def work(prj=prj, j=j, rec=rec):
-                    try:
-                        run_job(prj, j, log=st._log, auto_select=proj_state["auto_select"])
-                    except BaseException as e:      # noqa: BLE001 - recorded on the job by run_job
-                        rec["error"] = repr(e)
-                        raise
+                    try:                              # a process of its own: the Stop button ends it (scheduler.stop)
+                        proc = start(prj, j, auto_select=proj_state["auto_select"], stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT, text=True, bufsize=1)
+                        tail = []
+                        for line in proc.stdout:
+                            st._log(line.rstrip())
+                            tail = (tail + [line.rstrip()])[-5:]
+                        code = proc.wait()
+                        if prj.job(j.id).status == "running":     # died before recording how it ended
+                            prj.set_status(prj.job(j.id), "failed", dict(prj.summary_of(j),
+                                           error=f"the job's process ended (exit code {code}): " + " | ".join(tail)))
+                        if code and prj.job(j.id).status != "cancelled":      # not stopped by the user
+                            rec["error"] = f"exit code {code}"
+                            raise RuntimeError(f"{j.name}: {prj.job(j.id).status} (exit code {code})")
                     finally:
                         wake.set()                    # the next queued job
                 name, rec["thread"] = st.submit("project", j.name, work)
@@ -1120,6 +1130,17 @@ def create(workdir, project_dir=None):
         except ValueError as e:
             raise HTTPException(400, str(e))
 
+    @app.post("/api/project/stop")
+    def project_stop(body: dict = Body(...)):
+        """{job}: stop a running job (its process ends; the job becomes cancelled)."""
+        from .scheduler import stop
+        try:
+            j = stop(_prj(), body["job"])
+        except (ValueError, KeyError, PermissionError) as e:
+            raise HTTPException(400, str(e))
+        _kick()
+        return dict(job=j.name, status=j.status)
+
     @app.post("/api/project/select")
     def project_select(body: dict = Body(...)):
         """{job, classes: [1-based], note}: the choice for a waiting Select job, or a new Select of a class job."""
@@ -1141,6 +1162,23 @@ def create(workdir, project_dir=None):
             return class_gallery(prj, job)
         except (ValueError, KeyError) as e:
             raise HTTPException(400, str(e))
+
+    _views_cache = collections.OrderedDict()
+
+    @app.get("/api/project/mapviews")
+    def project_mapviews(path: str):
+        """Projections and central sections of a map of the project (gallery.map_views), for the job page."""
+        from .gallery import map_views
+        prj = _prj()
+        full = os.path.realpath(os.path.join(prj.root, path))
+        if not full.startswith(os.path.realpath(prj.root) + os.sep) or not os.path.isfile(full):
+            raise HTTPException(404, path)
+        key = (full, os.path.getmtime(full))
+        if key not in _views_cache:
+            _views_cache[key] = map_views(full)
+            while len(_views_cache) > 24:
+                _views_cache.popitem(last=False)
+        return _views_cache[key]
 
     @app.get("/api/project/volume")
     def project_volume(path: str, size: int = 160, color: str = ""):

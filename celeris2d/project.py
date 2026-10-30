@@ -379,11 +379,11 @@ class Project:
             j = j[j["status"] == status]
         return self.job(int(j["id"].iloc[-1])) if len(j) else None
 
-    def set_status(self, job: Job, status: str, summary: dict | None = None):
+    def set_status(self, job: Job, status: str, summary: dict | None = None, pid: int | None = None):
         """running / finished / failed / aborted; summary: the job's key numbers (summary.json). A running job
-        records the process running it (is_running)."""
+        records the process running it (is_running): this one, or `pid` (a process started for it)."""
         if status == "running":
-            job.params.update(run_pid=os.getpid(), run_host=socket.gethostname())
+            job.params.update(run_pid=pid or os.getpid(), run_host=socket.gethostname())
             with self._db() as c:
                 c.execute("UPDATE jobs SET params=? WHERE id=?", (json.dumps(job.params, default=str), job.id))
         with self._db() as c:

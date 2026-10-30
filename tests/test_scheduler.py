@@ -37,3 +37,30 @@ def test_finished_input_releases_queued_job(tmp_path):
     assert next_job(p).id == a.id                                 # no inputs: runs first
     p.set_status(p.job(a.id), "finished", {})
     assert next_job(p).id == b.id
+
+
+def test_stop_running_job_and_job_process(tmp_path):
+    import os
+    import subprocess
+    import time
+    from celeris2d.scheduler import start, stop
+    p = Project(str(tmp_path / "prj"))
+    j = _job(p, "Refine3D", status="queued", label="long")
+    proc = subprocess.Popen(["sleep", "60"], start_new_session=True)   # stands in for the job's process
+    p.set_status(j, "running", pid=proc.pid)
+    assert p.is_running(p.job(j.id))
+    stop(p, j, grace=2)
+    assert proc.wait(timeout=10) != 0
+    assert p.job(j.id).status == "cancelled" and p.summary_of(j)["error"] == "stopped by the user"
+    after = _job(p, "Class3D", [j], "queued", "after")                  # queued on a stopped job: fails
+    assert next_job(p) is None and p.job(after.id).status == "failed"
+    try:
+        stop(p, j)
+        raise AssertionError("a cancelled job cannot be stopped")
+    except ValueError:
+        pass
+    bad = _job(p, "Select", status="queued", label="noqueue")         # its own process records how it ended
+    pr = start(p, bad, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    assert p.job(bad.id).params["run_pid"] == pr.pid and pr.wait(timeout=120) != 0
+    assert p.job(bad.id).status == "failed" and "cannot run from the queue" in p.summary_of(bad)["error"]
+    assert os.getpid() != pr.pid
