@@ -153,6 +153,28 @@ engine's model convention (the particle's centre is at +shift from the box centr
 - **Polish** (on a Refine3D job): per-particle tracks and per-frame weights from the movies (method in
   `polish.py`'s docstring); a particle job like an extraction, same uids, centred at the refined centre, and the
   table keeps each particle's half (its track was fitted against that half map).
+- **Subtract** (`celeris2d/subtract.py`; particles, a refinement's poses and map, a MaskCreate mask of the region
+  to keep): the map outside the mask projected at each particle's pose, with its CTF, scaled and subtracted (scale
+  per shell from a 2,000-image subset, times a per-particle scale shrunk towards 1 by its noise, as RELION), the
+  result re-centred on the mask's centre and cut to a smaller box (`box`); `subtract=False` only re-centres / re-boxes.
+  A particle job like Polish: same uids and halves, table also holds the poses (shifts relative to the new box
+  centre), so a Refine3D / LocalRefine on it can take its poses. **Symmetry expansion** (`sym_expand`, the user's
+  point group, never detected) writes one image per particle and operator: rows are (uid, `copy`), poses A·S_k, every
+  copy keeps the particle's half; jobs match particles by (uid, copy) (`jobs.match_rows`), and a refinement that
+  reads expanded copies takes its poses from the Subtract job (copies are not separate particles: duplicate
+  removal keeps or drops a particle with all its copies, selections stay uid lists). Distinct uids per copy were rejected: they would break the
+  movie / particle lineage, Polish and merging back.
+- **LocalRefine** (particles - usually a Subtract job -, starting poses, focus mask, optional reference): refinement
+  in a box around the mask (rotations about the mask's centre: angle limit `max_angle_deg`, shift limit `max_shift_a`
+  as hard bounds on the search, the shift step tied to the angular step by the region's radius), the reference and
+  the gold-standard FSC restricted to the mask, halves kept from the input. Maps and poses are written back in the
+  consensus frame and box; `focus_fsc.png` compares the region's corrected masked FSC with the consensus half maps'
+  in the same mask (one randomisation shell for both, shells past a map's content left out). Synthetic two-domain
+  test (domain B turned up to 25 deg about a hinge): subtraction keeps B (corr 0.95 vs 0.52 before, 0.05 with A),
+  pose error of B 3.2 vs 8.4 deg, half-map resolution in the mask 6.7 vs 7.5 A. dz_2025_10 (38,459 particles,
+  Refine3D D2 5.54 A; mask: the z > 0 half of the map, one RTX PRO 4000): subtracting the other half and re-boxing
+  256 -> 176 px 24 s; local C2 refinement of the half 5.53 A, the consensus in the same mask 5.53 A (103 s); the same
+  without subtraction 6.03 A (217 s); D2 expansion (153,836 images, 84 s) + local C1 refinement 5.05 A (335 s).
 - **Sharpen** (on a Refine3D job or a HeteroRefine class; `celeris2d/sharpen.py`, RELION PostProcess): corrected masked FSC (phases
   randomised beyond the shell where the unmasked FSC drops below 0.8, the correction applied from 2 shells further,
   as RELION does), automatic Guinier B-factor (10 A to the resolution), FSC weighting, low-pass at the resolution.

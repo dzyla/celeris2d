@@ -46,7 +46,7 @@ def export(project: Project, job, fmt: str) -> str:
     fmt = fmt.lower()
     if fmt == "relion":
         return dict(Import=_relion_movies, MotionCtf=_relion_micrographs, Pick=_relion_picks,
-                    Extract=_relion_particles, Polish=_relion_particles)[job.type](project, job)
+                    Extract=_relion_particles, Polish=_relion_particles, Subtract=_relion_particles)[job.type](project, job)
     if fmt == "cryosparc":
         if job.type not in PARTICLE_JOBS:
             raise ValueError("cryoSPARC export is for Extract / Polish jobs (cryoSPARC imports movies / micrographs itself)")
@@ -103,12 +103,14 @@ def relion_particle_blocks(project, job) -> dict:
         "rlnCtfMaxResolution": p["ctf_fit_res"], "rlnAutopickFigureOfMerit": p["score"]})
     part["celUid"] = p["uid"].to_numpy()
     part["celMovie"] = p["movie_id"].to_numpy()
+    if "copy" in p:                                  # symmetry-expanded copies (Subtract): (uid, copy) is the key
+        part["celCopy"] = p["copy"].to_numpy().astype(np.int64)
     return {"optics": _optics(project, job, float(p["apix"].iloc[0]), int(p["box"].iloc[0])), "particles": part}
 
 
 def _relion_particles(project, job):
     b = relion_particle_blocks(project, job)
-    b["particles"] = b["particles"].drop(columns=["celUid", "celMovie"])
+    b["particles"] = b["particles"].drop(columns=[c for c in ("celUid", "celMovie", "celCopy") if c in b["particles"]])
     return _star(job.out("particles.star"), b)
 
 

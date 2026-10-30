@@ -137,7 +137,7 @@ def mapscore_job(project: Project, particles, map_job, s: MapScoreSettings, labe
 
 @logged
 def run_mapscore(project: Project, job, log=print) -> dict:
-    from .jobs import _reference_map, particle_source
+    from .jobs import _reference_map, map_job, particle_source
     job = project.job(job)
     s = settings_of(job, MapScoreSettings)
     pj, mj = project.job(job.params["particles"]), project.job(job.params["map"])
@@ -149,7 +149,7 @@ def run_mapscore(project: Project, job, log=print) -> dict:
         keep = np.sort(rng.choice(len(uid), s.max_particles, replace=False))
         src.subset(keep)
         uid = uid[keep]
-    vol, vapix, _ = _reference_map(mj)
+    vol, vapix, _ = _reference_map(map_job(project, mj))              # a Subtract job: its refinement's map
     diam = s.diameter_a or getattr(src, "mask_diameter_a", 0.0) / 1.25 or 0.6 * src.box * src.apix
     dev = f"cuda:{int(s.gpus)}" if s.gpus not in ("auto", "") else "cuda"
     sc = Scorer(vol, vapix, src.box, src.apix, src.optics, diam, s.res_a, s.n_dirs, s.psi_step, s.shift_a, dev)

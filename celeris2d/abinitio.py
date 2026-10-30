@@ -427,19 +427,22 @@ def masked_fsc(a: Volume, b: Volume, mask: torch.Tensor) -> torch.Tensor:
     return fsc_maps(a.real() * mask, b.real() * mask)
 
 
-def corrected_masked_fsc(h1: torch.Tensor, h2: torch.Tensor, mask: torch.Tensor, seed: int = 0, parts: bool = False):
+def corrected_masked_fsc(h1: torch.Tensor, h2: torch.Tensor, mask: torch.Tensor, seed: int = 0, parts: bool = False,
+                         k_r: int | None = None):
     """Masked FSC of two real half maps corrected for the correlation a (tight) mask creates by itself (RELION
     PostProcess): from the shell k_r where the unmasked FSC drops below 0.8, the half maps' phases are randomised
     (whole shells, as the FSC counts them), the maps masked again, and FSC_true = (FSC_masked - FSC_random) /
     (1 - FSC_random) from shell k_r + 3 on; the shells just past k_r keep the masked FSC (as RELION): the mask spreads
     correlation from the intact shells into them, FSC_random is close to FSC_masked there and the formula dips
     (beta-gal: 0.97 -> 0.72 for one shell when it was applied from k_r, with half of shell k_r randomised).
-    parts: also return (masked, randomised, unmasked FSC, k_r)."""
+    parts: also return (masked, randomised, unmasked FSC, k_r). k_r: randomise from this shell instead (e.g. one shell
+    for two maps compared in one mask: the unmasked FSC of a whole map says little about a small masked region)."""
     n = h1.shape[0]
     f_un = fsc_maps(h1, h2)
     f_m = fsc_maps(h1 * mask, h2 * mask)
-    below = torch.nonzero(f_un < 0.8)
-    k_r = int(below[0]) if len(below) else len(f_un) - 1
+    if k_r is None:
+        below = torch.nonzero(f_un < 0.8)
+        k_r = int(below[0]) if len(below) else len(f_un) - 1
     k = torch.fft.fftfreq(n, device=h1.device) * n
     kz = torch.arange(n // 2 + 1, device=h1.device, dtype=torch.float32)
     kk = torch.round(torch.sqrt(k[:, None, None] ** 2 + k[None, :, None] ** 2 + kz[None, None, :] ** 2))
@@ -944,7 +947,10 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                      step_min: float = 0.5,
                      half: torch.Tensor | None = None, soft: bool = False, solvent_mask=None,
                      solvent_from_a: float = 15.0, pad: int | None = None, grid_correct: bool = False,
-                     nu: bool = False, nu_strict: bool = True, log=print):
+                     nu: bool = False, nu_strict: bool = True,
+                     max_angle: float | None = None, max_shift: float | None = None,
+                     limit_A: torch.Tensor | None = None, limit_t: torch.Tensor | None = None,
+                     shift_per_deg: float | None = None, log=print):
     """Local refinement of particle orientations A and shifts t (A, model shift) against CTF-modulated projections,
     gold-standard halves (half: (n,) 0/1 per particle, e.g. the split of the refinement the poses come from - a
     particle must stay in the half it was aligned or polished against; default a random split, seed 1). inits:
@@ -978,6 +984,11 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     history's "nu"), refine_particles.last_nu_map the last cutoff map (A, mean of the halves). nu_strict (default): the cutoffs of each
     half chosen by cross-validation between two folds of that half's own particles (each reconstructed on a small
     pad-1 box sized to the resolution), so no information crosses between the halves (gold standard).
+    max_angle (deg) / max_shift (A) (one model; local refinement, e.g. focused on a masked region): only poses within
+    this angle of limit_A (n, 3, 3) and shifts within this distance of limit_t (n, 2) (default: the starting poses) are
+    searched - RELION's local searches / cryoSPARC's search extents, as hard limits.
+    shift_per_deg: shift step per degree of angular step (A; default: half a pixel per 1.5 deg, at least half a pixel);
+    for a focused region of radius r, r pi / 180 (a turn of one step moves its edge by one shift step).
     Returns (maps (M, b, b, b), A (n, 3, 3), t (n, 2) in the chosen model, z, fsc (M, shells), resolutions (M,),
     half Volumes [[h0, h1] per model])."""
     dev = clf.dev
@@ -1009,6 +1020,13 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     if t.dim() == 2:
         t = t[:, None].expand(n, M, 2).contiguous()
     ar_n = torch.arange(n, device=dev)
+    limited = max_angle is not None or max_shift is not None
+    if limited:
+        if M > 1:
+            raise ValueError("search limits (max_angle / max_shift) are for one model")
+        limit_A = (A[:, 0] if limit_A is None else torch.as_tensor(limit_A).float()).to(dev).clone()
+        limit_t = (t[:, 0] if limit_t is None else torch.as_tensor(limit_t).float()).to(dev).clone()
+        cos_lim = 1 + 2 * math.cos(math.radians(max_angle)) - 1e-4 if max_angle is not None else None
     if pad is None:
         pad = auto_pad(b, M * (1.15 if nu else 1.0), dev)   # NU: its filtered maps and folds (+24 % peak)
         if pad == 1:
@@ -1225,7 +1243,10 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
         jc = (J0 // 2) * (len(relax_ops) if xo else 1)                 # index of the unperturbed pose
         if xo:
             ops_x = relax_ops.to(dev).float()
-        ts = torch.tensor([-1.0, 0.0, 1.0], device=dev) * (box_a / b) * max(0.5, step / 3)
+        if shift_per_deg:   # a region of radius r: a turn of `step` moves its edge by r step (in rad)
+            ts = torch.tensor([-1.0, 0.0, 1.0], device=dev) * max(0.1 * box_a / b, step * shift_per_deg)
+        else:
+            ts = torch.tensor([-1.0, 0.0, 1.0], device=dev) * (box_a / b) * max(0.5, step / 3)
         sx, sy = torch.meshgrid(ts, ts, indexing="xy")
         sg = torch.stack([sx.reshape(-1), sy.reshape(-1)], 1)    # (Sh, 2)
         Sh = len(sg)
@@ -1268,7 +1289,18 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             Z = (x.conj()[:, None] * e_t)[:, :, None] * CP * isig                                       # (nb, M, J, F)
             cross = (Z @ E.T).real                                                                      # (nb, M, J, Sh)
             pw = (CP.abs() ** 2 * isig).sum(-1)                                                         # (nb, M, J)
-            ll = (cross - 0.5 * pw[..., None]).reshape(nb, M, -1)
+            ll = (cross - 0.5 * pw[..., None])                                                         # (nb, M, J, Sh)
+            if limited:     # hypotheses beyond the angular / shift limits around the starting pose are not searched
+                okm = torch.ones(ll.shape, dtype=torch.bool, device=dev)
+                if max_angle is not None:      # trace(Ac limit_A^T) = 1 + 2 cos(angle between them)
+                    tr = (Ac * limit_A[i:i + bt][:, None, None]).sum((-1, -2))                         # (nb, M, J)
+                    okm &= (tr >= cos_lim)[..., None]
+                if max_shift is not None:
+                    dsh = tt[:, :, None, :] + sg[None, None] - limit_t[i:i + bt][:, None, None]           # (nb, M, Sh, 2)
+                    okm &= (dsh.norm(dim=-1) <= max_shift + 1e-3)[:, :, None, :]
+                ll = ll.masked_fill(~okm, -float("inf"))
+                okm = None
+            ll = ll.reshape(nb, M, -1)
             llm, bjs = ll.max(-1)                                                                       # best pose per model
             if not all(alive):
                 llm[:, [m for m in range(M) if not alive[m]]] = -float("inf")

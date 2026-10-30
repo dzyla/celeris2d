@@ -54,8 +54,8 @@ class SharpenSettings:
 def sharpen_job(project: Project, refine, s: SharpenSettings, label: str = "") -> Job:
     """Sharpen the half maps of a Refine3D job (or of class s.cls of a HeteroRefine / Class3D job)."""
     r = project.job(refine)
-    if r.type not in ("Refine3D", *CLASS_JOBS):
-        raise ValueError(f"{r.name} is not a Refine3D, HeteroRefine or Class3D job")
+    if r.type not in ("Refine3D", "LocalRefine", *CLASS_JOBS):
+        raise ValueError(f"{r.name} is not a Refine3D, LocalRefine, HeteroRefine or Class3D job")
     if r.type in CLASS_JOBS and not s.cls:
         raise ValueError(f"{r.name}: choose the class to sharpen (cls)")
     return project.new_job("Sharpen", dict(params_of(s), refine=r.id), [r],

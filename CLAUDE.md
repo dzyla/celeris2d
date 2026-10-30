@@ -76,7 +76,9 @@ Layers, bottom to top:
    (Refine3D `nu=True`: references filtered region by region, cutoffs by cross-validation - strict by default, from two
    folds inside each half), `optics.py`: anisotropic magnification and odd / even aberrations fitted by gradient
    (diagnostic; not applied in refinement yet), `localres.py`: local resolution, `diagnostics.py`: FSC files, angular
-   statistics, `mapscore.py`: MapScore, particles vs a map against phase-randomised controls with per-2D-class shares): the
+   statistics, `mapscore.py`: MapScore, particles vs a map against phase-randomised controls with per-2D-class shares,
+   `subtract.py`: Subtract (signal subtraction, re-centring on the mask, symmetry expansion: a particle job whose rows
+   are (uid, copy)) and LocalRefine (focused refinement with angle / shift limits about the mask centre)): the
    movies -> particles -> 3D project store and its jobs
    (layout and rules in docs/project-design.md: `jobs/NNN_<type>_<label>/` small results, `data/NNN/` heavy and
    purgeable, catalog `project.db`, particle uid/key, selections as uid lists); `pipeline.run` overlaps decoding
