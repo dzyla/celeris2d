@@ -125,6 +125,8 @@ class Volume:
         # the high-resolution refinements turn it on (refine_particles(grid_correct=True)).
         self.grid_correct = grid_correct
         self.pre = pre
+        self.mag = None             # 2x2 magnification (optics.py): the volume is sampled at M (kx, ky) of each image
+                                    # frequency (anisotropic magnification); the image-centring phase stays on k
         # real, imag channels; index = frequency + G/2
         self.ft = torch.zeros((2, G, G, G), device=dev) if ft is None else ft
         self.num = self.den = None
@@ -214,10 +216,16 @@ class Volume:
         At = A.to(self.dev).transpose(1, 2)            # columns: volume axes in image coordinates
         if keep is None:
             kx, ky = fx[None, None, :, None], fy[None, :, None, None]
+            if self.mag is not None:
+                M = self.mag
+                kx, ky = M[0, 0] * kx + M[0, 1] * ky, M[1, 0] * kx + M[1, 1] * ky
             q = kx * At[:, None, None, :, 0] + ky * At[:, None, None, :, 1]   # A^T (kx, ky, 0)
         else:
             kx = fx[None, :].expand(len(fy), -1)[keep][None, :, None]
             ky = fy[:, None].expand(-1, len(fx))[keep][None, :, None]
+            if self.mag is not None:
+                M = self.mag
+                kx, ky = M[0, 0] * kx + M[0, 1] * ky, M[1, 0] * kx + M[1, 1] * ky
             q = kx * At[:, None, :, 0] + ky * At[:, None, :, 1]
         return q * self.pad
 
@@ -844,7 +852,8 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                      box: int | None = None, relax_ops: torch.Tensor | None = None, relax_iters: int = 0,
                      step_min: float = 0.5,
                      half: torch.Tensor | None = None, soft: bool = False, solvent_mask=None,
-                     solvent_from_a: float = 15.0, pad: int | None = None, grid_correct: bool = False, log=print):
+                     solvent_from_a: float = 15.0, pad: int | None = None, grid_correct: bool = False,
+                     nu: bool = False, log=print):
     """Local refinement of particle orientations A and shifts t (A, model shift) against CTF-modulated projections,
     gold-standard halves (half: (n,) 0/1 per particle, e.g. the split of the refinement the poses come from - a
     particle must stay in the half it was aligned or polished against; default a random split, seed 1). inits:
@@ -871,6 +880,9 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     the references lose the solvent noise and keep more of the signal. refine_particles.last_mask holds the last one.
     pad: padding of the 3D spectra (None: 2 if the volumes, ~60 (2b)^3 bytes for one model, fit in 60 % of the free
     memory, else 1 - box 512 in 16 GB). grid_correct: gridding correction of every volume (Volume; pad 1 needs it).
+    nu (one model): non-uniform regularisation (nufilter.adaptive_filter) below 15 A: each half's reference is
+    low-passed region by region, the cutoff chosen by cross-validation against the other half, instead of the global
+    FSC filter. refine_particles.last_nu holds the last cutoff statistics.
     Returns (maps (M, b, b, b), A (n, 3, 3), t (n, 2) in the chosen model, z, fsc (M, shells), resolutions (M,),
     half Volumes [[h0, h1] per model])."""
     dev = clf.dev
@@ -995,7 +1007,27 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
         # stopping exactly at it makes the resolution self-limiting
         k_al = min(b / 2 - 1, 1.15 * box_a / al_res + 3)
         refs = []
-        for m in range(M):
+        use_nu = nu and M == 1 and fscs[0] is not None and res[0] < solvent_from_a
+        if use_nu:
+            from .nufilter import adaptive_filter
+            hr_ = [vols[0][0].real(), vols[0][1].real()]
+            refs.append([])
+            nu_info = {}
+            for h in (0, 1):
+                f_ = adaptive_filter(hr_[h], hr_[1 - h], box_a / b, res[0], mask=cur_mask,
+                                     info=nu_info if h == 0 else None)
+                r = Volume(b, dev, pad=pad, grid_correct=gc)
+                r.set_real(f_ * (mask if cur_mask is None else cur_mask))
+                del f_
+                lowpass(r, box_a / k_al, box_a)
+                refs[0].append(r)
+            del hr_
+            refine_particles.last_nu = {k: v for k, v in nu_info.items() if k != "cutoff_map_a"}
+            if it == 1 or it == n_iter - 1:
+                log(f"[3d] non-uniform filter: cutoffs in the mask {nu_info['cutoff_p05_a']:.1f} / "
+                    f"{nu_info['cutoff_median_a']:.1f} / {nu_info['cutoff_p95_a']:.1f} A (5 / 50 / 95 %)")
+            nu_info = None
+        for m in (range(M) if not use_nu else ()):
             rm = []
             for v in vols[m]:
                 r = Volume(b, dev, pad=pad, ft=v.ft.clone(), pre=v.pre, grid_correct=gc)

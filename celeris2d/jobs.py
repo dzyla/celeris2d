@@ -311,6 +311,8 @@ class Refine3DSettings:
                                     # 15 A, masking.auto_mask), "sphere" (the particle sphere only), or a MaskCreate job
                                     # / .mrc path (fixed)
     grid_correct: bool = False      # gridding correction of the 3D spectra (more accurate projections and maps)
+    nu: bool = False                # non-uniform regularisation (cryoSPARC NU-refine's idea): each region of the
+                                    # references low-passed at its own resolution, chosen by cross-validation
     pad: int = 0                    # padding of the 3D spectra: 0 automatic (2 if it fits the GPU, else 1), 1 or 2
     align_symmetry: bool = True     # sym differs from the start job's: first rotate the map and the poses so the
                                     # group's axes (n-fold on z, 2-fold on x) lie on the map's (symalign.py); the
@@ -482,7 +484,7 @@ def run_refine3d(project: Project, job, log=print) -> dict:
                                                          global_res=s.global_res_a, box=b,
                                                          half=None if half is None else torch.as_tensor(half),
                                                          solvent_mask=sm, grid_correct=s.grid_correct,
-                                                         pad=s.pad or None, log=log)
+                                                         pad=s.pad or None, nu=s.nu, log=log)
     seconds = time.time() - t0
     apix = box_a / b
     h1, h2 = vols[0][0].real(), vols[0][1].real()

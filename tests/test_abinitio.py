@@ -7,6 +7,7 @@ reprojections must match the 2D class averages.
 
     pytest -q tests
 """
+import math
 import os
 
 import mrcfile
@@ -171,3 +172,47 @@ def test_volume_padding_and_gridding():
     err = lambda p: float((p - ref).norm() / ref.norm())
     assert err(proj(2, True)) < err(proj(2, False)) and err(proj(2, True)) < 0.05
     assert err(proj(1, True)) < 0.3
+
+
+def test_optics_fit_recovers_magnification():
+    """optics.fit_optics: particles simulated with a known anisotropic magnification (0.5 % along 30 deg) are fitted
+    back to it (gradient through the projection's sampling coordinates)."""
+    from celeris2d import optics as op
+    from celeris2d.engine import TWO_PI, Optics, freqs
+    dev, b, apix, n = "cuda", BOX, APIX, 1500
+    g = torch.Generator().manual_seed(5)
+    vols = []
+    for _ in range(2):
+        V = ab.Volume(b, dev)
+        V.set_real(_volume(BLOBS).to(dev))
+        vols.append(V)
+    A = ab.euler_to_matrix(torch.rand(n, generator=g) * 360, torch.rad2deg(torch.arccos(torch.rand(n, generator=g) * 2 - 1)),
+                           torch.rand(n, generator=g) * 360)
+    t = torch.zeros(n, 2)
+    half = (torch.arange(n) % 2)
+    eps, phi = 0.005, math.radians(30)
+    R = torch.tensor([[math.cos(phi), -math.sin(phi)], [math.sin(phi), math.cos(phi)]])
+    M = (R @ torch.diag(torch.tensor([1 + eps, 1 - eps])) @ R.T).to(dev)
+    optics = Optics(300, 2.7, 0.1)
+    p = torch.tensor([[15000.0, 15000.0, 0.0, 0.0, 0.0, 1.0]]).expand(n, 6).contiguous()
+    fy, fx = freqs(b, dev)
+    kx, ky = fx[None, :].expand(b, -1), fy[:, None].expand(-1, len(fx))
+    for v in vols:
+        v.mag = M
+    proj = vols[0].project(A.to(dev))
+    for v in vols:
+        v.mag = None
+    c = op.ctf_points(p.to(dev), optics, (M[0, 0] * kx + M[0, 1] * ky).reshape(1, -1), (M[1, 0] * kx + M[1, 1] * ky).reshape(1, -1),
+                      b * apix).reshape(n, b, -1)
+    data = proj * c
+    data = data + 2.0 * data.abs().mean() * torch.complex(torch.randn(data.shape, generator=g).to(dev),
+                                                           torch.randn(data.shape, generator=g).to(dev))
+
+    class Clf:
+        pass
+    clf = Clf()
+    clf.dev, clf.box_a, clf.optics, clf.ctf_p = dev, b * apix, optics, p
+    clf._fetch = lambda j, d, b_: data[j.to(dev)]
+    fit = op.fit_optics(clf, torch.arange(n), A, t, half, vols, res_hi_a=2.5 * apix, res_lo_a=20 * apix, n_max=n,
+                        fit_odd=False, fit_even=False, log=lambda *a: None)
+    assert np.allclose(np.array(fit.mag), M.cpu().numpy(), atol=5e-4), (fit.mag, M)
