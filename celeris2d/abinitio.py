@@ -668,7 +668,10 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
     A, t = A.to(dev), t.to(dev)
     Fb = int(band.sum())
     free = _free(dev)
-    npc = int(max(256, min(n, 0.1 * free / (Fb * 12))))           # particles per chunk (band spectra)
+    # particles per chunk: the band spectra, and before them full half-plane grids (spectra, shift phases, CTF and
+    # their products: ~40 B per point); sized from the band alone, J20 (198k particles, box 108) asked for 4.4 GB more
+    # than a 24 GB card had
+    npc = int(max(256, min(n, 0.1 * free / (Fb * 12 + b * (b // 2 + 1) * 40))))
     hc = int(max(256, min(H, 0.15 * free / (npc * 20 + Fb * 24))))   # orientations per chunk (scores + projections)
     for h in (0, 1):
         sel_h = torch.nonzero(half.to(dev) == h).squeeze(1)
