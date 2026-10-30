@@ -1220,8 +1220,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                     iters["fsc"].append([None if f is None else f.cpu().numpy().astype(np.float32) for f in fscs])
         if it == n_iter:
             break
-        if iters is not None:
-            A_prev, t_prev = A.clone(), t.clone()
+        A_prev, t_prev = A.clone(), t.clone()      # how far this iteration moves each pose (log, history)
         live = [m for m in range(M) if alive[m]]
         # all models are compared at the same resolution (the worst live one), so a model with more particles
         # (a cleaner reconstruction) does not win particles just for being less noisy
@@ -1427,20 +1426,27 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                 post[:, m] = 0
                 post = post / post.sum(1, keepdim=True).clamp_min(1e-12)
         pops = torch.bincount(z, minlength=M).tolist()
+        # per particle, in its (new) model: the angle and shift this iteration moved it ("moved" only counts
+        # particles whose best hypothesis is not the centre: after each halving of the step most find a neighbour
+        # half a coarse step away, so it alternates ~75 % / ~25 % without saying how far)
+        Q = A_prev[ar_n, z].transpose(1, 2) @ A[ar_n, z]
+        d_ang = torch.rad2deg(torch.arccos(((Q.diagonal(dim1=-2, dim2=-1).sum(-1) - 1) / 2).clamp(-1, 1)))
+        d_sh = (t[ar_n, z] - t_prev[ar_n, z]).norm(dim=-1)
+        del Q, A_prev, t_prev
+        ch = dict(change_deg=round(float(d_ang.median()), 3), change_p90_deg=round(float(d_ang.quantile(0.9)), 3),
+                  shift_change_a=round(float(d_sh.median()), 3), shift_change_p90_a=round(float(d_sh.quantile(0.9)), 3))
         log(f"[3d] particles it {it + 1}/{n_iter}: align {al_res:.1f} A, step {step:.2f} deg, "
-            f"{changed / n * 100:.0f}% moved" + (f", {switched / n * 100:.1f}% switched model, per model {pops}" if M > 1 else "")
+            f"pose change median {ch['change_deg']:.2f} deg (90%: {ch['change_p90_deg']:.1f}), shift "
+            f"{ch['shift_change_a']:.2f} A, {changed / n * 100:.0f}% off the grid centre" + (f", {switched / n * 100:.1f}% switched model, per model {pops}" if M > 1 else "")
             + (f", mean max posterior {float(post.max(1).values.mean()):.3f}" if soft and M > 1 else "")
             + f" ({time.time() - t0:.1f}s)")
         history.append(dict(it=it + 1, align_res=round(al_res, 3), step=round(step, 3), moved=round(changed / n, 4),
-                            switched=round(switched / n, 4), pops=pops, **({"nu": nu_it} if use_nu else {}),
+                            switched=round(switched / n, 4), pops=pops, **ch, **({"nu": nu_it} if use_nu else {}),
                             **({"max_posterior": round(float(post.max(1).values.mean()), 4)} if M > 1 else {})))
-        if iters is not None:              # per particle, in its (new) model: how far this iteration moved it
-            Q = A_prev[ar_n, z].transpose(1, 2) @ A[ar_n, z]
-            iters["angle"].append(torch.rad2deg(torch.arccos(((Q.diagonal(dim1=-2, dim2=-1).sum(-1) - 1) / 2)
-                                                             .clamp(-1, 1))).cpu().numpy().astype(np.float16))
-            iters["shift"].append((t[ar_n, z] - t_prev[ar_n, z]).norm(dim=-1).cpu().numpy().astype(np.float16))
+        if iters is not None:
+            iters["angle"].append(d_ang.cpu().numpy().astype(np.float16))
+            iters["shift"].append(d_sh.cpu().numpy().astype(np.float16))
             iters["fit"].append(score.cpu().numpy().astype(np.float16))
-            del Q, A_prev, t_prev
         if step_scale is None and changed / n < 0.3:
             step = max(step_min, step / 2)
         wpart = torch.ones(n, device=dev)

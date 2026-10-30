@@ -238,17 +238,26 @@ def refine_history_figure(path: str, history: list[dict], title_: str, classes: 
     a.legend(loc="lower right")
     grid_y(a)
     a = axs[1]
-    a.plot(it, [h["step"] for h in history], "o-", ms=3.5, color=T.series[0])
-    a.set(title="Angular step of the local search", xlabel="iteration", ylabel="degrees")
+    a.plot(it, [h["step"] for h in history], "o--", ms=3, lw=1.4, color=T.ink3, label="search step")
+    if all("change_deg" in h for h in history):     # how far the poses moved (older jobs: step only)
+        a.plot(it, [h["change_deg"] for h in history], "o-", ms=3.5, color=T.series[0], label="pose change, median")
+        a.plot(it, [h["change_p90_deg"] for h in history], "o-", ms=3.5, color=T.series[1], label="90th percentile")
+        a.legend(loc="upper right")
+    a.set(title="Angular step and pose change per iteration", xlabel="iteration", ylabel="degrees")
     a.set_ylim(bottom=0)
     grid_y(a)
     a = axs[2]
-    a.plot(it, [h["moved"] * 100 for h in history], "o-", ms=3.5, color=T.series[0], label="pose changed")
     if classes:
-        a.plot(it, [h.get("switched", 0) * 100 for h in history], "o-", ms=3.5, color=T.series[1],
-               label="class changed")
+        a.plot(it, [h.get("switched", 0) * 100 for h in history], "o-", ms=3.5, color=T.series[0])
+        a.set(title="Particles that changed class", xlabel="iteration", ylabel="% of particles")
+    elif all("shift_change_a" in h for h in history):
+        a.plot(it, [h["shift_change_a"] for h in history], "o-", ms=3.5, color=T.series[0], label="median")
+        a.plot(it, [h["shift_change_p90_a"] for h in history], "o-", ms=3.5, color=T.series[1], label="90th percentile")
         a.legend(loc="upper right")
-    a.set(title="Convergence", xlabel="iteration", ylabel="% of particles")
+        a.set(title="Shift change per iteration", xlabel="iteration", ylabel="Å")
+    else:
+        a.plot(it, [h["moved"] * 100 for h in history], "o-", ms=3.5, color=T.series[0])
+        a.set(title="Poses off the search grid's centre", xlabel="iteration", ylabel="% of particles")
     a.set_ylim(bottom=0)
     grid_y(a)
     if classes:
