@@ -240,6 +240,30 @@ def process_movies(movies_job: str, apix: float, dose_total: float, diameter_a: 
 
 
 @server.tool()
+def pick_particles(micrographs_job: str, diameter_a: float, templates: str = "", template_classes: list[int] | None = None,
+                   threshold: float | None = None, curate: str = "", particle_a: float = 0.0, box_a: float = 0.0,
+                   particle_apix: float = 0.0, dark: bool = True, figures: str = "outliers", label: str = "") -> str:
+    """Pick (and extract) the micrographs of a MotionCtf job again, in the background: a blob of diameter_a, or
+    templates - a Class2D / Select job (class averages; template_classes: only these 1-based classes) or a
+    Refine3D / InitialModel / HeteroRefine job (projections of its map). threshold: score (None: automatic, generous;
+    template scores separate particles from background around 0.35-0.4 - check the pick figures). curate: a Curate
+    job (new_job Curate) - only the micrographs it accepts are picked. particle_a etc.: the extraction, as in
+    process_movies."""
+    from .pipeline import ExtractSettings, PickSettings, extract_job, pick_job
+    prj = _p()
+    mc = prj.job(micrographs_job)
+    s = PickSettings(diameter_a, dark=dark, threshold=threshold, figures=figures,
+                     templates=prj.job(templates).id if templates else 0, template_classes=tuple(template_classes or ()),
+                     curate=prj.job(curate).id if curate else 0)
+    pj = pick_job(prj, mc, s, label=label)
+    ej = extract_job(prj, pj, ExtractSettings(particle_a or 1.3 * diameter_a, box_a, particle_apix=particle_apix,
+                                              dark=dark))
+    _background([pj, ej])
+    return _js(dict(jobs=[pj.name, ej.name], box=ej.params["box"], particle_apix=ej.params["out_apix"],
+                    note="running in the background: job_status"))
+
+
+@server.tool()
 def extract_particles(picks_job: str, particle_a: float, box_a: float = 0.0, particle_apix: float = 0.0,
                       dtype: str = "float16", dark: bool = True, select: str = "", export: list[str] | None = None,
                       label: str = "") -> str:

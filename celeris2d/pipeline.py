@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from . import curate
 from . import picking as pk
 from . import preprocess as pp
 from .engine import Optics
@@ -76,6 +77,7 @@ class PickSettings:
     template_classes: tuple = ()        # Class2D: only these 1-based classes; HeteroRefine: the class whose map (1)
     n_projections: int = 40             # map templates: directions over the sphere
     angle_step: float = 0.0             # in-plane step (deg); 0: one working pixel at the particle's edge (~6 deg)
+    curate: int = 0                     # a Curate job: only the micrographs it accepts are picked (and extracted)
 
 
 @dataclass
@@ -109,7 +111,7 @@ def motion_job(project: Project, movies: Job, s: MotionSettings, label: str = ""
 
 
 def pick_job(project: Project, micrographs: Job, s: PickSettings, label: str = "") -> Job:
-    ins = [micrographs] + ([project.job(s.templates)] if s.templates else [])
+    ins = [micrographs] + ([project.job(s.templates)] if s.templates else []) + ([project.job(s.curate)] if s.curate else [])
     kind = f"tmpl{int(s.templates):03d}_" if s.templates else "blob"
     return project.new_job("Pick", dict(asdict(s), micrographs=micrographs.id), ins,
                            label or f"{kind}{s.diameter_a:g}" + ("" if s.threshold is None else f"_th{s.threshold:g}"))
@@ -685,6 +687,12 @@ def _run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thr
     mc, pj, ej = by.get("MotionCtf"), by.get("Pick"), by.get("Extract")
     if movie_ids is None:                            # the movies of the Import job the chain descends from
         movie_ids = project.movies(project.ancestor(jobs[0], "Import"))["id"].tolist()
+    # a Curate job on the Pick job (or the Extract job's Pick job): the micrographs it rejects are not picked
+    cpj = pj or (project.job(ej.params["picks"]) if ej is not None else None)
+    cj = project.job(cpj.params["curate"]) if cpj is not None and cpj.params.get("curate") else None
+    n_rejected = 0
+    if cj is not None and mc is None:             # micrographs exist already: rejected ones are not even read
+        movie_ids = [i for i in movie_ids if curate.accepted(project, cj, i)]
     todo = [i for i in movie_ids if not all(project.done(j, i) for j in jobs)]
     paths = project.movies().set_index("id")["path"]
     q: queue.Queue = queue.Queue(maxsize=2)
@@ -752,6 +760,9 @@ def _run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thr
                 del sf, item                             # frames are on the GPU by now: free the shared block
                 _release(cur[0])
                 cur[0] = None
+                if cj is not None and not curate.accepted(project, cj, i):
+                    n_rejected += 1                      # left out by the Curate job: no picks, no particles
+                    continue
                 if pj is not None:
                     process_movie_pick(project, pj, i, log=log, figures=figs)
                     t = lap("pick", t)
@@ -789,7 +800,8 @@ def _run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thr
     if finish_jobs:
         for j in jobs:
             finish(project, j)
-    return dict(processed=n, of=len(todo), seconds=round(time.time() - t0, 1),
+    return dict(processed=n, of=len(todo), **({"rejected_by_curate": n_rejected} if cj is not None else {}),
+                seconds=round(time.time() - t0, 1),
                 per_movie_s=round((time.time() - t0) / max(n, 1), 2),
                 stage_s_per_movie={k: round(v / max(n, 1), 2) for k, v in tm.items()})
 
