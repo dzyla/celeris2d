@@ -960,7 +960,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                      nu: bool = False, nu_strict: bool = True, particle_scale: bool = False, wiener: float = 0.0,
                      max_angle: float | None = None, max_shift: float | None = None,
                      limit_A: torch.Tensor | None = None, limit_t: torch.Tensor | None = None,
-                     shift_per_deg: float | None = None, log=print):
+                     shift_per_deg: float | None = None, iter_stats: bool = False, log=print):
     """Local refinement of particle orientations A and shifts t (A, model shift) against CTF-modulated projections,
     gold-standard halves (half: (n,) 0/1 per particle, e.g. the split of the refinement the poses come from - a
     particle must stay in the half it was aligned or polished against; default a random split, seed 1). inits:
@@ -994,6 +994,9 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     history's "nu"), refine_particles.last_nu_map the last cutoff map (A, mean of the halves). nu_strict (default): the cutoffs of each
     half chosen by cross-validation between two folds of that half's own particles (each reconstructed on a small
     pad-1 box sized to the resolution), so no information crosses between the halves (gold standard).
+    iter_stats: also keep, per iteration, every model's FSC curve and every particle's angular change (deg, in its
+    model), shift change (A) and fit: refine_particles.last_iters = dict(fsc=[[curve per model] per iteration],
+    angle / shift / fit=[(n,) float16 per iteration]) - how far poses still move, which particles keep jumping.
     particle_scale: a contrast scale a_i per particle (cryoSPARC's per-particle scale; RELION's scale correction is per
     group): the model of a particle is a_i x its CTF-weighted projection - ice thickness and dose change the contrast -
     used in the pose search (a_i cross - a_i^2 power / 2) and the reconstruction (a_i x, a_i^2 CTF^2), re-estimated
@@ -1067,6 +1070,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     step = step_start or max(1.0, math.degrees(res_start / diam))
     t0 = time.time()
     history = []                          # per iteration: alignment limit, step, share moved, resolution after it
+    iters = dict(fsc=[], angle=[], shift=[], fit=[]) if iter_stats else None   # iter_stats: per iteration
     kmax_used = [float(b)] * M            # highest shell inserted in the last reconstruction
 
     # symmetry by one resampling of the accumulators after the back-projection instead of |S| insertions per image
@@ -1184,8 +1188,12 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             if history:
                 history[-1]["res"] = [round(r, 3) if alive[m] else None for m, r in enumerate(res)]
                 history[-1]["seconds"] = round(time.time() - t0, 1)
+                if iters is not None:      # the FSC of the poses found in that iteration
+                    iters["fsc"].append([None if f is None else f.cpu().numpy().astype(np.float32) for f in fscs])
         if it == n_iter:
             break
+        if iters is not None:
+            A_prev, t_prev = A.clone(), t.clone()
         live = [m for m in range(M) if alive[m]]
         # all models are compared at the same resolution (the worst live one), so a model with more particles
         # (a cleaner reconstruction) does not win particles just for being less noisy
@@ -1387,6 +1395,13 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
         history.append(dict(it=it + 1, align_res=round(al_res, 3), step=round(step, 3), moved=round(changed / n, 4),
                             switched=round(switched / n, 4), pops=pops, **({"nu": nu_it} if use_nu else {}),
                             **({"max_posterior": round(float(post.max(1).values.mean()), 4)} if M > 1 else {})))
+        if iters is not None:              # per particle, in its (new) model: how far this iteration moved it
+            Q = A_prev[ar_n, z].transpose(1, 2) @ A[ar_n, z]
+            iters["angle"].append(torch.rad2deg(torch.arccos(((Q.diagonal(dim1=-2, dim2=-1).sum(-1) - 1) / 2)
+                                                             .clamp(-1, 1))).cpu().numpy().astype(np.float16))
+            iters["shift"].append((t[ar_n, z] - t_prev[ar_n, z]).norm(dim=-1).cpu().numpy().astype(np.float16))
+            iters["fit"].append(score.cpu().numpy().astype(np.float16))
+            del Q, A_prev, t_prev
         if step_scale is None and changed / n < 0.3:
             step = max(step_min, step / 2)
         wpart = torch.ones(n, device=dev)
@@ -1418,6 +1433,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     refine_particles.last_scale = pscale.cpu()
     refine_particles.last_half = half.cpu()          # gold-standard half set of every particle (0 / 1)
     refine_particles.last_history = history
+    refine_particles.last_iters = iters
     refine_particles.last_post = post.cpu()
     refine_particles.last_ll = llm_all.cpu() if n_iter > 0 else None   # per model, best pose, last pass
     refine_particles.last_mask = cur_masks[0]

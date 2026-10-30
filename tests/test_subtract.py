@@ -148,7 +148,8 @@ def sim(tmp_path_factory):
     ab._save_mrc(st.out("map_nomask.mrc"), _volume(BLOBS_A) + _volume([(bx + C_B[0], by, bz, s, w) for bx, by, bz, s, w in BLOBS_B]), APIX)
     prj.set_status(st, "finished", dict(resolution_a=12.0))
     # consensus refinement (global poses, dominated by A)
-    cons = jobs.refine3d_job(prj, ex, st, st, jobs.Refine3DSettings(n_iter=4, res_start_a=12.0, drop_frac=0.0))
+    cons = jobs.refine3d_job(prj, ex, st, st, jobs.Refine3DSettings(n_iter=4, res_start_a=12.0, drop_frac=0.0,
+                                                                  save_iterations=True))
     jobs.run_refine3d(prj, cons, log=lambda *a: None)
     # the mask on B (a MaskCreate job holding a soft sphere about B's rest position)
     mj = prj.new_job("MaskCreate", dict(map=cons.id), [cons], "B")
@@ -305,3 +306,20 @@ def test_refine_writes_sharpened_map(sim):
     assert summ["sharpened"]["resolution_a"] > 0 and "b_factor" in summ["sharpened"]
     assert rj.find("sharpened.mrc") and rj.find("postprocess.png") and rj.find("localres.mrc")
     assert not [i for i in prj.jobs("Sharpen").id if prj.job(int(i)).params.get("refine") == cons.id]
+
+def test_refine_saves_iterations(sim):
+    """save_iterations=True: each iteration's FSC curve (data/..._iterations.json) and every particle's angle / shift
+    change and fit per iteration (particle table columns); poses settle, so the last iteration moves particles less
+    than the first. Off by default: no such columns."""
+    import json
+    prj, cons = sim["prj"], sim["cons"]
+    rj = prj.job(cons.id)
+    it = json.load(open(rj.find("iterations.json")))
+    assert len(it["fsc"]) == 4 and len(it["fsc"][0]) == 1 and len(it["shell_res_a"]) == len(it["fsc"][0][0])
+    t = prj.table(rj, "particles").read()
+    for k in range(1, 5):
+        assert {f"d_angle_it{k:02d}", f"d_shift_it{k:02d}", f"fit_it{k:02d}"} <= set(t), sorted(t)
+    a1, a4 = (np.median(t[f"d_angle_it{k:02d}"].astype(np.float32)) for k in (1, 4))
+    assert a4 < a1, (a1, a4)
+    from celeris2d.jobs import Refine3DSettings
+    assert not Refine3DSettings().save_iterations

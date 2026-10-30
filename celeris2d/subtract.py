@@ -598,6 +598,9 @@ class LocalRefineSettings:
     local_res: bool = True          # ... including the local resolution
     mtf: str = ""                   # ... detector MTF (RELION .star) for the sharpening; empty: none
     mtf_apix: float = 0.0           # ... the pixel size (A) the MTF refers to (0: the map's)
+    save_iterations: bool = False   # keep every iteration's FSC curves (data/..._iterations.json) and each particle's
+                                    # angle / shift change and fit per iteration (particle table columns d_angle_itNN,
+                                    # d_shift_itNN, fit_itNN): convergence, particles that keep jumping
     gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
 
@@ -642,8 +645,8 @@ def _halves_frame(rj: Job, cls: int, n_big: int, apix: float, c_vox, b: int):
 def run_local_refine(project: Project, job, log=print) -> dict:
     from . import abinitio as ab
     from .engine import release_cache
-    from .jobs import (_posed_particles, _reference_map, _scale_to_data, _session, _write_results, load_mask, map_job,
-                       map_to_box, refinement_report)
+    from .jobs import (_posed_particles, _reference_map, _scale_to_data, _session, _write_results, iteration_columns,
+                       load_mask, map_job, map_to_box, refinement_report)
     job = project.job(job)
     s = settings_of(job, LocalRefineSettings)
     pj, qj, mj = (project.job(job.params[k]) for k in ("particles", "poses", "mask"))
@@ -700,7 +703,8 @@ def run_local_refine(project: Project, job, log=print) -> dict:
         clf, idx, A, t, init.to(dev), sym=s.sym, n_iter=s.n_iter, res_start=res0, step_start=step0,
         step_min=s.min_step_deg, n_local=s.n_local, drop_frac=s.drop_frac, box=b,
         half=None if half is None else torch.as_tensor(half), solvent_mask=fmask.to(dev),
-        max_angle=s.max_angle_deg, max_shift=s.max_shift_a, shift_per_deg=radius * math.pi / 180, log=log)
+        max_angle=s.max_angle_deg, max_shift=s.max_shift_a, shift_per_deg=radius * math.pi / 180,
+        iter_stats=s.save_iterations, log=log)
     seconds = time.time() - t0
     h1, h2 = vols[0][0].real(), vols[0][1].real()
     fm = fmask.to(dev)
@@ -758,7 +762,8 @@ def run_local_refine(project: Project, job, log=print) -> dict:
         rot=rot.numpy().astype(np.float32), tilt=tilt.numpy().astype(np.float32), psi=psi.numpy().astype(np.float32),
         shift_x_a=t_out[:, 0].numpy().astype(np.float32), shift_y_a=t_out[:, 1].numpy().astype(np.float32),
         fit=fit, half=ab.refine_particles.last_half.numpy().astype(np.uint8), used=used,
-        **({"copy": poses["copy"].astype(np.int16)} if "copy" in poses and "celCopy" not in src.parts else {})))
+        **({"copy": poses["copy"].astype(np.int16)} if "copy" in poses and "celCopy" not in src.parts else {}),
+        **(iteration_columns(job, box_a) if s.save_iterations else {})))
     from . import diagnostics as dg
     moved = dg.orientation_change(A_start, A_c, "C1")
     dshift = (t.cpu() - t_in).norm(dim=1).numpy()

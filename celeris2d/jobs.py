@@ -134,6 +134,26 @@ def _migrate_session(workdir: str, key: str):
             json.dump(meta, open(f, "w"), indent=1, default=str)
 
 
+def iteration_columns(job: Job, box_a: float) -> dict:
+    """save_iterations: the last refine_particles run's per-iteration record (iter_stats) -> particle-table columns
+    (d_angle_itNN deg, d_shift_itNN A, fit_itNN) and data/<job>_iterations.json (every iteration's FSC curve per
+    model, by shell; iteration NN's curve is that of the poses found in it)."""
+    from . import abinitio as ab
+    it = getattr(ab.refine_particles, "last_iters", None)
+    if not it:
+        return {}
+    n_sh = next((len(c) for its in it["fsc"] for c in its if c is not None), 0)
+    with open(job.out("iterations.json"), "w") as f:
+        json.dump(dict(shell_res_a=[None] + [round(box_a / k, 3) for k in range(1, n_sh)],
+                       fsc=[[None if c is None else [round(float(v), 4) for v in c] for c in its] for its in it["fsc"]]),
+                  f)
+    cols = {}
+    for i in range(len(it["angle"])):
+        cols.update({f"d_angle_it{i + 1:02d}": it["angle"][i], f"d_shift_it{i + 1:02d}": it["shift"][i],
+                     f"fit_it{i + 1:02d}": it["fit"][i]})
+    return cols
+
+
 def _write_results(project: Project, job: Job, src, idx, cols: dict, name="particles"):
     parts = src.parts.iloc[np.asarray(idx)]
     if "celCopy" in parts:                           # symmetry-expanded particles: one row per (uid, copy)
@@ -392,6 +412,9 @@ class Refine3DSettings:
     local_res: bool = True          # ... including the local resolution
     mtf: str = ""                   # ... detector MTF (RELION .star) for the sharpening; empty: none
     mtf_apix: float = 0.0           # ... the pixel size (A) the MTF refers to (0: the map's)
+    save_iterations: bool = False   # keep every iteration's FSC curves (data/..._iterations.json) and each particle's
+                                    # angle / shift change and fit per iteration (particle table columns d_angle_itNN,
+                                    # d_shift_itNN, fit_itNN): convergence, particles that keep jumping
     gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
 
@@ -649,7 +672,8 @@ def run_refine3d(project: Project, job, log=print) -> dict:
                                                          half=None if half is None else torch.as_tensor(half),
                                                          solvent_mask=sm, grid_correct=s.grid_correct,
                                                          pad=s.pad or None, nu=s.nu, nu_strict=s.nu_strict,
-                                                         particle_scale=s.particle_scale, wiener=s.wiener, log=log)
+                                                         particle_scale=s.particle_scale, wiener=s.wiener,
+                                                         iter_stats=s.save_iterations, log=log)
     seconds = time.time() - t0
     apix = box_a / b
     h1, h2 = vols[0][0].real(), vols[0][1].real()
@@ -671,6 +695,7 @@ def run_refine3d(project: Project, job, log=print) -> dict:
         shift_x_a=t[:, 0].cpu().numpy().astype(np.float32), shift_y_a=t[:, 1].cpu().numpy().astype(np.float32),
         fit=fit, half=ab.refine_particles.last_half.numpy().astype(np.uint8), used=used,
         **({"scale": ab.refine_particles.last_scale.numpy().astype(np.float32)} if s.particle_scale else {}),
+        **(iteration_columns(job, box_a) if s.save_iterations else {}),
         **({"copy": poses["copy"].astype(np.int16)} if "copy" in poses and "celCopy" not in src.parts else {})))
     res_sol = ab.resolution_from_fsc(fsc_sol, box_a)
     tag = f"{job.name} · {n_rows:,} particles · {s.sym}"
@@ -741,6 +766,9 @@ class HeteroRefineSettings:
     local_res: bool = True          # ... including the local resolution
     mtf: str = ""                   # ... detector MTF (RELION .star) for the sharpening; empty: none
     mtf_apix: float = 0.0           # ... the pixel size (A) the MTF refers to (0: the map's)
+    save_iterations: bool = False   # keep every iteration's FSC curves (data/..._iterations.json) and each particle's
+                                    # angle / shift change and fit per iteration (particle table columns d_angle_itNN,
+                                    # d_shift_itNN, fit_itNN): convergence, particles that keep jumping
     gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
 
@@ -878,7 +906,7 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
     maps, A, t, z, fscs, res, hv = ab.refine_particles(clf, idx, A, t, inits, z=z0, sym=s.sym, n_iter=s.n_iter,
                                                        res_start=s.res_start_a, n_local=s.n_local,
                                                        drop_frac=s.drop_frac, box=b, half=half_t, soft=s.soft,
-                                                       solvent_mask=sm, log=log)
+                                                       solvent_mask=sm, iter_stats=s.save_iterations, log=log)
     dyn_masks = ab.refine_particles.last_masks
     seconds = time.time() - t0
     fit = ab.refine_particles.last_score.cpu().numpy().astype(np.float32)
@@ -894,7 +922,8 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
         rot=rot.numpy().astype(np.float32), tilt=tilt.numpy().astype(np.float32), psi=psi.numpy().astype(np.float32),
         shift_x_a=t[:, 0].cpu().numpy().astype(np.float32), shift_y_a=t[:, 1].cpu().numpy().astype(np.float32),
         cls=z.astype(np.int16), fit=fit, half=np.asarray(half).astype(np.uint8), used=used,
-        **{f"prob_{k + 1}": post[:, k].astype(np.float32) for k in range(K)}))
+        **{f"prob_{k + 1}": post[:, k].astype(np.float32) for k in range(K)},
+        **(iteration_columns(job, box_a) if s.save_iterations else {})))
     table, fsc, masks, res_cls = [], {}, [], []
     for k in range(K):
         nk = int((z == k).sum())
