@@ -177,8 +177,95 @@ class Job:
         return p
 
     def figure(self, movie: dict) -> str:
-        return self.file("figures", (movie["subdir"] or "").replace(os.sep, "_") + "_" * bool(movie["subdir"])
-                         + movie["stem"] + ".png")
+        return self.file("figures", "movies", self.prefix + (movie["subdir"] or "").replace(os.sep, "_")
+                         + "_" * bool(movie["subdir"]) + movie["stem"] + ".png")
+
+    # result files: <job>/maps/j012_map.mrc, <job>/figures/j012_fsc.png (+ .light.png), <job>/data/j012_fsc.star,
+    # per-micrograph figures in <job>/figures/movies/, <job>/j012_run.log - the job number in every name, so a file copied elsewhere (or listed by RELION next to
+    # another job's) is never ambiguous. job.json / summary.json (the job's record) and the particle tables stay as is.
+    @property
+    def prefix(self) -> str:
+        return f"j{self.id:03d}_"
+
+    def out(self, name: str) -> str:
+        """Where a result file named `name` goes (folder by kind, job number in front); the folder is created."""
+        sub = _SUBDIR.get(os.path.splitext(name)[1].lower(), "data")
+        p = os.path.join(self.path, sub, self.prefix + name) if sub else os.path.join(self.path, self.prefix + name)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        return p
+
+    def find(self, name: str) -> str:
+        """A result file by its plain name: the current layout, else the flat layout of older jobs (or None)."""
+        p = os.path.join(self.path, _SUBDIR.get(os.path.splitext(name)[1].lower(), "data") or "", self.prefix + name)
+        if os.path.exists(p):
+            return p
+        old = os.path.join(self.path, name)
+        return old if os.path.exists(old) else None
+
+    def organize(self):
+        """Move result files a function wrote flat into the job folder into the layout of out()."""
+        for f in sorted(os.listdir(self.path)):
+            src = os.path.join(self.path, f)
+            if os.path.isfile(src) and f not in ("job.json", "summary.json") and not f.startswith(self.prefix) \
+                    and os.path.splitext(f)[1].lower() in _SUBDIR:
+                os.replace(src, self.out(f))
+
+    @property
+    def log_path(self) -> str:
+        return os.path.join(self.path, self.prefix + "run.log")
+
+
+_SUBDIR = {".mrc": "maps", ".mrcs": "maps", ".png": "figures", ".json": "data", ".star": "data", ".xml": "data",
+           ".csv": "data", ".cs": "data", ".csg": "data", ".npz": "data", ".txt": "data", ".log": ""}
+
+
+class run_log:
+    """with run_log(jobs, log) as lg: lg(...) writes each line, time-stamped, to every job's run log (j012_run.log,
+    read live by the dashboard) and passes it on to log; the start, the end and an error with its traceback too."""
+
+    def __init__(self, jobs, log=print, what: str = ""):
+        self.jobs, self.log, self.what = list(jobs), log, what
+
+    def __enter__(self):
+        self.fh = []
+        for j in self.jobs:
+            os.makedirs(j.path, exist_ok=True)
+            self.fh.append(open(j.log_path, "a", buffering=1))
+        self.t0 = time.time()
+        self._write(f"started{': ' + self.what if self.what else ''} (pid {os.getpid()} on {socket.gethostname()})")
+        return self
+
+    def _write(self, text: str):
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S ")
+        for f in self.fh:
+            f.write(stamp + text + "\n")
+
+    def __call__(self, *m):
+        self._write(" ".join(str(x) for x in m))
+        self.log(*m)
+
+    def __exit__(self, et, e, tb):
+        import traceback
+        if et is None:
+            self._write(f"finished in {time.time() - self.t0:.1f} s")
+        else:
+            self._write(f"FAILED after {time.time() - self.t0:.1f} s: {e!r}\n"
+                        + "".join(traceback.format_exception(et, e, tb)))
+        for f in self.fh:
+            f.close()
+        return False
+
+
+def logged(run):
+    """A job's run function (project, job, ..., log=) also writes its log to the job's run log (see run_log)."""
+    import functools
+
+    @functools.wraps(run)
+    def wrap(project, job, *a, log=print, **k):
+        job = project.job(job)
+        with run_log([job], log, run.__name__) as lg:
+            return run(project, job, *a, log=lg, **k)
+    return wrap
 
     def __str__(self):
         return self.name

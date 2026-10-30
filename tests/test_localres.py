@@ -71,3 +71,26 @@ def test_fsc_files(tmp_path):
     import xml.etree.ElementTree as ET
     pts = ET.parse(tmp_path / "fsc.xml").getroot().findall("coordinate")
     assert len(pts) == 33 and math.isclose(float(pts[0].find("y").text), 1.0)
+
+
+def test_auto_mask_and_content_limit():
+    """auto_mask covers a blob above the noise and drops a small noise island; Sharpen's FSC stops where the half
+    maps stop (a refinement reconstructs only a little beyond its resolution)."""
+    import torch
+    from celeris2d.masks import auto_mask
+    from celeris2d.sharpen import SharpenSettings, postprocess
+    n, apix = 64, 2.0
+    r = np.indices((n, n, n)) - n / 2
+    blob = (np.sqrt((r ** 2).sum(0)) < 12).astype(np.float32)
+    island = (np.sqrt(((r - np.array([20, 20, 20])[:, None, None, None]) ** 2).sum(0)) < 1.5).astype(np.float32)
+    rng = np.random.default_rng(0)
+    sig = blob + 0.4 * island
+    h1 = sig + 0.3 * rng.standard_normal(sig.shape).astype(np.float32)
+    h2 = sig + 0.3 * rng.standard_normal(sig.shape).astype(np.float32)
+    m, info = auto_mask(h1, h2, apix, lowpass_a=8.0)
+    assert m[blob > 0].min() > 0.99 and m[n // 2 + 20, n // 2 + 20, n // 2 + 20] < 0.01 and info["pieces_kept"] == 1
+    # zero the half maps beyond shell 20: no FSC is reported there
+    k = np.sqrt(sum(g ** 2 for g in np.meshgrid(*[np.fft.fftfreq(n) * n] * 3, indexing="ij")))
+    cut = [np.fft.ifftn(np.fft.fftn(h) * (k <= 20)).real.astype(np.float32) for h in (h1, h2)]
+    out = postprocess(cut[0], cut[1], m, apix, SharpenSettings(), dev="cuda" if torch.cuda.is_available() else "cpu")
+    assert np.isnan(out["fsc"]["masked"][25:]).all() and abs(out["content_to_a"] - n * apix / 20) < 0.01

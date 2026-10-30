@@ -27,7 +27,7 @@ import torch
 from . import picking as pk
 from . import preprocess as pp
 from .engine import ctf_2d, freqs
-from .project import PARTICLE_JOBS, Job, Project
+from .project import Job, PARTICLE_JOBS, Project, logged
 
 
 @dataclass
@@ -62,12 +62,12 @@ def _half_maps(project: Project, rj: Job, bi: int, apix: float, max_res: float, 
     from .jobs import map_to_box
     out = []
     summ = project.summary_of(rj)
-    with mrcfile.open(os.path.join(rj.path, "mask.mrc"), permissive=True) as f:
+    with mrcfile.open(rj.find("mask.mrc"), permissive=True) as f:
         mask = np.asarray(f.data, np.float32)
     fsc = np.asarray(summ["fsc_solvent"], np.float64)
     box_a_r = summ["box"] * summ["apix"]
     for h in (1, 2):
-        with mrcfile.open(os.path.join(rj.path, f"half{h}_unfil.mrc"), permissive=True) as f:
+        with mrcfile.open(rj.find(f"half{h}_unfil.mrc"), permissive=True) as f:
             v, ap = np.asarray(f.data, np.float32), float(f.voxel_size.x)
         v = map_to_box(v * mask, ap, bi, apix).to(dev)
         k = torch.fft.fftfreq(bi, device=dev) * bi
@@ -160,6 +160,7 @@ def _frame_positions(mic, centre_a: np.ndarray, dev) -> torch.Tensor:
     return (c[:, None] - s) / mic.apix
 
 
+@logged
 def run_polish(project: Project, job, log=print) -> dict:
     from multiprocessing import shared_memory
     from .pipeline import _decode_pool, _decode_shm
@@ -330,9 +331,9 @@ def run_polish(project: Project, job, log=print) -> dict:
     project.consolidate(job)
     tt = project.table(job, "particles").read(["track_rms_a", "track_mean_a"])
     tr, mv_ = tt["track_rms_a"], tt["track_mean_a"]
-    np.savez(os.path.join(job.path, "frame_weights.npz"), B=B_fr.cpu().numpy(), scale=s_fr.cpu().numpy(),
+    np.savez(job.out("frame_weights.npz"), B=B_fr.cpu().numpy(), scale=s_fr.cpu().numpy(),
              a_raw=a_raw.cpu().numpy(), sigma2=sig2.cpu().numpy(), weights=w.cpu().numpy(), apix=mic_apix, box=bi)
-    _figure(os.path.join(job.path, "polish.png"), B_rel.cpu().numpy(), (s_fr / s_fr.max()).cpu().numpy(),
+    _figure(job.out("polish.png"), B_rel.cpu().numpy(), (s_fr / s_fr.max()).cpu().numpy(),
             w.cpu().numpy(), box_a, tr, job.name)
     summ = dict(particles=int(len(P["uid"])), micrographs=int(len(movies)), box=box, apix=out_apix,
                 box_a=round(box * out_apix, 1), max_res_a=round(max_res, 2),

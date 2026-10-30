@@ -56,7 +56,7 @@ def export(project: Project, job, fmt: str) -> str:
 
 def _relion_movies(project, job):
     mv = project.movies(job)
-    return _star(os.path.join(job.path, "movies.star"),
+    return _star(job.out("movies.star"),
                  {"optics": _optics(project, job), "movies": pd.DataFrame(
                      dict(rlnMicrographMovieName=mv["path"], rlnOpticsGroup=1))})
 
@@ -68,12 +68,12 @@ def _relion_micrographs(project, job):
     base = dict(rlnMicrographName=mi["path"], rlnOpticsGroup=1,
                 rlnAccumMotionTotal=[m.get("motion_path_a", 0) / (job.params["apix"] * job.params["bin"]) for m in meta])
     opt = _optics(project, job)
-    _star(os.path.join(job.path, "corrected_micrographs.star"), {"optics": opt, "micrographs": pd.DataFrame(base)})
+    _star(job.out("corrected_micrographs.star"), {"optics": opt, "micrographs": pd.DataFrame(base)})
     ctf = pd.DataFrame(dict(base, rlnDefocusU=mi["defocus_u"], rlnDefocusV=mi["defocus_v"],
                             rlnCtfAstigmatism=mi["defocus_u"] - mi["defocus_v"], rlnDefocusAngle=mi["defocus_angle"],
                             rlnCtfFigureOfMerit=[m.get("ctf_score", 0) for m in meta],
                             rlnCtfMaxResolution=mi["ctf_fit_res"]))
-    return _star(os.path.join(job.path, "micrographs_ctf.star"), {"optics": opt, "micrographs": ctf})
+    return _star(job.out("micrographs_ctf.star"), {"optics": opt, "micrographs": ctf})
 
 
 def _relion_picks(project, job):
@@ -90,7 +90,7 @@ def _relion_picks(project, job):
                                             rlnAutopickFigureOfMerit=z["score"][k], rlnClassNumber=0,
                                             rlnAnglePsi=-999.0))})
         rows.append(dict(rlnMicrographName=m["path"], rlnMicrographCoordinates=project.rel(cpath)))
-    return _star(os.path.join(job.path, "autopick.star"), {"coordinate_files": pd.DataFrame(rows)})
+    return _star(job.out("autopick.star"), {"coordinate_files": pd.DataFrame(rows)})
 
 
 def relion_particle_blocks(project, job) -> dict:
@@ -109,7 +109,7 @@ def relion_particle_blocks(project, job) -> dict:
 def _relion_particles(project, job):
     b = relion_particle_blocks(project, job)
     b["particles"] = b["particles"].drop(columns=["celUid", "celMovie"])
-    return _star(os.path.join(job.path, "particles.star"), b)
+    return _star(job.out("particles.star"), b)
 
 
 def job_source(job_dir: str, uids=None, **kw):
@@ -171,6 +171,6 @@ def _cryosparc_particles(project, job):
     a["location/micrograph_psize_A"] = p["mic_apix"]
     a["location/center_x_frac"] = p["x_a"] / (p["mic_nx"] * p["mic_apix"])
     a["location/center_y_frac"] = p["y_a"] / (p["mic_ny"] * p["mic_apix"])
-    path = os.path.join(job.path, "particles.cs")
+    path = job.out("particles.cs")
     _atomic(path, lambda t: np.save(open(t, "wb"), a))
     return path

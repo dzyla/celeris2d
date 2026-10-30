@@ -897,15 +897,32 @@ def create(workdir, project_dir=None):
         j = prj.job(job)
         files = []
         for dp, dn, fn in os.walk(j.path):
-            dn[:] = [d for d in dn if d not in ("particles", "picks", "rejected", "session", "staging")]
+            dn[:] = sorted(d for d in dn if d not in ("particles", "picks", "rejected", "session", "staging", "movies"))
             for f in sorted(fn):
-                if f.endswith((".png", ".mrc", ".mrcs", ".star", ".cs", ".md")):
+                if f.endswith((".png", ".mrc", ".mrcs", ".star", ".cs", ".csg", ".json", ".xml", ".csv", ".md")) \
+                        and f not in ("job.json", "summary.json"):
                     full = os.path.join(dp, f)
                     files.append(dict(path=prj.rel(full), size=os.path.getsize(full)))
+        movies = os.path.join(j.path, "figures", "movies")
         run = proj_state["runs"].get(j.name)
         return dict(name=j.name, type=j.type, status=j.status, params=j.params, summary=prj.summary_of(j),
                     lineage=prj.lineage(j), dependents=prj.dependents(j), files=files,
+                    movie_figures=len(os.listdir(movies)) if os.path.isdir(movies) else 0,
+                    log=prj.rel(j.log_path) if os.path.exists(j.log_path) else None,
                     error=run["error"] if run else None)
+
+    @app.get("/api/project/log")
+    def project_log(job: str, offset: int = 0):
+        """The job's run log from byte `offset` on (the page polls it while the job runs)."""
+        prj = _prj()
+        j = prj.job(job)
+        if not os.path.exists(j.log_path):
+            return dict(text="", offset=0, status=j.status)
+        with open(j.log_path, "rb") as fh:
+            size = fh.seek(0, 2)
+            start = offset if 0 <= offset <= size else max(0, size - 200_000)
+            fh.seek(start)
+            return dict(text=fh.read().decode(errors="replace"), offset=size, status=j.status)
 
     @app.get("/api/project/file")
     def project_file(path: str):

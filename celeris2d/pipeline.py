@@ -32,7 +32,7 @@ import torch
 from . import picking as pk
 from . import preprocess as pp
 from .engine import Optics
-from .project import PARTICLE_JOBS, Job, Project, particle_uids
+from .project import PARTICLE_JOBS, Job, Project, particle_uids, run_log
 
 
 @dataclass
@@ -448,8 +448,8 @@ def overview(project: Project, job) -> str:
         panels = [("Particles per micrograph", "particles", df.particles)]
     if not len(df):
         return ""
-    df.to_csv(os.path.join(job.path, "micrographs.csv"), index=False, float_format="%.4g")
-    path = os.path.join(job.path, "overview.png")
+    df.to_csv(job.out("micrographs.csv"), index=False, float_format="%.4g")
+    path = job.out("overview.png")
     overview_figure(path, panels, f"{job.type}: all micrographs", f"{job.name} · {len(df):,} micrographs")
     return path
 
@@ -505,6 +505,15 @@ def _decode_pool(n: int):
 
 def run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: threading.Event | None = None,
         progress=None, finish_jobs: bool = True) -> dict:
+    jobs = [project.job(j) for j in jobs]
+    with run_log(jobs, log, "movies " + " -> ".join(j.type for j in jobs)) as lg:
+        out = _run(project, jobs, movie_ids, lg, stop, progress, finish_jobs)
+        lg(f"{out}")
+        return out
+
+
+def _run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: threading.Event | None = None,
+         progress=None, finish_jobs: bool = True) -> dict:
     """A chain of jobs (MotionCtf [-> Pick [-> Extract]]) over movies (default: all movies of the MotionCtf job's
     Import job), overlapped: worker processes decode the next movies while the GPU works on the current one, the
     micrograph and picks stay on the GPU between the jobs, files and figures are written on other threads."""
@@ -560,6 +569,8 @@ def run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thre
         return time.time()
 
     cur: list = [None]
+    t_start, last_log = time.time(), [time.time()]
+    log(f"{len(todo)} of {len(movie_ids)} movies to do")
     try:
         with ThreadPoolExecutor(1) as figs, _Writer() as io:     # one writer: catalog order kept
             while True:
@@ -589,6 +600,11 @@ def run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thre
                 n += 1
                 if progress:
                     progress(n, len(todo))
+                if time.time() - last_log[0] > 30 or n == len(todo):   # the run log: a line every ~30 s
+                    last_log[0] = time.time()
+                    el = time.time() - t_start
+                    log(f"{n}/{len(todo)} movies, {el / n:.2f} s per movie"
+                        + (f", ~{el / n * (len(todo) - n) / 60:.1f} min left" if n < len(todo) else ""))
             t = time.time()
         io.check()                                       # a failed write (e.g. a full disk) fails the run
         tm["writes_after_last"] = time.time() - t

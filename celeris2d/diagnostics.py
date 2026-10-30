@@ -120,7 +120,9 @@ def write_fsc(stem: str, curves: dict, box_a: float, resolution_a: float | None 
     with open(stem + ".json", "w") as f:
         json.dump(dict(meta, spatial_frequency_inv_a=k.round(6).tolist(),
                        resolution_a_per_shell=[None if not np.isfinite(a) else round(float(a), 3) for a in ang],
-                       curves={nm: cur[nm].round(5).tolist() for nm in names}), f, indent=None)
+                       curves={nm: [None if np.isnan(x) else x for x in cur[nm].round(5).tolist()] for nm in names}),
+                  f, indent=None)
+    cur = {nm: np.nan_to_num(c, nan=0.0) for nm, c in cur.items()}   # no content in a shell: FSC 0 (star / xml)
     lab = [nm for nm in names if nm in _STAR]
     with open(stem + ".star", "w") as f:
         f.write("# written by celeris2d\n\ndata_general\n\n")
