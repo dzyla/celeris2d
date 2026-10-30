@@ -370,7 +370,9 @@ def process_movie_motion(project: Project, job: Job, movie_id: int, frames: np.n
     mpath = job.per_movie("Micrographs", mv, ".mrc")
 
     def write():                                     # files first, then the catalog entry that says they exist
-        project.write_mrc(mpath, data, mic.apix, s.dtype)
+        used = project.write_mrc(mpath, data, mic.apix, s.dtype)
+        if used != s.dtype:                          # values beyond float16 (raw-count micrographs)
+            stats["stored_dtype"] = used
         st = dict(stats, movie=mv["path"], micrograph=project.rel(mpath), apix=mic.apix, shape=shape,
                   defocus_u=fit.defocus_u, defocus_v=fit.defocus_v, angle=fit.angle, fit_res_a=fit.fit_res_a,
                   shifts=sh.tolist(), local=None if not mic.local else
