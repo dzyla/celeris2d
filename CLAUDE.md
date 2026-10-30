@@ -72,7 +72,7 @@ Layers, bottom to top:
    `sharpen.py`: Sharpen, `ctfrefine.py`: per-particle defocus (CtfRefine, a particle job that points at the
    stacks it refined; `Project.particles` prefers per-particle defocus columns), `masking.py`: solvent masks
    (`auto_mask` also runs inside `refine_particles` every iteration: Refine3D `mask="auto"`; `make_mask` with user
-   regions / segments; `masks.py` is Sharpen's wrapper), `localres.py`: local resolution, `diagnostics.py`: FSC files, angular statistics): the
+   regions / segments; `masks.py` is Sharpen's wrapper), `localres.py`: local resolution, `diagnostics.py`: FSC files, angular statistics, `mapscore.py`: MapScore, particles vs a map against phase-randomised controls with per-2D-class shares): the
    movies -> particles -> 3D project store and its jobs
    (layout and rules in docs/project-design.md: `jobs/NNN_<type>_<label>/` small results, `data/NNN/` heavy and
    purgeable, catalog `project.db`, particle uid/key, selections as uid lists); `pipeline.run` overlaps decoding

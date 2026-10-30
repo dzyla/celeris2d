@@ -810,6 +810,7 @@ def registry() -> dict[str, JobSpec]:
     from .masking import MaskCreateSettings, mask_job, run_mask
     from .polish import PolishSettings, polish_job, run_polish
     from .sharpen import SharpenSettings, run_sharpen, sharpen_job
+    from .mapscore import MapScoreSettings, mapscore_job, run_mapscore
     specs = [
         JobSpec("Curate", "micrographs kept for picking: limits on CTF fit, defocus, astigmatism and motion",
                 CurateSettings, (Input("micrographs", ("MotionCtf",), doc="the motion-corrected, CTF-fitted micrographs"),),
@@ -858,6 +859,14 @@ def registry() -> dict[str, JobSpec]:
                 key=lambda s: (f"{_n(s.get('resolution_a'), 2)} Å · B {_n(s.get('b_factor'))}" + warn_mark(s))
                 if s.get("resolution_a") else "",
                 figures=("postprocess.png", "localres.png")),
+        JobSpec("MapScore", "particles vs a 3D map: per-particle fit against a phase-randomised control, per 2D class "
+                "share that fits (an objective class selection proposal)", MapScoreSettings,
+                (Input("particles", _PARTICLES + ("Class2D",), doc="particles; a Class2D job also gets per-class shares"),
+                 Input("map", _POSES, doc="the map the particles are scored against")),
+                mapscore_job, run_mapscore,
+                key=lambda s: f"{_n(s.get('fit', 0) * 100, 1)} % fit · {len(s.get('proposed_classes') or [])} classes"
+                if s.get("particles") else "",
+                figures=("mapscore.png",)),
     ]
     return {sp.type: sp for sp in specs}
 
