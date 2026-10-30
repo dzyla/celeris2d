@@ -6,7 +6,8 @@
     export(project, job, "cryosparc")   Extract: particles.cs (blob, CTF, location; uid = Celeris2D particle uid)
 
 Paths in .star files are relative to the project directory: run RELION there. Particles are stored with white
-protein (RELION's --invert_contrast; cryoSPARC blob/sign +1).
+protein (RELION's --invert_contrast). cryoSPARC needs blob/sign -1 for them: dz_2025_10 particles imported with +1
+refined to an inverted map (skew -5.5) at 7 A; with -1 to 4.76 A, positive density (cryoSPARC v5.0.6 NU refinement).
 """
 from __future__ import annotations
 
@@ -185,7 +186,7 @@ def _cryosparc_particles(project, job):
     a["blob/idx"] = p["slice"]
     a["blob/shape"] = np.stack([p["box"], p["box"]], 1)
     a["blob/psize_A"] = p["apix"]
-    a["blob/sign"] = 1.0                                    # stored with white protein
+    a["blob/sign"] = -1.0                                   # white protein: cryoSPARC -1 (see the module docstring)
     a["ctf/type"] = b"i"
     a["ctf/accel_kv"], a["ctf/cs_mm"], a["ctf/amp_contrast"] = o.voltage_kv, o.cs_mm, o.q0
     a["ctf/df1_A"], a["ctf/df2_A"] = p["defocus_u"], p["defocus_v"]

@@ -159,6 +159,10 @@ claude mcp add celeris2d -- ssh <gpu-host> ~/miniconda3/envs/celeris2d/bin/celer
 ```
 
 ## Measured results
+**Whole 3D chain vs cryoSPARC v5.0.6, same 38k particles, one RTX PRO 4000 each** (docs/benchmark-cryosparc-dz.md):
+17.3 vs 30.1 min (NU refinement 2.8x, heterogeneous 4.9x faster; 3D classification 2.6x slower); cryoSPARC's NU map is
+better, 4.76 vs 5.28 A with the same mask.
+
 **RELION tutorial β-gal (Tutorial5.0 Extract/job018, 4,452 particles, 256 px, RTX 5080)** vs RELION Class2D (K=20, same GPU):
 RELION 524 s, 16/20 populated classes, 76.7 % ψ-consistent with the 3D refinement, half-set FRC 7.75 Å;
 celeris2d 26–40 s, 20/20, 79–81 %, 7.2–7.4 Å.
