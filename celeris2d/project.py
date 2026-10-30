@@ -260,6 +260,11 @@ class run_log:
         return False
 
 
+def _write_text(path: str, text: str):
+    with open(path, "w") as f:
+        f.write(text)
+
+
 def logged(run):
     """A job's run function (project, job, ..., log=) also writes its log to the job's run log (see run_log)."""
     import functools
@@ -414,13 +419,16 @@ class Project:
 
     def summary_of(self, ref) -> dict:
         p = os.path.join(self.job(ref).path, "summary.json")
-        return json.load(open(p)) if os.path.exists(p) else {}
+        if not os.path.exists(p):
+            return {}
+        with open(p) as f:
+            return json.load(f)
 
     def _write_job_json(self, job: Job):
         d = dict(id=job.id, type=job.type, name=job.name, label=job.label, status=job.status,
                  inputs={i: self.job(i).name for i in job.inputs}, params=job.params, data=self.rel(job.data_path),
                  celeris2d=_version(), updated=time.time())
-        _atomic(os.path.join(job.path, "job.json"), lambda t: json.dump(d, open(t, "w"), indent=1, default=str))
+        _atomic(os.path.join(job.path, "job.json"), lambda t: _write_text(t, json.dumps(d, indent=1, default=str)))
 
     def write_index(self):
         """JOBS.md: one line per job, readable without any tool."""
@@ -435,7 +443,7 @@ class Project:
             key = key_of(r.type, self.summary_of(int(r.id)), reg).replace("|", "/")
             ins = ", ".join(f"{i:03d}" for i in json.loads(r.inputs))
             rows.append(f"| {r.name} | {r.status} | {ins} | {key} |")
-        _atomic(os.path.join(self.root, "JOBS.md"), lambda t: open(t, "w").write("\n".join(rows) + "\n"))
+        _atomic(os.path.join(self.root, "JOBS.md"), lambda t: _write_text(t, "\n".join(rows) + "\n"))
 
     def lineage(self, ref) -> list[str]:
         """The job and every job it was made from (folder names), nearest first."""
