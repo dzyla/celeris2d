@@ -234,7 +234,24 @@ class Params:
     reseed_until: float = 0.9       # ... during the first reseed_until * n_iter iterations, never in full passes.
                                     # 0.7 left 4-7 of 50 classes empty on J1798 (they empty out once reseeding stops);
                                     # 0.9: 1-3, more distinct views. Reseeding late only below 0.02 N/K: no better
+    reseed_full: bool = True        # keep reseeding during the full passes (all but the last two). Off, a class that
+                                    # empties in the full passes stays empty (J1798: pop[min] 181 -> 0 at the first
+                                    # full pass, 2 empty classes per run)
+    reseed_mode: str = "split"      # "split": the largest class is split along the first principal component of its
+                                    # members (see _split_class); "noise": a copy of the largest class + 30 % noise.
+                                    # A noise copy explains the same particles as its parent, loses, is Wiener-
+                                    # filtered to a blob and dies once reseeding stops (J1798 classes 5, 6).
+                                    # split + reseed_full + recenter_detrend vs the old defaults, 3 seeds, one RTX
+                                    # PRO 4000: empty classes dz01 1.0 -> 0, J1798 2.0 -> 0, tiny (< 2 % N/K) dz01
+                                    # 2.3 -> 0, dz03 0.3 -> 0; F1 vs curated sets J75 0.421 -> 0.428, J1798 0.525
+                                    # -> 0.527, RELION tutorial 0.845 -> 0.846; seed agreement and time unchanged
+                                    # (J75 46 s, J1798 170 -> 178 s within its 158-201 s spread)
     center_classes: bool = True
+    recenter_detrend: bool = True   # re-centre on the density after removing the best-fit plane inside the mask. A
+                                    # class of a background gradient (ice / carbon edge; Krios set dz01) was being
+                                    # re-centred by 40-55 A every iteration (other classes 2 A) until its particles'
+                                    # offsets hit max_offset_a and it emptied; with the plane removed 4-14 A and the
+                                    # edge classes persist as stable junk classes. Neutral on the curated sets.
     seed: int = 0
     batch_size: int = 0             # particles per GPU batch (0 = auto)
     polarity: int = 0               # 0 = auto-detect, +1 keep, -1 invert contrast
@@ -254,7 +271,9 @@ class Params:
                                     # within them. Not used to merge: J341's distinct views (ratio 0.97-0.99) and J1798's
                                     # near-identical lattice classes (0.99-1.00) overlap, so no threshold separates them
     gold_standard: bool = False     # each half-set is aligned only to classes built from its own half, so the
-                                    # half-set FRC (Wiener filter) cannot mistake a shared noise pattern for signal
+                                    # half-set FRC (Wiener filter) cannot mistake a shared noise pattern for signal.
+                                    # In practice the two half-classes drift apart and classes collapse: dz01 22 of
+                                    # 50 empty, est_res 13 -> 17 A; RELION tutorial F1 0.845 -> 0.830, 4 empty
     sigma_init_factor: float = 1.0  # >1: noise inflated at the start, annealed to 1 (cryoSPARC-style); off: hurt LoG separation
     sigma_anneal_start: int = 2
     sigma_anneal_iters: int = 15
@@ -854,6 +873,7 @@ class Classifier2D:
         # raised-cosine roll-off over the last 3 shells instead of a hard cut (no ringing / lattice artefacts)
         taper = 0.5 + 0.5 * torch.cos(math.pi * ((kr - (klim_rec - 3)) / 3).clamp(0, 1))
         ft = num_k * tau2f / (den_k * tau2f + sig) * fmask * taper
+        self._wien = dict(tau2f=tau2f, sig=sig, support=fmask * taper, b=b)   # this iteration's filter (_split_class)
         # a class holding less than one particle's weight (late iterations, no more reseeding) has no average: its
         # shell-mean data weight underflows (dm -> 1e-30), tau2 ~ 1e20 multiplies stray numerator values to |class|
         # ~1e15, |ref|^2 overflows in the next E-step and every particle's likelihood is NaN (J1798 loose mask,
@@ -912,7 +932,7 @@ class Classifier2D:
             self.log(f"[dup] it {it + 1}: most similar pairs (small, large, cross/self, self_s, self_l): "
                      + ", ".join(f"({a + 1},{b_ + 1} {r:.3f} {s0:.2f} {s1:.2f})" for a, b_, r, s0, s1 in top)
                      + f"; {sum(1 for d in self._dups if d[2] >= 1.0)} pairs >= 1")
-        reseeded = self._reseed(it, pop)
+        reseeded = self._reseed(it, pop, idx_all, b, s["klim"])
 
         changed = (old_cls != self.cls[idx_all])[seen_before].float().mean().item() if seen_before.any() else 1.0
         self.seen[idx_all] = True
@@ -1307,9 +1327,22 @@ class Classifier2D:
         if not given:
             shifts = torch.zeros((K, 2), device=self.dev)
         if center and not given:
-            thr = self.p.recenter_thresh * img.amax((1, 2), keepdim=True)
-            pos = torch.where(img > thr, img, torch.zeros_like(img))
             r = (torch.arange(b, device=self.dev, dtype=torch.float32) - b // 2) * apix
+            src = img
+            if self.p.recenter_detrend:
+                # centre of mass of the compact density only: a class of a background gradient (ice / carbon edge)
+                # has its centre of mass far off-centre and walks out of the box iteration after iteration, until
+                # its particles' offsets hit the cap and it dies. Remove the best-fit plane inside the mask first.
+                yy, xx = torch.meshgrid(r, r, indexing="ij")
+                # The plane is fitted on the outer ring of the mask (0.75-1 x its radius: background, or the
+                # gradient): fitted over the whole mask it tilts towards the heavier side of an asymmetric particle
+                # and moves that particle's own centre (synthetic ab initio test: orientations 0.09-0.45 vs >= 0.8)
+                basis = torch.stack([torch.ones_like(xx), xx, yy], -1).reshape(-1, 3)          # (b*b, 3)
+                ring = (mask * (torch.sqrt(xx * xx + yy * yy) >= 0.75 * self.radius_a)).reshape(-1, 1)
+                coef = torch.linalg.lstsq(basis * ring, (img.reshape(K, -1) * ring.T).T).solution   # (3, K)
+                src = (img - (basis @ coef).T.reshape(K, b, b)) * mask
+            thr = self.p.recenter_thresh * src.amax((1, 2), keepdim=True)
+            pos = torch.where(src > thr, src, torch.zeros_like(src))
             tot = pos.sum((1, 2)).clamp_min(1e-12)
             shifts = torch.stack([(pos.sum(1) * r).sum(1) / tot, (pos.sum(2) * r).sum(1) / tot], 1)
         ft = torch.fft.rfft2(img, norm="forward")
@@ -1359,20 +1392,32 @@ class Classifier2D:
         out.sort(key=lambda t: -t[2])
         return out
 
-    def _reseed(self, it, pop):
+    def _reseed(self, it, pop, idx_all=None, b=None, klim=None):
         p = self.p
-        if it >= min(int(p.reseed_until * p.n_iter), p.n_iter - p.n_full_iter) or p.reseed_frac <= 0:
+        last = min(int(p.reseed_until * p.n_iter), p.n_iter - p.n_full_iter)
+        if p.reseed_full:  # also in full passes, except the last two (they must converge, not restart)
+            last = max(last, p.n_iter - 2)
+        if it >= last or p.reseed_frac <= 0:
             return 0
         thr = p.reseed_frac * pop.sum() / p.n_classes
         small = torch.nonzero(pop < thr).flatten().tolist()
         n = 0
         for k in small:
             big = int(torch.argmax(pop))
-            noise = torch.randn(self.classes[big].shape, device=self.dev, dtype=torch.complex64)
-            amp = self.classes[big].abs().mean()
-            self.classes[k] = self.classes[big] + 0.3 * amp * noise * (self.classes[big] != 0)
-            if self.classes_h is not None:  # same split in both half-sets keeps class k matched between them
-                self.classes_h[:, k] = self.classes_h[:, big] + 0.3 * amp * noise * (self.classes_h[:, big] != 0)
+            split = None
+            if p.reseed_mode == "split" and idx_all is not None:
+                split = self._split_class(big, idx_all, b, klim)
+            if split is not None:
+                self.classes[k], self.classes[big] = split
+                if self.classes_h is not None:
+                    self.classes_h[:, k], self.classes_h[:, big] = self.classes[k], self.classes[big]
+            else:
+                noise = torch.randn(self.classes[big].shape, device=self.dev, dtype=torch.complex64)
+                amp = self.classes[big].abs().mean()
+                self.classes[k] = self.classes[big] + 0.3 * amp * noise * (self.classes[big] != 0)
+                if self.classes_h is not None:  # same split in both half-sets keeps class k matched between them
+                    self.classes_h[:, k] = self.classes_h[:, big] + 0.3 * amp * noise * (self.classes_h[:, big] != 0)
+            if self.classes_h is not None:
                 for S in (self.S_numh, self.S_denh):
                     S[:, k] = S[:, big] = 0.5 * S[:, big]
             self.prior[k] = self.prior[big] = 0.5 * self.prior[big]
@@ -1383,6 +1428,52 @@ class Classifier2D:
         if n:
             self.prior /= self.prior.sum()
         return n
+
+    def _split_class(self, big, idx_all, b, klim, n_max=1024):
+        """Two classes from the members of class `big` (particles of the last pass), split along the first
+        principal component of their aligned, phase-flipped, low-passed images (the direction of the largest real
+        variation inside the class: a different view, a ligand, a broken particle). Each side is reconstructed with
+        the Wiener filter of the parent class. A noise-perturbed copy of the parent (the alternative) explains the
+        same particles as the parent; the data cannot tell the two apart and one of them dies again once reseeding
+        stops. Returns (class_k, class_big) spectra at bmax, or None if the class has too few members."""
+        members = idx_all[self.cls[idx_all] == big]
+        if len(members) < 32 or getattr(self, "_wien", None) is None or self._wien["b"] != b:
+            return None
+        if len(members) > n_max:
+            members = members[torch.randperm(len(members), generator=self.rng)[:n_max]]
+        dev, ph = self.dev, TWO_PI / self.box_a
+        fy, fx = freqs(b, dev)
+        kr = torch.sqrt(fy[:, None] ** 2 + fx[None, :] ** 2)
+        lowpass = torch.exp(-0.5 * (kr / max(klim, 1.0)) ** 2)
+        al, pf, den = [], [], []
+        for i in range(0, len(members), 512):
+            j = members[i:i + 512]
+            ps, t, ctfp = self.psi[j].to(dev), self.offsets[j].to(dev), self.ctf_p[j].to(dev)
+            c = ctf_2d(ctfp, self.optics, fy, fx, self.box_a)
+            y = self._fetch(j, dev, b) * torch.exp(1j * ph * (fx[None, None, :] * t[:, 0, None, None]
+                                                                + fy[None, :, None] * t[:, 1, None, None]))
+            g = rot_grid(-ps, b, 2 * b)
+            al.append(F.grid_sample(upsample2(c * y, b)[:, None], g, align_corners=False)[:, 0])
+            pf.append(F.grid_sample(upsample2(torch.sign(c) * y * lowpass, b)[:, None], g, align_corners=False)[:, 0])
+            den.append(ctf_2d(ctfp, self.optics, fy, fx, self.box_a, ang_offset_deg=ps) ** 2)
+        al, pf, den = torch.cat(al), torch.cat(pf), torch.cat(den)
+        mask = soft_circle(b, self.radius_a / (self.box_a / b), 3.0, dev)
+        X = (pf * mask).flatten(1)
+        X = X - X.mean(0)
+        _, _, V = torch.pca_lowrank(X, q=1, center=False, niter=4)
+        proj = X @ V[:, 0]
+        side = proj > proj.median()
+        if side.sum() < 8 or (~side).sum() < 8:
+            return None
+        w = self._wien
+        tau2f = w["tau2f"][big]
+        out = []
+        for m in (~side, side):
+            num = torch.fft.rfft2(al[m].sum(0), norm="forward")
+            dn = den[m].sum(0)
+            ft = num * tau2f / (dn * tau2f + w["sig"]) * w["support"]
+            out.append(ft_resize(self._postprocess(ft[None], b, center=False)[0][0], self.bmax))
+        return out[0], out[1]
 
     # --------------------------------------------------------------------
     def run(self, active=None, n_classes=None, seed=None, resume=False):

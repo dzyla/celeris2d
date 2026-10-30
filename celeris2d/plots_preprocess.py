@@ -470,3 +470,56 @@ def shifts_figure(path: str, d: np.ndarray, per_mic: np.ndarray, title: str, dia
     title_block(fig, "Re-centring shifts", title)
     fig.savefig(path)
     plt.close(fig)
+
+
+@themed
+def regions_figure(path: str, img: np.ndarray, apix_img: float, cls: np.ndarray, area: dict, xy_kept: np.ndarray,
+                   xy_removed: np.ndarray, diameter_a: float, title: str = "", ref_xy_a: np.ndarray | None = None,
+                   ref_removed: np.ndarray | None = None, p_ice: np.ndarray | None = None):
+    """Regions of a micrograph (regions.py): the binned micrograph with the class map overlaid (ice unpainted), and
+    the picks kept (circles) vs removed by the region filter (crosses); reference particles (refined / ground truth)
+    as dots, those removed in a warning colour."""
+    from matplotlib.colors import ListedColormap
+    from .regions import CLASSES
+    fig, (a_map, a_pk) = plt.subplots(1, 2, figsize=(15, 6.6))
+    lo, hi = np.percentile(img, [0.5, 99.5])
+    for a in (a_map, a_pk):
+        a.imshow(img, cmap=GRAY, vmin=lo, vmax=hi, extent=(0, img.shape[1] * apix_img, img.shape[0] * apix_img, 0))
+        a.set_xticks([])
+        a.set_yticks([])
+    cols = [T.series[2], T.series[3], T.series[0], T.series[1], T.series[4]]              # ice film thick edge cont
+    rgba = np.zeros(cls.shape + (4,), np.float32)
+    for i, c in enumerate(cols):
+        rgba[cls == i, :3] = np.array(plt.matplotlib.colors.to_rgb(c))
+        rgba[cls == i, 3] = 0.0 if i == 0 else 0.45
+    a_map.imshow(rgba, extent=(0, img.shape[1] * apix_img, img.shape[0] * apix_img, 0), interpolation="nearest")
+    if p_ice is not None:
+        a_map.contour(np.linspace(0, img.shape[1] * apix_img, p_ice.shape[1]),
+                      np.linspace(0, img.shape[0] * apix_img, p_ice.shape[0]), p_ice, levels=[0.2],
+                      colors=[T.series[2]], linewidths=0.8)
+    hs = [plt.Line2D([], [], color=c, lw=6, alpha=1 if i == 0 else 0.6, label=f"{k} {100 * area.get(k, 0):.0f}%")
+          for i, (k, c) in enumerate(zip(CLASSES, cols))]
+    a_map.legend(handles=hs, loc="lower left", bbox_to_anchor=(0, -0.12), ncol=5, fontsize=8, frameon=False,
+                 handlelength=1.2, columnspacing=1.0)
+    a_map.set_title("Regions (ice unpainted; line: P(ice) = 0.2)")
+    th = np.linspace(0, 2 * math.pi, 40)
+    r = diameter_a / 2
+    for x, y in np.asarray(xy_kept).reshape(-1, 2):
+        a_pk.plot(x + r * np.cos(th), y + r * np.sin(th), color=T.series[0], lw=0.7)
+    rm = np.asarray(xy_removed).reshape(-1, 2)
+    if len(rm):
+        a_pk.scatter(rm[:, 0], rm[:, 1], s=18, marker="x", color=T.series[1], lw=0.8, label=f"removed {len(rm)}")
+    if ref_xy_a is not None and len(ref_xy_a):
+        ref = np.asarray(ref_xy_a).reshape(-1, 2)
+        bad = np.zeros(len(ref), bool) if ref_removed is None else np.asarray(ref_removed, bool)
+        a_pk.scatter(ref[~bad, 0], ref[~bad, 1], s=7, color=T.series[2], edgecolors="none", label=f"reference {len(ref)}")
+        if bad.any():
+            a_pk.scatter(ref[bad, 0], ref[bad, 1], s=40, marker="s", facecolors="none", edgecolors=STATUS["critical"],
+                         lw=1.2, label=f"reference removed {int(bad.sum())}")
+    a_pk.legend(loc="lower left", bbox_to_anchor=(0, -0.12), ncol=3, fontsize=8, frameon=False)
+    a_pk.set_title(f"Picks: {len(np.asarray(xy_kept).reshape(-1, 2))} kept, {len(rm)} removed by the region filter")
+    if title:
+        fig.suptitle(title, x=0.01, ha="left", color=T.ink, fontsize=12, fontweight="bold")
+    fig.tight_layout()
+    fig.savefig(path, dpi=100)
+    plt.close(fig)

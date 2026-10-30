@@ -217,7 +217,8 @@ def _background(jobs, movie_ids=None):
 def process_movies(movies_job: str, apix: float, dose_total: float, diameter_a: float, particle_a: float = 0.0,
                    bin: float = 1.0, gain: str = "", kv: float = 300.0, cs_mm: float = 2.7, amp_contrast: float = 0.1,
                    dark: bool = True, box_a: float = 0.0, particle_apix: float = 0.0, dtype: str = "float16",
-                   export: list[str] | None = None, figures: str = "outliers", flip_y: bool = False) -> str:
+                   export: list[str] | None = None, figures: str = "outliers", flip_y: bool = False,
+                   region_filter: bool = False) -> str:
     """Motion correction + CTF, blob picking and extraction of an Import job's movies, as three new jobs
     (MotionCtf, Pick, Extract) run together in the background; poll job_status. apix: movie pixel size (bin 2 for
     super-resolution); dose_total e/A^2 over all frames; diameter_a: blob for picking; particle_a: longest particle
@@ -225,13 +226,15 @@ def process_movies(movies_job: str, apix: float, dose_total: float, diameter_a: 
     particle_apix: bin particles to this pixel size; export: ['relion', 'cryosparc'] to also write their files;
     figures: all | outliers (+ the first micrograph) | none | a number N (the first N micrographs as they are
     processed, + the outliers at the end) - any figure can be drawn later by job_report. flip_y: mirror frames in y
-    (RELION's orientation of TIFF movies: its micrographs, coordinates and map hand)."""
+    (RELION's orientation of TIFF movies: its micrographs, coordinates and map hand). region_filter: the region
+    network (regions.py) drops candidates on film / thick ice / edges / contamination (~2 ms per micrograph; the
+    region map of each micrograph is stored with the Pick job for an overlay, pick column "region")."""
     from .pipeline import (ExtractSettings, MotionSettings, PickSettings, extract_job, motion_job, pick_job)
     prj = _p()
     imp = prj.job(movies_job)
     mc = motion_job(prj, imp, MotionSettings(apix, dose_total, bin, gain, kv, cs_mm, amp_contrast, dtype=dtype,
                                              figures=figures, flip_y=flip_y))
-    pj = pick_job(prj, mc, PickSettings(diameter_a, dark=dark, figures=figures))
+    pj = pick_job(prj, mc, PickSettings(diameter_a, dark=dark, figures=figures, region_filter=region_filter))
     ej = extract_job(prj, pj, ExtractSettings(particle_a or 1.3 * diameter_a, box_a, particle_apix=particle_apix,
                                               dtype=dtype, dark=dark, export=tuple(export or ())))
     _background([mc, pj, ej])
@@ -242,19 +245,21 @@ def process_movies(movies_job: str, apix: float, dose_total: float, diameter_a: 
 @server.tool()
 def pick_particles(micrographs_job: str, diameter_a: float, templates: str = "", template_classes: list[int] | None = None,
                    threshold: float | None = None, curate: str = "", particle_a: float = 0.0, box_a: float = 0.0,
-                   particle_apix: float = 0.0, dark: bool = True, figures: str = "outliers", label: str = "") -> str:
+                   particle_apix: float = 0.0, dark: bool = True, figures: str = "outliers", label: str = "",
+                   region_filter: bool = False) -> str:
     """Pick (and extract) the micrographs of a MotionCtf job again, in the background: a blob of diameter_a, or
     templates - a Class2D / Select job (class averages; template_classes: only these 1-based classes) or a
     Refine3D / InitialModel / HeteroRefine job (projections of its map). threshold: score (None: automatic, generous;
     template scores separate particles from background around 0.35-0.4 - check the pick figures). curate: a Curate
-    job (new_job Curate) - only the micrographs it accepts are picked. particle_a etc.: the extraction, as in
-    process_movies."""
+    job (new_job Curate) - only the micrographs it accepts are picked. region_filter: drop candidates on film /
+    thick ice / edges / contamination (regions.py; the map of each micrograph is stored for an overlay, pick column
+    "region"). particle_a etc.: the extraction, as in process_movies."""
     from .pipeline import ExtractSettings, PickSettings, extract_job, pick_job
     prj = _p()
     mc = prj.job(micrographs_job)
     s = PickSettings(diameter_a, dark=dark, threshold=threshold, figures=figures,
                      templates=prj.job(templates).id if templates else 0, template_classes=tuple(template_classes or ()),
-                     curate=prj.job(curate).id if curate else 0)
+                     curate=prj.job(curate).id if curate else 0, region_filter=region_filter)
     pj = pick_job(prj, mc, s, label=label)
     ej = extract_job(prj, pj, ExtractSettings(particle_a or 1.3 * diameter_a, box_a, particle_apix=particle_apix,
                                               dark=dark))

@@ -31,6 +31,7 @@ import torch
 
 from . import curate
 from . import picking as pk
+from . import regions as rg
 from . import preprocess as pp
 from .engine import Optics
 from .project import PARTICLE_JOBS, Job, Project, particle_uids, run_log
@@ -78,6 +79,9 @@ class PickSettings:
     n_projections: int = 40             # map templates: directions over the sphere
     angle_step: float = 0.0             # in-plane step (deg); 0: one working pixel at the particle's edge (~6 deg)
     curate: int = 0                     # a Curate job: only the micrographs it accepts are picked (and extracted)
+    region_filter: bool = False         # regions.py: drop candidates in film / thick ice / edges / contamination (the
+                                        # region map of every micrograph is kept in data/NNN/Regions/<stem>.npz; the
+                                        # candidate's region value is the pick column "region", kept if >= 0.1)
 
 
 @dataclass
@@ -392,21 +396,36 @@ def process_movie_pick(project: Project, job: Job, movie_id: int, log=print,
     img, apix, ctf = _load_mic(project, mic_job, movie_id)
     live = _live_figure(job, s.figures)
     c = pick_candidates(project, s, img, apix, ctf, optics_of(project, mic_job), keep_maps=live)
-    th = pk.auto_threshold(c.score) if s.threshold is None else s.threshold
+    cols = dict(xy_a=c.xy_a, score=c.score, local_std=c.local_std, local_mean=c.local_mean)
+    ok = np.ones(len(c.score), bool)
+    rm = None
+    if s.region_filter:                              # ~2-5 ms: the region map, then the candidates in pickable ice
+        rm = rg.region_map(img, apix, dark=s.dark, keep_input=live)
+        cols["region"] = rm.ice_margin(c.xy_a, 0.5 * s.diameter_a)
+        ok = cols["region"] >= rg.MIN_ICE
+        np.savez_compressed(job.per_movie("Regions", project.movie(movie_id), ".npz"), **rm.compact())
+    th = pk.auto_threshold(c.score[ok]) if s.threshold is None else s.threshold
     keep = np.zeros(len(c.score), bool)
     keep[pk.select(c, th, s.max_std, s.max_mean)] = True
-    cols = dict(xy_a=c.xy_a, score=c.score, local_std=c.local_std, local_mean=c.local_mean)
+    keep &= ok
     if c.template is not None:
         cols["template"] = c.template
     _mem_picks.clear()
     _mem_picks[(job.id, movie_id)] = dict(cols, keep=keep)
     project.add_picks(job, movie_id, cols, keep, th)
     if live:
-        from .plots_preprocess import picks_figure
+        from .plots_preprocess import picks_figure, regions_figure
         mv = project.movie(movie_id)
         args = (job.figure(mv), c, np.flatnonzero(keep), s.diameter_a, th)
         figures.submit(picks_figure, *args, title=mv["stem"]) if figures else picks_figure(*args, title=mv["stem"])
-    return dict(candidates=len(keep), kept=int(keep.sum()), threshold=th)
+        if rm is not None:
+            args = (job.figure(mv)[:-4] + "_regions.png", rm.binned.cpu().numpy(), rm.binned_apix, rm.classes(),
+                    rm.area(), c.xy_a[keep], c.xy_a[~ok], s.diameter_a)
+            figures.submit(regions_figure, *args, title=mv["stem"]) if figures else regions_figure(*args, title=mv["stem"])
+    out = dict(candidates=len(keep), kept=int(keep.sum()), threshold=th)
+    if rm is not None:
+        out["regions"] = rm.area()
+    return out
 
 
 _ctf_cache: dict = {}      # MotionCtf job id -> movie id -> (du, dv, angle, patch)
@@ -501,8 +520,10 @@ def rethreshold(project: Project, picks: Job, threshold: float | None = None, ma
     for m, a, b in zip(ids, start, end):
         c = pk.Candidates(np.stack([z["x_a"][a:b], z["y_a"][a:b]], 1), z["score"][a:b], z["local_std"][a:b],
                           z["local_mean"][a:b])
-        th = pk.auto_threshold(c.score) if threshold is None else threshold
+        ok = z["region"][a:b] >= rg.MIN_ICE if "region" in z else np.ones(b - a, bool)   # the region filter, if it ran
+        th = pk.auto_threshold(c.score[ok]) if threshold is None else threshold
         keep[a + pk.select(c, th, max_std, max_mean)] = True
+        keep[a:b] &= ok
         rows.append((new.id, int(m), "picks", int(b - a), int(keep[a:b].sum()), float(th), time.time()))
     project.table(new, "picks").write({k: (keep if k == "keep" else v) for k, v in z.items() if k != "movie"},
                                       z["movie"])
@@ -825,7 +846,7 @@ def draw_figure(project: Project, job, movie_id: int) -> str:
         movie_figure(path, _cpu(mic), fit, title=mv["stem"],
                      frc_eo=pp.frc(*mic.halves, mic.apix, n_shell=120) if mic.halves else None)
     elif job.type == "Pick":
-        from .plots_preprocess import picks_figure
+        from .plots_preprocess import picks_figure, regions_figure
         s = PickSettings(**{k: v for k, v in job.params.items() if k in PickSettings.__dataclass_fields__})
         mic_job = project.job(job.params["micrographs"])
         img, apix, ctf = _load_mic(project, mic_job, movie_id)
@@ -835,6 +856,11 @@ def draw_figure(project: Project, job, movie_id: int) -> str:
         th = float(z["threshold"])
         keep = np.flatnonzero(pk.match(c.xy_a, z["xy_a"][z["keep"]], 1.0)[0])
         picks_figure(path, c, keep, s.diameter_a, th, title=mv["stem"])
+        if s.region_filter:
+            rm = rg.region_map(img, apix, dark=s.dark, keep_input=True)
+            ok = rm.ice_margin(c.xy_a, 0.5 * s.diameter_a) >= rg.MIN_ICE
+            regions_figure(path[:-4] + "_regions.png", rm.binned.cpu().numpy(), rm.binned_apix, rm.classes(), rm.area(),
+                           c.xy_a[keep], c.xy_a[~ok], s.diameter_a, title=mv["stem"])
     else:
         raise ValueError(f"no per-micrograph figures for {job.type} jobs")
     return path

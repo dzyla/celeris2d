@@ -108,6 +108,21 @@ def test_hard_pose_local_refine(tmp_path, stack):
     _check(s, "refined", stack)
 
 
+def test_more_classes_than_views_none_empty(tmp_path, stack):
+    """K > number of distinct views: every class must still hold particles at the end (reseeding splits the
+    largest class along its real variation and goes on into the full passes), and the shapes stay separated."""
+    s = _session(tmp_path, stack)
+    s.classify("k8", K=8, n_iter=15, reseed_mode="split", reseed_full=True, recenter_detrend=True)
+    pops = np.bincount(s.results["k8"].labels, minlength=8)
+    assert (pops > 0).all(), f"empty classes: {pops.tolist()}"
+    # several classes per shape: a split class may take a shape's pseudo-symmetric flips, so only the class
+    # purity is checked here (the angle consistency is covered by the K=3 tests)
+    _, labels, _ = stack
+    pred = s.results["k8"].labels
+    acc = sum(np.bincount(labels[pred == k], minlength=3).max() for k in np.unique(pred)) / len(pred)
+    assert acc >= 0.9, f"only {acc:.3f} of particles in the class of their shape"
+
+
 def test_stop_and_continue(tmp_path, stack):
     s = _session(tmp_path, stack)
 

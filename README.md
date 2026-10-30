@@ -60,7 +60,11 @@ cryoSPARC pose/shift by rebuilding J43's class averages (correlation 0.82 vs ≤
     envelope of its own density. Off by default (as in cryoSPARC): on small or weak particles the envelope
     takes in surrounding noise and grows a honeycomb; it helps clean, well-separated views;
   * fixed-frame artefact pixels (detector stripes) are found from the mean power spectrum and notched;
-  * re-centring on density > 20 % of the class maximum.
+  * re-centring on density > 20 % of the class maximum, after removing the best-fit background plane (a class
+    of an ice or carbon edge otherwise walks out of the box and empties);
+  * **no empty classes**: a class that falls below a quarter of its share is re-seeded by splitting the largest
+    class along the first principal component of its members (two real, distinct averages, not a noisy copy
+    that dies again), during online iterations and full passes alike (all but the last two).
 * **Speed**: shifts are separable, so the pose search for a batch is two batched complex GEMMs, the
   back-projection the same GEMMs transposed (fp16 tensor cores, exact marginalisation). Particles are
   stored once as fp16 spectra (GPU if they fit, else pinned RAM) and streamed in random file order —
