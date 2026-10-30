@@ -59,8 +59,9 @@ class MotionSettings:
                                         # applied as is. True gives RELION's micrographs, pick coordinates,
                                         # astigmatism angles and map hand; any gain is then oriented to the flipped frames
     dtype: str = "float16"              # micrographs on disk: float16 (half the space) or float32
-    figures: str | int = "outliers"     # control figures: all | outliers (+ the first micrograph) | none | N (the
-                                        # first N micrographs, drawn as they are processed, + the outliers at the end)
+    figures: str | int = "sample"       # control figures: sample (drawn while the run goes: micrographs 1, 2, 5, 10, 20,
+                                        # 50, then every 100th; + the outliers at the end) | all | outliers (+ the first
+                                        # micrograph, at the end) | none | N (the first N, live, + the outliers)
 
 
 @dataclass
@@ -71,7 +72,8 @@ class PickSettings:
     threshold: float | None = None      # None: automatic per micrograph (generous; 2D cleans up)
     max_std: float = 2.0                # contamination filters (picking.select)
     max_mean: float = 3.0
-    figures: str | int = "outliers"     # all | outliers (+ the first micrograph) | none | N (first N live + outliers)
+    figures: str | int = "sample"       # sample (live: micrographs 1, 2, 5, 10, 20, 50, every 100th; + outliers) | all |
+                                        # outliers (+ the first micrograph) | none | N (first N live + outliers)
     templates: int = 0                  # template picking instead of the blob: a Class2D / Select job (its class
                                         # averages) or a Refine3D / InitialModel / HeteroRefine / Sharpen job (projections
                                         # of its map); diameter_a still sets the binning, window and spacing
@@ -221,6 +223,8 @@ _mem_picks: dict = {}     # (pick job id, movie_id) -> picks
 _mem_ctf: dict = {}       # (MotionCtf job id, movie_id) -> (du, dv, angle, patch): the catalog row is written on the
                           # I/O thread, and extraction can reach a micrograph first (single-frame micrographs)
 _n_live: dict = {}        # job id -> figures drawn while processing (figures = N)
+_n_seen: dict = {}        # job id -> micrographs processed in this run (figures = "sample")
+_SAMPLE = {1, 2, 5, 10, 20, 50}
 
 
 def _live_figure(job: Job, figures) -> bool:
@@ -228,6 +232,9 @@ def _live_figure(job: Job, figures) -> bool:
     count starts from the figures already in the job's folder, so a resumed job does not draw N more)."""
     if figures == "all":
         return True
+    if figures == "sample":                          # early ones (is the data good?) then a steady trickle
+        k = _n_seen[job.id] = _n_seen.get(job.id, 0) + 1
+        return k in _SAMPLE or k % 100 == 0
     try:
         n = int(figures)
     except (TypeError, ValueError):
@@ -559,6 +566,7 @@ def finish(project: Project, job: Job, status: str = "finished") -> dict:
     if job.type in ("MotionCtf", "Pick", "Extract"):
         project.consolidate(job)
     fg = job.params.get("figures")
+    _n_seen.pop(job.id, None)
     if job.type in ("MotionCtf", "Pick") and fg not in ("all", "none") and status == "finished":  # outliers / N
         mc = project.ancestor(job, "MotionCtf")
         st = project.micrograph_stats(mc)
@@ -570,6 +578,18 @@ def finish(project: Project, job: Job, status: str = "finished") -> dict:
                 draw_figure(project, job, i)
             except Exception as e:                    # a figure never fails a job
                 print(f"[{job.name}] figure for movie {i}: {e!r}")
+    summ = _movie_summary(project, job, status)
+    if status == "finished" and job.type in ("MotionCtf", "Pick", "Extract"):
+        try:
+            overview(project, job)
+        except Exception as e:                        # a figure never fails a job
+            print(f"[{job.name}] overview figure: {e!r}")
+    project.set_status(job, status, summ)
+    return summ
+
+
+def _movie_summary(project: Project, job: Job, status: str) -> dict:
+    """The numbers of a MotionCtf / Pick / Extract job so far (finished: also re-centring report and exports)."""
     if job.type == "MotionCtf":
         summ = project.micrograph_stats(job)
     elif job.type == "Pick":
@@ -589,19 +609,24 @@ def finish(project: Project, job: Job, status: str = "finished") -> dict:
                 summ.update(recenter_report(project, job))
             except Exception as e:                    # a figure never fails a job
                 print(f"[{job.name}] re-centring report: {e!r}")
-        if job.params.get("export"):
+        if job.params.get("export") and status == "finished":
             from .export import export
             for fmt in job.params["export"]:
                 summ[f"export_{fmt}"] = project.rel(export(project, job, fmt))
     else:
         summ = {}
-    if status == "finished" and job.type in ("MotionCtf", "Pick", "Extract"):
-        try:
-            overview(project, job)
-        except Exception as e:                        # a figure never fails a job
-            print(f"[{job.name}] overview figure: {e!r}")
-    project.set_status(job, status, summ)
     return summ
+
+
+def _refresh(project: Project, job: Job, done: int, of: int):
+    """While a run goes: the job's summary.json (numbers so far + progress) and overview.png, so its folder shows how
+    the data look before the end."""
+    try:
+        summ = _movie_summary(project, job, "running")
+        project.write_summary(job, dict(summ, progress=dict(movies_done=done, movies_to_do=of)))
+        overview(project, job)
+    except Exception as e:                            # a figure never fails a job
+        print(f"[{job.name}] progress refresh: {e!r}")
 
 
 def recenter_report(project: Project, job) -> dict:
@@ -782,7 +807,7 @@ def _run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thr
         return time.time()
 
     cur: list = [None]
-    t_start, last_log = time.time(), [time.time()]
+    t_start, last_log, last_refresh = time.time(), [time.time()], [time.time()]
     log(f"{len(todo)} of {len(movie_ids)} movies to do")
     try:
         with ThreadPoolExecutor(1) as figs, _Writer() as io:     # one writer: catalog order kept
@@ -816,6 +841,11 @@ def _run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thr
                 n += 1
                 if progress:
                     progress(n, len(todo))
+                if n == 5 or (time.time() - last_refresh[0] > 60 and n < len(todo)):   # numbers + overview so far
+                    last_refresh[0] = time.time()
+                    for j in jobs:
+                        if j.type in ("MotionCtf", "Pick", "Extract"):
+                            figs.submit(_refresh, project, j, n, len(todo))
                 if time.time() - last_log[0] > 30 or n == len(todo):   # the run log: a line every ~30 s
                     last_log[0] = time.time()
                     el = time.time() - t_start

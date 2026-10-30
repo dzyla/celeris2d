@@ -275,46 +275,71 @@ def fsc_figure(path: str, curves: dict, apix: float, box: int, title: str = "Hal
 @themed
 def picks_figure(path: str, cand, keep: np.ndarray, diameter_a: float, threshold: float, title: str = "",
                  ref_xy_a: np.ndarray | None = None, blur_a: float | None = None):
-    """Picks on the binned, phase-flipped micrograph used for picking (circles: kept picks; optional reference
-    positions as dots), the score map, and the candidate score distribution with the threshold. blur_a: display
-    low-pass of the micrograph (A; None: _blur_a, 0: none)."""
+    """Picks of one micrograph, readable: left, a zoom on a typical region (~12 particle diameters across, the window
+    whose number of picks is the median) of the binned, phase-flipped micrograph, kept picks as circles of the particle
+    diameter, rejected candidates dashed; right, the whole micrograph with the kept picks as dots and the zoom outlined,
+    and the candidate scores (kept / rejected) with the threshold. Optional reference positions as crosses.
+    blur_a: display low-pass of the micrograph (A; None: _blur_a, 0: none)."""
+    from matplotlib.collections import PatchCollection
+    from matplotlib.patches import Circle, Rectangle
     w = cand.work
-    # the micrograph large (the particles must be visible), score map and histogram beside it
-    fig = plt.figure(figsize=(17, 10.5))
-    gs = fig.add_gridspec(2, 2, width_ratios=[1.75, 1], height_ratios=[1.15, 0.85], wspace=0.08, hspace=0.25)
-    a_img, a_sc, a_h = fig.add_subplot(gs[:, 0]), fig.add_subplot(gs[0, 1]), fig.add_subplot(gs[1, 1])
     wa = w["apix"]
     bl = _blur_a(diameter_a, blur_a)
     img = display_blur(w["image"], wa, bl)
-    lo, hi = np.percentile(img, [0.5, 99.5])
-    a_img.imshow(img, cmap=GRAY, vmin=lo, vmax=hi)
-    th = np.linspace(0, 2 * math.pi, 40)
+    ny, nx = img.shape
+    kmask = np.zeros(len(cand.score), bool)
+    kmask[np.asarray(keep, int)] = True
+    xy = np.asarray(cand.xy_a) / wa
     r = diameter_a / 2 / wa
-    xy = cand.xy_a[keep] / wa
-    for x, y in xy:
-        a_img.plot(x + r * np.cos(th), y + r * np.sin(th), color=T.series[0], lw=0.7, alpha=0.75)
+    # the zoom: of 5 x 5 windows inside the micrograph, the one with the median number of kept picks
+    W = int(min(12 * diameter_a / wa, 0.6 * min(nx, ny)))
+    best, wins = None, []
+    for cy in np.linspace(W / 2, ny - W / 2, 5):
+        for cx in np.linspace(W / 2, nx - W / 2, 5):
+            inside = (np.abs(xy[:, 0] - cx) < W / 2) & (np.abs(xy[:, 1] - cy) < W / 2) & kmask
+            wins.append((int(inside.sum()), cx, cy))
+    med = np.median([c for c, _, _ in wins])
+    _, cx, cy = min(wins, key=lambda v: abs(v[0] - med))
+    x0, y0 = int(round(cx - W / 2)), int(round(cy - W / 2))
+    fig = plt.figure(figsize=(17, 10.5))
+    gs = fig.add_gridspec(2, 2, width_ratios=[1.55, 1], height_ratios=[1.25, 0.75], wspace=0.06, hspace=0.22)
+    a_z, a_f, a_h = fig.add_subplot(gs[:, 0]), fig.add_subplot(gs[0, 1]), fig.add_subplot(gs[1, 1])
+    crop = img[y0:y0 + W, x0:x0 + W]
+    lo, hi = np.percentile(crop, [0.5, 99.5])
+    a_z.imshow(crop, cmap=GRAY, vmin=lo, vmax=hi, extent=(x0 - 0.5, x0 + W - 0.5, y0 + W - 0.5, y0 - 0.5))
+    inz = (xy[:, 0] > x0 - r) & (xy[:, 0] < x0 + W + r) & (xy[:, 1] > y0 - r) & (xy[:, 1] < y0 + W + r)
+    rej = [Circle((x, y), r) for x, y in xy[inz & ~kmask]]
+    kep = [Circle((x, y), r) for x, y in xy[inz & kmask]]
+    a_z.add_collection(PatchCollection(rej, facecolor="none", edgecolor=T.ink3, lw=0.9, linestyle=(0, (3, 3))))
+    a_z.add_collection(PatchCollection(kep, facecolor="none", edgecolor=T.series[0], lw=1.8))
     if ref_xy_a is not None:
-        a_img.scatter(ref_xy_a[:, 0] / wa, ref_xy_a[:, 1] / wa, s=6, color=T.series[1], edgecolors="none",
-                      label="reference particles")
-        a_img.legend(loc="lower left", bbox_to_anchor=(0, -0.09), fontsize=8, frameon=False)
-    a_img.set_xticks([])
-    a_img.set_yticks([])
-    a_img.set_title(f"Picks: {len(keep)} of {len(cand.score)} candidates")
-    a_img.set_xlabel(f"binned to {wa:.1f} Å/px, phase-flipped" + (f", low-passed to {bl:.0f} Å" if bl > 2 * wa else "")
-                     + f"; circles: {diameter_a:g} Å")
-    sm = w["score"]
-    v = np.percentile(np.abs(sm), 99.5)
-    a_sc.imshow(sm, cmap=T.density, vmin=0, vmax=v)
-    a_sc.set_xticks([])
-    a_sc.set_yticks([])
-    a_sc.set_title("Blob score (normalised cross-correlation)")
-    h, e = np.histogram(cand.score, bins=40)
-    a_h.bar(0.5 * (e[1:] + e[:-1]), h, width=0.9 * (e[1] - e[0]), color=T.series[0])
+        rr = np.asarray(ref_xy_a) / wa
+        a_z.scatter(rr[:, 0], rr[:, 1], s=40, marker="+", color=T.series[1], lw=1.4, label="reference particles")
+        a_z.legend(loc="lower left", bbox_to_anchor=(0, -0.07), fontsize=8.5, frameon=False)
+    a_z.set_xlim(x0 - 0.5, x0 + W - 0.5)
+    a_z.set_ylim(y0 + W - 0.5, y0 - 0.5)
+    a_z.set_xticks([])
+    a_z.set_yticks([])
+    a_z.set_title(f"Zoom ({W * wa / 10:.0f} nm across): {int((inz & kmask).sum())} kept (solid), "
+                  f"{int((inz & ~kmask).sum())} rejected candidates (dashed)")
+    a_z.set_xlabel(f"binned to {wa:.1f} Å/px, phase-flipped" + (f", low-passed to {bl:.0f} Å" if bl > 2 * wa else "")
+                   + f"; circles: {diameter_a:g} Å")
+    lo, hi = np.percentile(img, [0.5, 99.5])
+    a_f.imshow(img, cmap=GRAY, vmin=lo, vmax=hi)
+    a_f.scatter(xy[kmask, 0], xy[kmask, 1], s=4, color=T.series[0], edgecolors="none")
+    a_f.add_patch(Rectangle((x0, y0), W, W, fill=False, edgecolor=T.ink, lw=1.4))
+    a_f.set_xticks([])
+    a_f.set_yticks([])
+    a_f.set_title(f"Whole micrograph: {int(kmask.sum())} picks of {len(cand.score)} candidates (box: zoom)")
+    sc = np.asarray(cand.score)
+    e = np.linspace(sc.min(), sc.max(), 41) if len(sc) else np.linspace(0, 1, 41)
+    a_h.hist([sc[kmask], sc[~kmask]], bins=e, stacked=True, color=[T.series[0], T.ink3], label=["kept", "rejected"])
     a_h.axvline(threshold, color=T.series[1], lw=1.6)
-    a_h.text(threshold, max(h) * 0.97, f"  threshold {threshold:.3f}", color=T.ink, fontsize=8.5, va="top")
-    a_h.set_xlabel("score")
+    a_h.text(threshold, a_h.get_ylim()[1] * 0.97, f"  threshold {threshold:.3f}", color=T.ink, fontsize=8.5, va="top")
+    a_h.legend(loc="upper right", fontsize=8.5, frameon=False)
+    a_h.set_xlabel("score (normalised cross-correlation)")
     a_h.set_ylabel("candidates")
-    a_h.set_title("Score distribution")
+    a_h.set_title("Candidate scores")
     if title:
         fig.suptitle(title, x=0.01, ha="left", color=T.ink, fontsize=12, fontweight="bold")
     fig.subplots_adjust(left=0.02, right=0.98, top=0.93, bottom=0.06)

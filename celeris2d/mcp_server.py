@@ -217,14 +217,15 @@ def _background(jobs, movie_ids=None):
 def process_movies(movies_job: str, apix: float, dose_total: float, diameter_a: float, particle_a: float = 0.0,
                    bin: float = 1.0, gain: str = "", kv: float = 300.0, cs_mm: float = 2.7, amp_contrast: float = 0.1,
                    dark: bool = True, box_a: float = 0.0, particle_apix: float = 0.0, dtype: str = "float16",
-                   export: list[str] | None = None, figures: str = "outliers", flip_y: bool = False,
+                   export: list[str] | None = None, figures: str = "sample", flip_y: bool = False,
                    region_filter: bool = False) -> str:
     """Motion correction + CTF, blob picking and extraction of an Import job's movies, as three new jobs
     (MotionCtf, Pick, Extract) run together in the background; poll job_status. apix: movie pixel size (bin 2 for
     super-resolution); dose_total e/A^2 over all frames; diameter_a: blob for picking; particle_a: longest particle
     dimension (default 1.3 x diameter) - the box is particle + CTF delocalisation unless box_a is given;
     particle_apix: bin particles to this pixel size; export: ['relion', 'cryosparc'] to also write their files;
-    figures: all | outliers (+ the first micrograph) | none | a number N (the first N micrographs as they are
+    figures: sample (drawn during the run: micrographs 1, 2, 5, 10, 20, 50, then every 100th, + the outliers at
+    the end) | all | outliers (+ the first micrograph) | none | a number N (the first N micrographs as they are
     processed, + the outliers at the end) - any figure can be drawn later by job_report. flip_y: mirror frames in y
     (RELION's orientation of TIFF movies: its micrographs, coordinates and map hand). region_filter: the region
     network (regions.py) drops candidates on film / thick ice / edges / contamination (~2 ms per micrograph; the
@@ -245,7 +246,7 @@ def process_movies(movies_job: str, apix: float, dose_total: float, diameter_a: 
 @server.tool()
 def pick_particles(micrographs_job: str, diameter_a: float, templates: str = "", template_classes: list[int] | None = None,
                    threshold: float | None = None, curate: str = "", particle_a: float = 0.0, box_a: float = 0.0,
-                   particle_apix: float = 0.0, dark: bool = True, figures: str = "outliers", label: str = "",
+                   particle_apix: float = 0.0, dark: bool = True, figures: str = "sample", label: str = "",
                    region_filter: bool = False) -> str:
     """Pick (and extract) the micrographs of a MotionCtf job again, in the background: a blob of diameter_a, or
     templates - a Class2D / Select job (class averages; template_classes: only these 1-based classes) or a
