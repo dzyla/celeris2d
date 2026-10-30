@@ -271,12 +271,19 @@ def _stream_class2d(project: Project, job: Job, s: Class2DSettings, cur: dict, l
         if st in ("failed", "cancelled", "deleted"):
             raise RuntimeError(f"{project.job(pid).name} did not finish ({st})")
         final = st == "finished"
-        src = particle_source(project, pid)
-        n = int(src.N)
+        try:
+            src = particle_source(project, pid)
+            n = int(src.N)
+        except (KeyError, ValueError, IndexError):    # no particles extracted yet (an empty table)
+            if final:
+                raise
+            src, n = None, 0
         due = final or (n >= first and (not n_prev or n >= 1.5 * n_prev or (n > n_prev and time.time() - t_prev > 600)))
         if not due:
             if not waiting_logged:
-                log(f"[stream] waiting for particles: {n:,} so far, the first round starts at {first:,}")
+                log(f"[stream] waiting for particles: {n:,} so far, " + (f"the next round at {int(1.5 * n_prev):,} "
+                                                                          f"or in 10 min" if n_prev else
+                                                                          f"the first round starts at {first:,}"))
                 waiting_logged = True
             time.sleep(15)
             continue
