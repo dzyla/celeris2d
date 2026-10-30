@@ -2,7 +2,7 @@
 
 movie_figure: one micrograph - frame drift, local motion model vs patch measurements, the micrograph, the power
 spectrum (data | fitted model), the equal-phase CTF profile, the ring-by-ring fit significance, the even/odd-frame
-FRC and the dose weights. summary_figure: all micrographs against a reference (cryoSPARC) - defocus, astigmatism,
+FRC and the local defocus (patch CTF: regional offsets and the fitted plane). summary_figure: all micrographs against a reference (cryoSPARC) - defocus, astigmatism,
 CTF fit resolution, motion. fsc_figure: half-map FSC of reconstructions from different micrograph sets.
 """
 from __future__ import annotations
@@ -150,19 +150,31 @@ def movie_figure(path: str, mic, fit, title: str = "", frc_eo=None):
     else:
         a_eo.axis("off")
 
-    # dose weights
-    from .preprocess import dose_weights
-    dpf = getattr(mic, "dose_per_frame", None)
-    if dpf:
-        for j, r in enumerate((20.0, 6.0, 3.0)):
-            w = dose_weights(n, dpf, torch.tensor([1 / r]))[:, 0].numpy()
-            a_dw.plot(np.arange(1, n + 1), w, color=T.series[j], lw=1.6, label=f"{r:g} Å")
-        a_dw.axhline(1, color=T.line, lw=1)
-        a_dw.set_xlabel("frame")
-        a_dw.set_ylabel("weight (Σw² = frames)")
-        a_dw.set_title("Dose weights")
-        a_dw.legend(loc="center right", fontsize=8, frameon=False, title="frequency", title_fontsize=8)
-        _note(a_dw, f"{dpf:.2f} e/Å² per frame\n{dpf * n:.1f} e/Å² total")
+    # local defocus (patch CTF): each region's offset from the micrograph's defocus, the fitted plane as contours
+    pz = getattr(fit, "patch", None)
+    if pz and pz.get("offsets_a"):
+        g = int(pz.get("grid") or round(math.sqrt(len(pz["offsets_a"]))))
+        cx, cy = pz["centre_a"]
+        off = np.asarray(pz["offsets_a"], float)
+        if len(off) == g * g:
+            lim = max(50.0, float(np.abs(off).max()))
+            xe, ye = np.linspace(-cx, cx, g + 1) / 1e4, np.linspace(-cy, cy, g + 1) / 1e4      # um
+            m = a_dw.pcolormesh(xe, ye, off.reshape(g, g), cmap=T.diverging_cmap, vmin=-lim, vmax=lim)
+            for (x, y), o in zip(np.asarray(pz["regions_a"]), off):
+                a_dw.text(x / 1e4, y / 1e4, f"{o:+.0f}", ha="center", va="center", fontsize=8, color=T.ink)
+            a, bx, by = pz["plane"]
+            X, Y = np.meshgrid(np.linspace(-cx, cx, 50), np.linspace(-cy, cy, 50))
+            cs = a_dw.contour(X / 1e4, Y / 1e4, a + bx * X + by * Y, levels=7, colors=[T.ink2], linewidths=0.8)
+            a_dw.clabel(cs, fontsize=7, fmt="%.0f")
+            a_dw.set_aspect("equal")
+            a_dw.invert_yaxis()                               # as the micrograph is shown: first row at the top
+            a_dw.set_ylabel("y (µm)")
+            cb = a_dw.figure.colorbar(m, ax=a_dw, fraction=0.046, pad=0.02)
+            cb.set_label("defocus offset (Å)", color=T.ink2)
+        state = "applied" if pz.get("applied") else ("significant, not applied" if pz.get("significant")
+                                                      else "not significant")
+        a_dw.set_title(f"Local defocus: tilt {pz['tilt_deg']:.2f}°, {state}")
+        a_dw.set_xlabel(f"x (µm) · regions ±{pz.get('residual_a', float('nan')):.0f} Å about the plane")
     else:
         a_dw.axis("off")
 

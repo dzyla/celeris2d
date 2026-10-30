@@ -279,7 +279,9 @@ def _motion(project: Project, job: Job, mv: dict, frames=None, log=print, keep_f
         fit.patch = dict(plane=[round(v, 6) for v in pz["plane"]], plane_se=[round(v, 6) for v in pz["plane_se"]],
                          tilt_deg=round(pz["tilt_deg"], 3), significant=pz["significant"], applied=bool(apply),
                          residual_a=round(pz.get("residual_a", float("nan")), 1),
-                         centre_a=[0.5 * mic.sum.shape[1] * mic.apix, 0.5 * mic.sum.shape[0] * mic.apix])
+                         centre_a=[0.5 * mic.sum.shape[1] * mic.apix, 0.5 * mic.sum.shape[0] * mic.apix],
+                         regions_a=np.round(pz["centres_a"], 1).tolist(), offsets_a=np.round(pz["offsets_a"], 1).tolist(),
+                         grid=s.patch_ctf_grid)
     torch.cuda.synchronize()
     t["motion_ctf"] = time.time() - t0
     return s, fr, mic, fit, t

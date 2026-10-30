@@ -14,6 +14,7 @@ Driver scripts and logs are kept with the project (not in the repository).
 | first refinement, corrected masked / unmasked | 3.25 / 3.93 A (job 014; 3,885 of 4,317 particles) | 3.12 / 3.93 A (job021; 4,452) |
 | after polishing + per-particle CTF | 3.09 / 3.79 A (job 032) | 2.90 / 3.75 A (job030; CtfRefine + Polish) |
 | same, dynamic solvent mask in the refinement | **2.95 / 3.66 A** (job 033) | (job029 refined with MaskCreate's mask) |
+| whole chain with the dynamic mask (Refine3D -> Polish -> Refine3D -> CtfRefine -> Refine3D) | **2.90 / 3.70 A**, chain 9.4 min | 2.90 / 3.75 A (job030) |
 | map vs map, both masked with RELION's mask | FSC 0.5 at 3.9 A, 0.143 at 3.0 A (final vs job029) | - |
 | poses, particles in both sets | 96 % within 2 deg, median 0.82 deg (3,107 particles) | - |
 
@@ -32,7 +33,7 @@ encloses 1.55 M A^3, RELION's MaskCreate/job020 1.28 M A^3 (21 % more solvent no
 | polishing | 245 s | 339 s |
 | per-particle CTF | 4 s (defocus only) | 134 s (3 CtfRefine jobs) |
 | refinements after them | 80 + 87 s | 702 + 861 s |
-| final map | **12.3 min, 2.95 A** (3.66 A unmasked) | **72 min, 2.92 A** (3.75 A unmasked) |
+| final map | **13.3 min, 2.90 A** (3.70 A unmasked; dynamic mask throughout) | **72 min, 2.90 A** (3.75 A unmasked) |
 
 ## Preprocessing vs RELION (analysis/compare_preprocessing.png, ctf.csv, motion.csv, picks.csv)
 
