@@ -225,6 +225,8 @@ def _motion(project: Project, job: Job, mv: dict, frames=None, log=print, keep_f
     t = {}
     t0 = time.time()
     fr = pp.read_movie(mv["path"]) if frames is None else frames
+    if fr.ndim == 2:                                 # a micrograph: one frame, no motion to correct
+        fr = fr[None]
     t["read"] = time.time() - t0
     gain = None
     if s.gain:
@@ -270,7 +272,7 @@ def process_movie_motion(project: Project, job: Job, movie_id: int, frames: np.n
     if s.figures == "all":
         from .plots_preprocess import movie_figure
         args = (job.figure(mv), _cpu(mic), fit)
-        kw = dict(title=mv["stem"], frc_eo=pp.frc(*mic.halves, mic.apix, n_shell=120))
+        kw = dict(title=mv["stem"], frc_eo=pp.frc(*mic.halves, mic.apix, n_shell=120) if mic.halves else None)
         figures.submit(movie_figure, *args, **kw) if figures else movie_figure(*args, **kw)
     log(f"[{job.name}] {mv['stem']}: drift {stats['motion_path_a']:.0f} A, defocus "
         f"{(fit.defocus_u + fit.defocus_v) / 2:.0f} A, CTF fit {fit.fit_res_a:.1f} A; "
@@ -644,7 +646,8 @@ def draw_figure(project: Project, job, movie_id: int) -> str:
     if job.type == "MotionCtf":
         from .plots_preprocess import movie_figure
         s, fr, mic, fit, t = _motion(project, job, mv, log=lambda *a: None)
-        movie_figure(path, _cpu(mic), fit, title=mv["stem"], frc_eo=pp.frc(*mic.halves, mic.apix, n_shell=120))
+        movie_figure(path, _cpu(mic), fit, title=mv["stem"],
+                     frc_eo=pp.frc(*mic.halves, mic.apix, n_shell=120) if mic.halves else None)
     elif job.type == "Pick":
         from .plots_preprocess import picks_figure
         s = PickSettings(**{k: v for k, v in job.params.items() if k in PickSettings.__dataclass_fields__})

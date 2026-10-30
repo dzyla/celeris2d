@@ -259,9 +259,18 @@ def motion_correct(frames: np.ndarray, gain: np.ndarray | None, apix: float, dos
     micrographs 3.43 A (ours with each micrograph's particle positions registered to cryoSPARC's by a smooth field:
     the two local-motion models place particles ~1 A apart)."""
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    if frames.ndim == 2:
+        frames = frames[None]
     n, NY, NX = frames.shape
     ny, nx = int(round(NY / bin / 2)) * 2, int(round(NX / bin / 2)) * 2
     g = None if gain is None else torch.as_tensor(np.ascontiguousarray(gain), device=dev)
+    if n == 1:      # a micrograph (aligned and summed elsewhere, e.g. a public set): gain and Fourier binning only
+        x = torch.as_tensor(np.asarray(frames[0]), device=dev).float()
+        if g is not None:
+            x = x * g
+        m = torch.fft.irfft2(crop_half(torch.fft.rfft2(x, norm="forward"), ny, nx), s=(ny, nx), norm="forward")
+        return Micrograph(sum=m, sum_dw=m, apix=apix * NY / ny, shifts=np.zeros((1, 2), np.float32),
+                          dose_per_frame=dose_per_frame)
     # hot pixels: far more counts over the movie than the Poisson spread allows -> the frame mean
     tot = torch.zeros(NY, NX, device=dev)
     for i in range(n):
