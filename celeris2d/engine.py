@@ -37,6 +37,38 @@ TWO_PI = 2.0 * math.pi
 # makes Fourier values invariant to the sampling (box) for a fixed field of view,
 # so cropping a spectrum is exactly Fourier down-sampling.
 # --------------------------------------------------------------------------- #
+def cap_memory(dev):
+    """Hard limit for this process on a CUDA device: the card less the headroom gpu_free plans around (and at most
+    CELERIS2D_VRAM_GB). Past it PyTorch frees its cache and retries, then raises out-of-memory: the driver never
+    spills GPU memory into system RAM (WSL does, and everything slows down many times)."""
+    dev = torch.device(dev)
+    if dev.type != "cuda":
+        return
+    if dev.index is None:
+        dev = torch.device("cuda", torch.cuda.current_device())
+    total = torch.cuda.get_device_properties(dev).total_memory
+    used_by_others = total - torch.cuda.mem_get_info(dev)[0] - torch.cuda.memory_reserved(dev)
+    limit = total - max(int(0.1 * total), int(1.5e9)) - max(0, used_by_others)
+    cap = os.environ.get("CELERIS2D_VRAM_GB")
+    if cap:
+        limit = min(limit, int(float(cap) * 1e9))
+    torch.cuda.set_per_process_memory_fraction(max(0.2, limit / total), dev)
+
+
+def gpu_free(dev) -> int:
+    """Memory (bytes) this process may still plan to use on dev: what the device has free, less a headroom of 10 % of
+    the card (at least 1.5 GB) that is never planned for (the display, other programs, allocations that are not
+    sized from free memory: a Refine3D sized from all free memory held 15.6 of 16 GB), and capped by
+    CELERIS2D_VRAM_GB (a budget for everything this process holds)."""
+    dev = torch.device(dev)
+    free, total = torch.cuda.mem_get_info(dev)
+    free = max(0, free - max(int(0.1 * total), int(1.5e9)))
+    cap = os.environ.get("CELERIS2D_VRAM_GB")
+    if cap:
+        free = min(free, max(0, int(float(cap) * 1e9) - torch.cuda.memory_reserved(dev)))
+    return int(free)
+
+
 def freqs(b: int, device) -> tuple[torch.Tensor, torch.Tensor]:
     """Signed row frequencies (b,) and column frequencies (b//2+1,), in cycles/box."""
     fy = torch.fft.fftfreq(b, d=1.0 / b, device=device)
@@ -153,6 +185,9 @@ class Params:
     n_iter: int = 25
     diameter_a: float = 200.0
     max_res_a: float = 6.0          # final E/M-step resolution limit
+    nyquist_margin: float = 1.1     # max_res_a is at least this x Nyquist: 2D never classifies at Nyquist (the last shells
+                                    # only carry interpolation/aliasing artefacts); 3D refinements use 1.0 (their FSC
+                                    # decides; beta-gal at 3.1 A was capped by 2.2 x 1.24 A/px = 2.7 A)
     init_res_a: float = 30.0        # starting resolution limit (frequency marching)
     march_frac: float = 0.6         # fraction of iterations used to reach max_res
     psi_step_min: float = 2.0
@@ -242,6 +277,8 @@ class Classifier2D:
         self.p, self.optics, self.log = prm, source.optics, log
         self.devs = [torch.device(d) for d in devices]
         self.dev = self.devs[0]  # master device: references, reconstruction
+        for d in self.devs:
+            cap_memory(d)
         self.N, B, apix = source.N, source.box, source.apix
         self.B_full, self.apix_full = B, apix
         self.box_a = B * apix
@@ -251,9 +288,10 @@ class Classifier2D:
         self._auto_hard, self._auto_prior = prm.hard_pose is None, prm.class_prior is None
 
         # never classify right at Nyquist: the last shells only carry interpolation/aliasing artefacts
-        if prm.max_res_a < 2.2 * apix:
-            log(f"[res] --max-res {prm.max_res_a:.1f} A is at Nyquist ({2 * apix:.1f} A); using {2.2 * apix:.1f} A")
-            prm.max_res_a = 2.2 * apix
+        lim = 2 * prm.nyquist_margin * apix
+        if prm.max_res_a < lim - 1e-6:
+            log(f"[res] --max-res {prm.max_res_a:.1f} A is at Nyquist ({2 * apix:.1f} A); using {lim:.1f} A")
+            prm.max_res_a = lim
         # working (maximum) box: Nyquist at max_res, even, never above the input box
         bmax = int(math.ceil(2 * self.box_a / prm.max_res_a / 2.0)) * 2 + 4
         self.bmax = min(B, bmax + (bmax % 2))
@@ -328,7 +366,7 @@ class Classifier2D:
         B, bm = self.B_full, self.bmax
         bh = bm // 2 + 1
         c64 = self.N * bm * bh * 8
-        free = torch.cuda.mem_get_info(self.dev)[0] if self.dev.type == "cuda" else 0
+        free = gpu_free(self.dev) if self.dev.type == "cuda" else 0
         if c64 < 0.35 * free:
             self.half, where = False, self.dev
         elif c64 / 2 < 0.6 * free:
@@ -953,7 +991,7 @@ class Classifier2D:
             torch.cuda.empty_cache()  # cached blocks of the previous (smaller-box) iteration
             with torch.cuda.device(d):
                 torch.cuda.empty_cache()
-            free.append(torch.cuda.mem_get_info(d)[0])
+            free.append(gpu_free(d))
         avail = 0.75 * min(free) - fixed
         bn = int(np.clip(min(avail / per, 0.4e9 / (M * T1 * T1 * 4)), 4, 1024))
         need = fixed + bn * per

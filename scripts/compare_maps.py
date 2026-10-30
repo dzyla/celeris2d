@@ -1,7 +1,7 @@
 """Align a map to a reference map (rotation search, both hands, then translation) and report their FSC;
 writes a projection figure.
 
-usage: compare_maps.py <map.mrc> <reference.mrc> <out.png> [label]
+usage: compare_maps.py <map.mrc> <reference.mrc> <out.png> [label] [mask.mrc]
 
 The reference is resampled (Fourier crop/pad) to the map's pixel size and box. The rotation is searched on
 48-px copies (20 A), refined locally on 96-px copies, then applied once at full size. Ab initio maps have an
@@ -53,6 +53,7 @@ def ncc(a: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
 def main():
     mine, ref, out = sys.argv[1:4]
     label = sys.argv[4] if len(sys.argv) > 4 else "map"
+    mask_path = sys.argv[5] if len(sys.argv) > 5 else ""          # on the reference's grid (e.g. RELION MaskCreate)
     dev = "cuda"
     a = mrcfile.open(mine, permissive=True)
     va, pa = torch.tensor(a.data.astype(np.float32), device=dev), float(a.voxel_size.x)
@@ -61,7 +62,8 @@ def main():
     b = va.shape[0]
     vr = resample(vr0, pr, pa, b)                       # reference on the map's grid
     box_a = b * pa
-    small = {n: (resample(va, pa, box_a / n, n), resample(vr, pa, box_a / n, n)) for n in (48, 96)}
+    nf = min(b, 144)                                    # final rotation refinement: ~2 A copies (box 300 A)
+    small = {n: (resample(va, pa, box_a / n, n), resample(vr, pa, box_a / n, n)) for n in (48, 96, nf)}
     best = (-2.0, None, None)
     rot, tilt = ab.sphere_directions(6.0)
     for mirror in (False, True):
@@ -77,26 +79,55 @@ def main():
     _, mirror, R = best
     v96, r96 = small[96]
     v96 = v96.flip(0) if mirror else v96
-    for step in (3.0, 1.5, 0.75, 0.4):
+    vf, rf = small[nf]
+    vf = vf.flip(0) if mirror else vf
+    # coarse-to-fine local search; the last steps on the ~2 A copies (0.4 deg on 3.3 A copies left up to ~0.5 A of
+    # misalignment at the particle's edge, enough to pull the map-vs-map FSC down around 4 A)
+    for step, (vv, rr) in ((3.0, (v96, r96)), (1.5, (v96, r96)), (0.75, (v96, r96)), (0.4, (vf, rf)),
+                           (0.2, (vf, rf)), (0.1, (vf, rf))):
         for _ in range(3):
             Rl = (ab.rotz(torch.tensor([-step, 0.0, step]))[:, None] @ ab.local_rotations(step, 1)[None]).reshape(-1, 3, 3)
             cands = Rl.to(dev) @ R
-            R = cands[int(ncc(ab._rotate_volumes(v96, cands), r96).argmax())]
+            c = torch.cat([ncc(ab._rotate_volumes(vv, cands[i:i + 9]), rr) for i in range(0, len(cands), 9)])
+            R = cands[int(c.argmax())]
     al = ab._rotate_volumes(va.flip(0) if mirror else va, R[None])[0]
-    # translation: an ab initio map in C1 is only centred on its centre of mass (a symmetric one sits on its axes)
+    # translation: an ab initio map in C1 is only centred on its centre of mass (a symmetric one sits on its axes);
+    # integer peak of the cross-correlation, refined to sub-voxel by a parabola per axis, applied as a phase shift
     cc = torch.fft.ifftn(torch.fft.fftn(vr) * torch.fft.fftn(al).conj()).real
-    sh = [int(i) for i in np.unravel_index(int(cc.argmax()), cc.shape)]
-    sh = [i - b if i > b // 2 else i for i in sh]
-    al = torch.roll(al, shifts=sh, dims=(0, 1, 2))
-    print(f"translation {[round(i * pa, 1) for i in sh]} A (z, y, x)")
+    pk = [int(i) for i in np.unravel_index(int(cc.argmax()), cc.shape)]
+    sh = []
+    for ax_ in range(3):
+        idx = list(pk)
+        vals = []
+        for d in (-1, 0, 1):
+            idx[ax_] = (pk[ax_] + d) % b
+            vals.append(float(cc[tuple(idx)]))
+        den = vals[0] - 2 * vals[1] + vals[2]
+        frac = 0.5 * (vals[0] - vals[2]) / den if den < 0 else 0.0
+        i = pk[ax_] + frac
+        sh.append(i - b if i > b / 2 else i)
+    k = torch.fft.fftfreq(b, device=dev)
+    kz, ky, kx = torch.meshgrid(k, k, k, indexing="ij")
+    al = torch.fft.ifftn(torch.fft.fftn(al) * torch.exp(-2j * np.pi * (kz * sh[0] + ky * sh[1] + kx * sh[2]))).real
+    print(f"translation {[round(i * pa, 2) for i in sh]} A (z, y, x)")
     f = ab.fsc_maps(al, vr).cpu().numpy()
+    fu = f
+    if mask_path:                                       # both maps multiplied by the reference's mask
+        mk = mrcfile.open(mask_path, permissive=True)
+        m = resample(torch.tensor(mk.data.astype(np.float32), device=dev), float(mk.voxel_size.x), pa, b).clamp(0, 1)
+        f = ab.fsc_maps(al * m, vr * m).cpu().numpy()
 
     def cross(t):
         for i in range(1, len(f)):
             if f[i] < t:
                 return box_a / i
         return 2 * pa
-    print(f"map-vs-reference FSC: 0.5 at {cross(0.5):.1f} A, 0.143 at {cross(0.143):.1f} A")
+    if mask_path:
+        f, fm = fu, f
+        print(f"map-vs-reference FSC (unmasked): 0.5 at {cross(0.5):.1f} A, 0.143 at {cross(0.143):.1f} A")
+        f = fm
+    print(f"map-vs-reference FSC{' (masked)' if mask_path else ''}: 0.5 at {cross(0.5):.1f} A, "
+          f"0.143 at {cross(0.143):.1f} A")
     fig, ax = plt.subplots(2, 4, figsize=(12, 6), gridspec_kw=dict(width_ratios=[1, 1, 1, 1.3]))
     for j in range(3):
         ax[0, j].imshow(al.sum(j).cpu(), cmap="gray")

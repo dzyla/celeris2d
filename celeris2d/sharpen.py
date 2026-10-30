@@ -89,7 +89,7 @@ def _dips(c: np.ndarray, box_a: float, upto: int) -> list[float]:
 
 def postprocess(h1: np.ndarray, h2: np.ndarray, mask: np.ndarray, apix: float, s: SharpenSettings, dev=None) -> dict:
     """The sharpening of two half maps (n^3, same box) with a soft mask; returns maps, curves and numbers."""
-    from .abinitio import fsc_maps
+    from .abinitio import corrected_masked_fsc
     dev = dev or ("cuda" if torch.cuda.is_available() else "cpu")
     t1, t2, m = (torch.as_tensor(x, device=dev) for x in (h1, h2, mask))
     n = t1.shape[0]
@@ -97,20 +97,7 @@ def postprocess(h1: np.ndarray, h2: np.ndarray, mask: np.ndarray, apix: float, s
     kk = _shells(n, dev)
     sh = torch.round(kk).long()
     nsh = n // 2 + 1
-    f_un = fsc_maps(t1, t2)
-    f_m = fsc_maps(t1 * m, t2 * m)
-    below = torch.nonzero(f_un < 0.8)
-    k_r = int(below[0]) if len(below) else nsh - 1
-    g = torch.Generator(device=dev).manual_seed(0)
-    rnd = []
-    for h in (t1, t2):
-        ft = torch.fft.rfftn(h)
-        ph = torch.rand(ft.shape, generator=g, device=dev) * 2 * np.pi
-        rnd.append(torch.fft.irfftn(torch.where(kk >= k_r, ft.abs() * torch.exp(1j * ph), ft), s=h.shape) * m)
-    f_r = fsc_maps(*rnd)
-    f_c = f_m.clone()
-    hi = torch.arange(len(f_c), device=dev) >= k_r
-    f_c[hi] = (f_m[hi] - f_r[hi]) / (1 - f_r[hi]).clamp_min(1e-6)
+    f_c, f_m, f_r, f_un, k_r = corrected_masked_fsc(t1, t2, m, parts=True)   # the one used by the refinements
     f_un, f_m, f_r, f_c = (x[:nsh].cpu().numpy() for x in (f_un, f_m, f_r, f_c))
     res = s.resolution_a or _res(f_c, box_a, 0.143)
     k_res = box_a / res                                               # shell of the low-pass

@@ -23,7 +23,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .engine import TWO_PI, ctf_2d, freqs, rot_grid, upsample2
+from .engine import TWO_PI, ctf_2d, freqs, gpu_free, rot_grid, upsample2
 
 
 # --------------------------------------------------------------------------- geometry
@@ -234,14 +234,20 @@ class Volume:
         self.num = self.den = None
 
     def solve(self, reg: torch.Tensor | float):
-        """ft = num / (den + reg); reg: scalar or per-shell (in cycles/box b) tensor."""
+        """ft = num / (den + reg); reg: scalar or per-shell (in cycles/box b) tensor. In slabs of the first axis straight
+        into the new spectrum, the old one released first: done at once it held ~5 volume-sized temporaries (out of
+        memory at box 256, pad 2)."""
         G = self.G
         den = self.den.view(G, G, G)
-        if torch.is_tensor(reg):
-            reg = reg[self.shell_index().clamp(max=len(reg) - 1)]
-        d = den + reg
         num = self.num.view(G, G, G, 2)
-        self.ft = (num / d[..., None]).permute(3, 0, 1, 2).contiguous()
+        self.ft = None
+        out = torch.empty((2, G, G, G), device=self.dev)
+        sh = self.shell_index() if torch.is_tensor(reg) else None
+        cz = max(1, int(64e6 // (G * G)))
+        for z in range(0, G, cz):
+            d = den[z:z + cz] + (reg[sh[z:z + cz].clamp(max=len(reg) - 1)] if sh is not None else reg)
+            out[:, z:z + cz] = (num[z:z + cz] / d[..., None]).permute(3, 0, 1, 2)
+        self.ft = out
 
     def filter_shells(self, f: torch.Tensor):
         """Multiply the spectrum by a per-shell factor f (cycles/box b)."""
@@ -276,10 +282,14 @@ def masked_fsc(a: Volume, b: Volume, mask: torch.Tensor) -> torch.Tensor:
     return fsc_maps(a.real() * mask, b.real() * mask)
 
 
-def corrected_masked_fsc(h1: torch.Tensor, h2: torch.Tensor, mask: torch.Tensor, seed: int = 0) -> torch.Tensor:
+def corrected_masked_fsc(h1: torch.Tensor, h2: torch.Tensor, mask: torch.Tensor, seed: int = 0, parts: bool = False):
     """Masked FSC of two real half maps corrected for the correlation a (tight) mask creates by itself (RELION
-    PostProcess): beyond the shell where the unmasked FSC drops below 0.8, the half maps' phases are randomised,
-    masked again, and FSC_true = (FSC_masked - FSC_random) / (1 - FSC_random)."""
+    PostProcess): from the shell k_r where the unmasked FSC drops below 0.8, the half maps' phases are randomised
+    (whole shells, as the FSC counts them), the maps masked again, and FSC_true = (FSC_masked - FSC_random) /
+    (1 - FSC_random) from shell k_r + 3 on; the shells just past k_r keep the masked FSC (as RELION): the mask spreads
+    correlation from the intact shells into them, FSC_random is close to FSC_masked there and the formula dips
+    (beta-gal: 0.97 -> 0.72 for one shell when it was applied from k_r, with half of shell k_r randomised).
+    parts: also return (masked, randomised, unmasked FSC, k_r)."""
     n = h1.shape[0]
     f_un = fsc_maps(h1, h2)
     f_m = fsc_maps(h1 * mask, h2 * mask)
@@ -287,7 +297,7 @@ def corrected_masked_fsc(h1: torch.Tensor, h2: torch.Tensor, mask: torch.Tensor,
     k_r = int(below[0]) if len(below) else len(f_un) - 1
     k = torch.fft.fftfreq(n, device=h1.device) * n
     kz = torch.arange(n // 2 + 1, device=h1.device, dtype=torch.float32)
-    kk = torch.sqrt(k[:, None, None] ** 2 + k[None, :, None] ** 2 + kz[None, None, :] ** 2)
+    kk = torch.round(torch.sqrt(k[:, None, None] ** 2 + k[None, :, None] ** 2 + kz[None, None, :] ** 2))
     g = torch.Generator(device=h1.device).manual_seed(seed)
     out = []
     for h in (h1, h2):
@@ -297,9 +307,9 @@ def corrected_masked_fsc(h1: torch.Tensor, h2: torch.Tensor, mask: torch.Tensor,
         out.append(torch.fft.irfftn(rnd, s=h.shape) * mask)
     f_r = fsc_maps(out[0], out[1])
     f = f_m.clone()
-    hi = torch.arange(len(f), device=f.device) >= k_r
+    hi = torch.arange(len(f), device=f.device) > k_r + 2
     f[hi] = (f_m[hi] - f_r[hi]) / (1 - f_r[hi]).clamp_min(1e-6)
-    return f
+    return (f, f_m, f_r, f_un, k_r) if parts else f
 
 
 def resolution_from_fsc(c: torch.Tensor, box_a: float, thr: float = 0.143) -> float:
@@ -503,7 +513,7 @@ def _free(dev) -> float:
     if torch.device(dev).type != "cuda":
         return 8e9
     torch.cuda.empty_cache()
-    return float(torch.cuda.mem_get_info(dev)[0])
+    return float(gpu_free(dev))                 # CELERIS2D_VRAM_GB caps it
 
 
 def working_box(clf, n_acc: int, n_ft: int, log=print) -> int:
@@ -763,7 +773,8 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                      batch: int = 256, n_local: int = 1, step_scale: float | None = None, global_at: tuple = (),
                      global_res: float = 12.0, drop_frac: float = 0.0, rebalance: float = 0.0,
                      box: int | None = None, relax_ops: torch.Tensor | None = None, relax_iters: int = 0,
-                     half: torch.Tensor | None = None, soft: bool = False, log=print):
+                     half: torch.Tensor | None = None, soft: bool = False, solvent_mask=None,
+                     solvent_from_a: float = 15.0, log=print):
     """Local refinement of particle orientations A and shifts t (A, model shift) against CTF-modulated projections,
     gold-standard halves (half: (n,) 0/1 per particle, e.g. the split of the refinement the poses come from - a
     particle must stay in the half it was aligned or polished against; default a random split, seed 1). inits:
@@ -783,6 +794,11 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     models (each at its own pose there), RELION-style; the temperature starts where the typical particle is ~60/40
     and falls to 1 (the true posterior) over the first half of the iterations. Off: each particle in its best model
     only. refine_particles.last_post holds the final posteriors (n, M).
+    solvent_mask (one model): "auto" - a solvent mask made from the current map every iteration once it is better than
+    solvent_from_a (masking.auto_mask, noise from the half maps; cryoSPARC's dynamic mask) - or a fixed mask (b^3
+    tensor). It replaces the particle sphere for the FSC that sets the resolution and weights the references (then
+    corrected by phase randomisation, as it is tight), for flattening the references' solvent, and for the final map:
+    the references lose the solvent noise and keep more of the signal. refine_particles.last_mask holds the last one.
     Returns (maps (M, b, b, b), A (n, 3, 3), t (n, 2) in the chosen model, z, fsc (M, shells), resolutions (M,),
     half Volumes [[h0, h1] per model])."""
     dev = clf.dev
@@ -852,8 +868,12 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                         w3 = (wp[sel] * (pp[sel, m] if soft else 1.0))[:, None, None]
                         vols[m][h].insert((xs * ctf)[sel] * w3, (ctf * ctf)[sel] * w3, AA[sel], kmax=kmax, ops=ops)
 
+    refs = None
+    cur_mask = None                 # solvent mask in use (solvent_mask), else the particle sphere
     for it in range(n_iter + 1):
         # ---- reconstruct halves, FSC, filter
+        refs = None                 # the last alignment's references and cached batch blocks are not needed while the
+        torch.cuda.empty_cache()    # halves are back-projected (they overlapped the accumulators: 15.8 of 16 GB, spill)
         if it == 0:
             for m in range(M):
                 for v in vols[m]:
@@ -863,7 +883,18 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             for m in range(M):
                 for v in vols[m]:
                     _regularise_solve(v, 0.02)
-                fscs[m] = masked_fsc(vols[m][0], vols[m][1], mask)
+                    v.free_acc()        # 3/2 of the volume's size; made again by the next back-projection (box 256:
+                                        # 3.2 GB for two halves that sat idle through the alignment)
+                if solvent_mask is not None and M == 1 and (torch.is_tensor(solvent_mask) or res[m] < solvent_from_a):
+                    from .masking import auto_mask
+                    h1_, h2_ = vols[m][0].real(), vols[m][1].real()
+                    cur_mask = solvent_mask.to(dev) if torch.is_tensor(solvent_mask) else auto_mask(
+                        0.5 * (h1_ + h2_) * mask, box_a / b, res_a=res[m], k_sigma=5.0, halves=(h1_ * mask, h2_ * mask),
+                        diameter_a=diam)
+                    fscs[m] = corrected_masked_fsc(h1_, h2_, cur_mask)
+                    del h1_, h2_
+                else:
+                    fscs[m] = masked_fsc(vols[m][0], vols[m][1], mask)
                 # shells beyond the reconstruction limit hold only what the mask leaks from lower shells (correlated
                 # between the halves): not signal
                 fscs[m][int(kmax_used[m]) + 1:] = 0
@@ -888,7 +919,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                 if fscs[m] is not None and M == 1:
                     r.filter_shells(torch.sqrt((2 * fscs[m] / (1 + fscs[m])).clamp(0, 1).nan_to_num(0)))
                 lowpass(r, box_a / k_al, box_a)
-                _real_space_constraints(r, mask, positive=False, center=False)
+                _real_space_constraints(r, mask if cur_mask is None else cur_mask, positive=False, center=False)
                 rm.append(r)
             refs.append(rm)
         # ---- global re-search: particles that inherited a wrong pose (mixed 2D classes) can jump
@@ -1040,11 +1071,11 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
         out = Volume(b, dev, ft=0.5 * (vols[m][0].ft + vols[m][1].ft))
         if fscs[m] is not None:
             out.filter_shells(torch.sqrt((2 * fscs[m] / (1 + fscs[m])).clamp(0, 1).nan_to_num(0)))
-        maps.append((out.real() * mask).nan_to_num(0))
+        maps.append((out.real() * (mask if cur_mask is None else cur_mask)).nan_to_num(0))
     fscs = [f if f is not None else torch.zeros(b // 2 + 1, device=dev) for f in fscs]
     unmasked = [resolution_from_fsc(fsc(vols[m][0], vols[m][1]), box_a) if alive[m] and fscs[m] is not None
                 else float("nan") for m in range(M)]
-    log(f"[3d] final resolution (FSC 0.143, soft sphere mask) {' / '.join(f'{r:.1f}' if r == r else 'merged' for r in res)} A"
+    log(f"[3d] final resolution (FSC 0.143, {'soft sphere mask' if cur_mask is None else 'solvent mask, corrected'}) {' / '.join(f'{r:.1f}' if r == r else 'merged' for r in res)} A"
         f" (unmasked {' / '.join(f'{r:.1f}' if r == r else '-' for r in unmasked)} A), {time.time() - t0:.1f}s")
     refine_particles.last_weights = wpart.cpu()   # read by run(): which particles the final maps used
     refine_particles.last_score = score.cpu()
@@ -1052,6 +1083,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     refine_particles.last_history = history
     refine_particles.last_post = post.cpu()
     refine_particles.last_ll = llm_all.cpu() if n_iter > 0 else None   # per model, best pose, last pass
+    refine_particles.last_mask = cur_mask
     return torch.stack(maps), A[ar_n, z], t[ar_n, z], z, torch.stack(fscs), res, vols
 
 
@@ -1127,6 +1159,7 @@ def classify3d(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, n_model
         for m in range(M):
             for v in vols[m]:
                 _regularise_solve(v, 0.02)
+                v.free_acc()
             r = Volume(b, dev, ft=0.5 * (vols[m][0].ft + vols[m][1].ft))
             lowpass(r, res_a, box_a)
             _real_space_constraints(r, mask, positive=False, center=False)

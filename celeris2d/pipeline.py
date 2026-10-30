@@ -45,8 +45,14 @@ class MotionSettings:
     cs_mm: float = 2.7
     amp_contrast: float = 0.1
     patches: int = 5                    # local motion grid (0: whole-frame only)
+    flip_y: bool = False                # mirror the frames in y after reading. RELION reads TIFF movies y-flipped
+                                        # relative to the file's row order: on the RELION 5 tutorial movies its
+                                        # micrographs are the y-mirror of ours (cc 0.32 vs -0.01), with the gain
+                                        # applied as is. True gives RELION's micrographs, pick coordinates,
+                                        # astigmatism angles and map hand; any gain is then oriented to the flipped frames
     dtype: str = "float16"              # micrographs on disk: float16 (half the space) or float32
-    figures: str = "outliers"           # control figures: all | outliers (+ the first micrograph) | none
+    figures: str | int = "outliers"     # control figures: all | outliers (+ the first micrograph) | none | N (the
+                                        # first N micrographs, drawn as they are processed, + the outliers at the end)
 
 
 @dataclass
@@ -57,7 +63,7 @@ class PickSettings:
     threshold: float | None = None      # None: automatic per micrograph (generous; 2D cleans up)
     max_std: float = 2.0                # contamination filters (picking.select)
     max_mean: float = 3.0
-    figures: str = "outliers"           # all | outliers (+ the first micrograph) | none
+    figures: str | int = "outliers"     # all | outliers (+ the first micrograph) | none | N (first N live + outliers)
 
 
 @dataclass
@@ -148,6 +154,26 @@ def _dedup(xy: np.ndarray, score: np.ndarray, dist: float) -> np.ndarray:
 _gain_cache: dict = {}
 _mem: dict = {}           # movie_id -> (micrograph on the GPU, apix, CTF): stages of one movie in one run
 _mem_picks: dict = {}     # (pick job id, movie_id) -> picks
+_n_live: dict = {}        # job id -> figures drawn while processing (figures = N)
+
+
+def _live_figure(job: Job, figures) -> bool:
+    """Draw this micrograph's figure now? figures = "all", or a number N while fewer than N have been drawn (the
+    count starts from the figures already in the job's folder, so a resumed job does not draw N more)."""
+    if figures == "all":
+        return True
+    try:
+        n = int(figures)
+    except (TypeError, ValueError):
+        return False
+    if job.id not in _n_live:
+        d = job.file("figures")
+        _n_live[job.id] = sum(f.endswith(".png") and not f.endswith(".light.png")
+                              for f in (os.listdir(d) if os.path.isdir(d) else []))
+    if _n_live[job.id] >= n:
+        return False
+    _n_live[job.id] += 1
+    return True
 _sel_cache: dict = {}     # Select job id -> uids
 _rc_cache: dict = {}      # re-centring Extract job id -> per-movie particles
 
@@ -225,6 +251,8 @@ def _motion(project: Project, job: Job, mv: dict, frames=None, log=print, keep_f
     t = {}
     t0 = time.time()
     fr = pp.read_movie(mv["path"]) if frames is None else frames
+    if s.flip_y:
+        fr = np.ascontiguousarray(fr[:, ::-1])
     t["read"] = time.time() - t0
     gain = None
     if s.gain:
@@ -267,7 +295,7 @@ def process_movie_motion(project: Project, job: Job, movie_id: int, frames: np.n
         json.dump(st, open(job.per_movie("Stats", mv, ".json"), "w"))
         project.add_micrograph(job, movie_id, mpath, mic.apix, shape, fit, meta=stats)
     _io(io, write)
-    if s.figures == "all":
+    if _live_figure(job, s.figures):
         from .plots_preprocess import movie_figure
         args = (job.figure(mv), _cpu(mic), fit)
         kw = dict(title=mv["stem"], frc_eo=pp.frc(*mic.halves, mic.apix, n_shell=120))
@@ -285,8 +313,9 @@ def process_movie_pick(project: Project, job: Job, movie_id: int, log=print,
     s = PickSettings(**{k: v for k, v in job.params.items() if k in PickSettings.__dataclass_fields__})
     mic_job = project.job(job.params["micrographs"])
     img, apix, ctf = _load_mic(project, mic_job, movie_id)
+    live = _live_figure(job, s.figures)
     c = pk.blob_candidates(img, apix, s.diameter_a, ctf, optics_of(project, mic_job), s.dark, s.min_dist_frac,
-                           keep_maps=s.figures == "all")
+                           keep_maps=live)
     th = pk.auto_threshold(c.score) if s.threshold is None else s.threshold
     keep = np.zeros(len(c.score), bool)
     keep[pk.select(c, th, s.max_std, s.max_mean)] = True
@@ -294,7 +323,7 @@ def process_movie_pick(project: Project, job: Job, movie_id: int, log=print,
     _mem_picks.clear()
     _mem_picks[(job.id, movie_id)] = dict(cols, keep=keep)
     project.add_picks(job, movie_id, cols, keep, th)
-    if s.figures == "all":
+    if live:
         from .plots_preprocess import picks_figure
         mv = project.movie(movie_id)
         args = (job.figure(mv), c, np.flatnonzero(keep), s.diameter_a, th)
@@ -379,7 +408,8 @@ def finish(project: Project, job: Job, status: str = "finished") -> dict:
             project.update_params(job, purged=False)
     if job.type in ("MotionCtf", "Pick", "Extract"):
         project.consolidate(job)
-    if job.type in ("MotionCtf", "Pick") and job.params.get("figures") == "outliers" and status == "finished":
+    fg = job.params.get("figures")
+    if job.type in ("MotionCtf", "Pick") and fg not in ("all", "none") and status == "finished":  # outliers / N
         mc = project.ancestor(job, "MotionCtf")
         st = project.micrograph_stats(mc)
         stems = {o for v in st.values() if isinstance(v, dict) for o in v.get("outliers", [])}
@@ -404,6 +434,11 @@ def finish(project: Project, job: Job, status: str = "finished") -> dict:
                     box_a=p["box_a_used"], dtype=p["dtype"])
         if p.get("select"):
             summ["selection"] = project.job(p["select"]).name
+        if p.get("recenter") and status == "finished":
+            try:
+                summ.update(recenter_report(project, job))
+            except Exception as e:                    # a figure never fails a job
+                print(f"[{job.name}] re-centring report: {e!r}")
         if job.params.get("export"):
             from .export import export
             for fmt in job.params["export"]:
@@ -417,6 +452,28 @@ def finish(project: Project, job: Job, status: str = "finished") -> dict:
             print(f"[{job.name}] overview figure: {e!r}")
     project.set_status(job, status, summ)
     return summ
+
+
+def recenter_report(project: Project, job) -> dict:
+    """A re-centred extraction: how far each particle's box moved from its pick (dx_a, dy_a: aligned centre - pick).
+    recenter_shifts.png (magnitudes, 2D distribution, median per micrograph) and the numbers for the summary. A
+    systematic mean shift means the picker is off-centre for this particle; a long tail, picks on the particle's edge
+    or on neighbours (duplicates merge)."""
+    from .plots_preprocess import shifts_figure
+    job = project.job(job)
+    t = project.table(job, "particles").read(["dx_a", "dy_a"])
+    d = np.stack([t["dx_a"], t["dy_a"]], 1).astype(np.float64)
+    r = np.linalg.norm(d, axis=1)
+    stems = project.movies().set_index("id")["stem"]
+    per = pd.DataFrame(dict(movie=t["movie"], r=r)).groupby("movie")["r"].median()
+    out = dict(recenter_shift_median_a=round(float(np.median(r)), 2), recenter_shift_p95_a=round(float(np.percentile(r, 95)), 2),
+               recenter_shift_mean_a=[round(float(x), 2) for x in d.mean(0)], recenter_shift_max_a=round(float(r.max()), 1))
+    shifts_figure(os.path.join(job.path, "recenter_shifts.png"), d, per.to_numpy(),
+                  f"{job.name} · {len(r):,} particles re-centred on {project.job(job.params['recenter']).name}",
+                  project.job(job.params["picks"]).params.get("diameter_a"))
+    pd.DataFrame(dict(stem=stems.loc[per.index].to_numpy(), median_shift_a=per.to_numpy())).to_csv(
+        os.path.join(job.path, "recenter_shifts.csv"), index=False, float_format="%.3g")
+    return out
 
 
 def overview(project: Project, job) -> str:

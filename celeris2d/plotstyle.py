@@ -1,8 +1,8 @@
 """One look for every figure the program writes, in a dark (default) and a light theme.
 
 Every figure function takes the output path first and is decorated with @themed: it is drawn once per theme in
-THEMES and saved as <name>.png (dark) and <name>.light.png (light); the dashboards pick the variant matching their
-theme. Inside a figure, colours come from the current theme T (T.ink, T.series[0], T.density, ...), never literals.
+THEMES (default: dark only) and saved as <name>.png (dark) and, with CELERIS2D_THEMES=dark,light, <name>.light.png;
+the project page shows the light variant in its light theme when there is one. Inside a figure, colours come from the current theme T (T.ink, T.series[0], T.density, ...), never literals.
 
 Palette: the validated reference palette (categorical slots 1-8, light and dark steps; the first three validate
 all-pairs, so a figure uses at most three series per axis), sequential blue ramp, blue/red diverging pair with a
@@ -23,8 +23,9 @@ import numpy as np  # noqa: E402
 from matplotlib.colors import LinearSegmentedColormap  # noqa: E402
 
 DEFAULT = "dark"
-# themes written for every figure (CELERIS2D_THEMES=dark writes the dark one only)
-THEMES = tuple(t for t in os.environ.get("CELERIS2D_THEMES", "dark,light").split(",") if t in ("dark", "light")) \
+# themes written for every figure: dark only by default (one file per figure); CELERIS2D_THEMES=dark,light also
+# writes x.light.png (the project page shows it in its light theme, else the dark figure)
+THEMES = tuple(t for t in os.environ.get("CELERIS2D_THEMES", "dark").split(",") if t in ("dark", "light")) \
     or (DEFAULT,)
 STATUS = dict(good="#0ca30c", warning="#fab219", serious="#ec835a", critical="#d03b3b")
 GRAY = LinearSegmentedColormap.from_list("em", ["#000000", "#ffffff"])

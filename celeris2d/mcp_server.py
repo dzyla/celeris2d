@@ -217,18 +217,20 @@ def _background(jobs, movie_ids=None):
 def process_movies(movies_job: str, apix: float, dose_total: float, diameter_a: float, particle_a: float = 0.0,
                    bin: float = 1.0, gain: str = "", kv: float = 300.0, cs_mm: float = 2.7, amp_contrast: float = 0.1,
                    dark: bool = True, box_a: float = 0.0, particle_apix: float = 0.0, dtype: str = "float16",
-                   export: list[str] | None = None, figures: str = "outliers") -> str:
+                   export: list[str] | None = None, figures: str = "outliers", flip_y: bool = False) -> str:
     """Motion correction + CTF, blob picking and extraction of an Import job's movies, as three new jobs
     (MotionCtf, Pick, Extract) run together in the background; poll job_status. apix: movie pixel size (bin 2 for
     super-resolution); dose_total e/A^2 over all frames; diameter_a: blob for picking; particle_a: longest particle
     dimension (default 1.3 x diameter) - the box is particle + CTF delocalisation unless box_a is given;
     particle_apix: bin particles to this pixel size; export: ['relion', 'cryosparc'] to also write their files;
-    figures: all | outliers (+ the first micrograph) | none - any figure can be drawn later by job_report."""
+    figures: all | outliers (+ the first micrograph) | none | a number N (the first N micrographs as they are
+    processed, + the outliers at the end) - any figure can be drawn later by job_report. flip_y: mirror frames in y
+    (RELION's orientation of TIFF movies: its micrographs, coordinates and map hand)."""
     from .pipeline import (ExtractSettings, MotionSettings, PickSettings, extract_job, motion_job, pick_job)
     prj = _p()
     imp = prj.job(movies_job)
     mc = motion_job(prj, imp, MotionSettings(apix, dose_total, bin, gain, kv, cs_mm, amp_contrast, dtype=dtype,
-                                             figures=figures))
+                                             figures=figures, flip_y=flip_y))
     pj = pick_job(prj, mc, PickSettings(diameter_a, dark=dark, figures=figures))
     ej = extract_job(prj, pj, ExtractSettings(particle_a or 1.3 * diameter_a, box_a, particle_apix=particle_apix,
                                               dtype=dtype, dark=dark, export=tuple(export or ())))

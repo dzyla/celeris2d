@@ -102,16 +102,23 @@ class Micrograph:
 
 
 def dose_weights(n: int, dose_per_frame: float, k: torch.Tensor, pre_dose: float = 0.0,
-                 kv: float = 300.0) -> torch.Tensor:
+                 kv: float = 300.0, frames: range | None = None) -> torch.Tensor:
     """Grant & Grigorieff (2015) exposure filter per frame, (n, *k.shape), scaled so that sum_i w_i^2 = n at
     every frequency (the dose-weighted sum keeps the noise level of a plain sum). The critical exposure was measured
-    at 300 kV; at 200 kV it is 0.8 x that (as in MotionCor2 and RELION)."""
+    at 300 kV; at 200 kV it is 0.8 x that (as in MotionCor2 and RELION). frames: only these frames (len(frames),
+    *k.shape), normalised over all n (for full-size micrographs, where all n at once is half a frame stack)."""
     ne = 0.245 * k.clamp_min(1e-4).pow(-1.665) + 2.81                 # critical exposure (e/A^2) at 300 kV
     if kv < 250:
         ne = 0.8 * ne
     dose = pre_dose + (torch.arange(n, device=k.device, dtype=torch.float32) + 0.5) * dose_per_frame
-    q = torch.exp(-dose.view(-1, *[1] * k.dim()) / (2 * ne[None]))
-    return q * torch.sqrt(n / q.pow(2).sum(0, keepdim=True))
+    if frames is None:
+        q = torch.exp(-dose.view(-1, *[1] * k.dim()) / (2 * ne[None]))
+        return q * torch.sqrt(n / q.pow(2).sum(0, keepdim=True))
+    q2 = torch.zeros_like(ne)
+    for d in dose:                                                   # sum over all frames of q^2, frame by frame
+        q2 += torch.exp(-d / ne)
+    sel = dose[list(frames)]
+    return torch.exp(-sel.view(-1, *[1] * k.dim()) / (2 * ne[None])) * torch.sqrt(n / q2)[None]
 
 
 def _peak(cc: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -197,36 +204,60 @@ class MotionModel:
         return self._basis(xy, t).reshape(len(xy), len(t), -1) @ self.c
 
 
-def patch_shifts(R: torch.Tensor, apix: float, grid: int = 5, align_apix: float = 2.6, bfactor: float = 500.0):
-    """Residual shifts of globally aligned real-space frames R (n, ny, nx) on a grid x grid set of patches:
-    (centres (P, 2) in -1..1 as (x, y), shifts (P, n, 2) in A). All patches are aligned in one batch."""
-    n, ny, nx = R.shape
+def patch_shifts(R, apix: float, grid: int = 5, align_apix: float = 2.6, bfactor: float = 500.0, shape=None):
+    """Residual shifts of globally aligned real-space frames on a grid x grid set of patches: (centres (P, 2) in
+    -1..1 as (x, y), shifts (P, n, 2) in A). All patches are aligned in one batch. R: the frames (n, ny, nx), or a
+    function i -> frame i (ny, nx) with shape = (n, ny, nx): frames made one at a time, so the aligned stack never
+    has to be held (only the patches' cropped spectra are kept)."""
+    n, ny, nx = R.shape if shape is None else shape
+    frame = (lambda i: R[i]) if shape is None else R
     py, px = (ny // grid) // 2 * 2, (nx // grid) // 2 * 2
     na = max(64, int(round(py * apix / align_apix / 2)) * 2)
     ma = max(64, int(round(px * apix / align_apix / 2)) * 2)
-    cen, Fs = [], []
-    for gy in range(grid):
-        for gx in range(grid):
-            y0, x0 = gy * py, gx * px
-            P = R[:, y0:y0 + py, x0:x0 + px]
-            Fs.append(crop_half(torch.fft.rfft2(P - P.mean((1, 2), keepdim=True), norm="forward"), na, ma))
-            cen.append(((x0 + px / 2) / nx * 2 - 1, (y0 + py / 2) / ny * 2 - 1))
-    out = align_frames(torch.stack(Fs), apix * py / na, bfactor=bfactor, max_shift_a=40.0)
-    return torch.tensor(cen, device=R.device), out
+    cen = [((gx * px + px / 2) / nx * 2 - 1, (gy * py + py / 2) / ny * 2 - 1) for gy in range(grid) for gx in range(grid)]
+    Fs = None
+    for i in range(n):
+        r = frame(i)
+        P = torch.stack([r[gy * py:(gy + 1) * py, gx * px:(gx + 1) * px] for gy in range(grid) for gx in range(grid)])
+        f = crop_half(torch.fft.rfft2(P - P.mean((1, 2), keepdim=True), norm="forward"), na, ma)    # (P, na, ma/2+1)
+        if Fs is None:
+            Fs = torch.empty((len(P), n) + f.shape[1:], dtype=f.dtype, device=f.device)
+        Fs[:, i] = f
+    out = align_frames(Fs, apix * py / na, bfactor=bfactor, max_shift_a=40.0)
+    return torch.tensor(cen, device=Fs.device), out
 
 
-def _local_sums(F, sh_g, model, w, apix, tile=512, pre_dose=0.0, kv=300.0):
-    """Aligned sums with local motion: overlapping tiles (half-tile steps, sin^2 weights that add up to 1), each
-    frame of a tile shifted in Fourier space by the global shift plus the model at the tile centre. Returns the
-    plain sum, the dose-weighted sum and the dose-weighted sums of the even and the odd frames (ny, nx)."""
+def _frames(F):
+    """The unshifted frames (n, ny, nx) from their spectra F, one frame at a time (all at once, and reflect-padded as a
+    second copy, held the spectra, the frames, the padded copy and the FFT workspace together: 5.7 GB for a 1.4 GB
+    frame stack)."""
     n, ny, nh = F.shape
     nx = 2 * (nh - 1)
-    dev = F.device
+    R = torch.empty((n, ny, nx), device=F.device)
+    for i in range(n):
+        R[i] = torch.fft.irfft2(F[i], s=(ny, nx), norm="forward")
+    return R
+
+
+def _reflect_index(n: int, before: int, after: int, dev) -> torch.Tensor:
+    """Source index of every position of a reflect-padded axis (as torch's 'reflect' padding: the edge not repeated)."""
+    i = torch.arange(-before, n + after, device=dev)
+    i = torch.where(i < 0, -i, i)
+    return torch.where(i > n - 1, 2 * (n - 1) - i, i)
+
+
+def _local_sums(R, sh_g, model, w, apix, tile=512, pre_dose=0.0, kv=300.0):
+    """Aligned sums with local motion: overlapping tiles (half-tile steps, sin^2 weights that add up to 1), each
+    frame of a tile shifted in Fourier space by the global shift plus the model at the tile centre. R: the unshifted
+    frames (n, ny, nx); tiles reach past the edges into a reflected copy, read through an index map (no padded copy
+    of the stack). Returns the plain sum, the dose-weighted sum and the dose-weighted sums of the even and the odd
+    frames (ny, nx)."""
+    n, ny, nx = R.shape
+    dev = R.device
     st = tile // 2
-    R = torch.fft.irfft2(F, s=(ny, nx), norm="forward")                            # unshifted frames
     pad_y, pad_x = st + (-ny) % st, st + (-nx) % st
-    R = torch.nn.functional.pad(R[:, None], (st, pad_x, st, pad_y), mode="reflect")[:, 0]
-    Ny, Nx = R.shape[1:]
+    iy, ix = _reflect_index(ny, st, pad_y, dev), _reflect_index(nx, st, pad_x, dev)
+    Ny, Nx = len(iy), len(ix)
     out = torch.zeros(4, Ny, Nx, device=dev)                                       # plain, dw, dw even, dw odd
     r = torch.arange(tile, device=dev, dtype=torch.float32)
     win1 = torch.sin(math.pi * (r + 0.5) / tile) ** 2
@@ -240,7 +271,8 @@ def _local_sums(F, sh_g, model, w, apix, tile=512, pre_dose=0.0, kv=300.0):
             cx = ((x0 - st + tile / 2) / nx) * 2 - 1
             cy = ((y0 - st + tile / 2) / ny) * 2 - 1
             shf = sh_g + model(torch.tensor([[cx, cy]], device=dev), t)[0]           # (n, 2)
-            Ft = torch.fft.rfft2(R[:, y0:y0 + tile, x0:x0 + tile]) * _shift_phase(ky, kx, shf[:, 1], shf[:, 0])
+            Rt = R[:, iy[y0:y0 + tile]][:, :, ix[x0:x0 + tile]]                       # (n, tile, tile)
+            Ft = torch.fft.rfft2(Rt) * _shift_phase(ky, kx, shf[:, 1], shf[:, 0])
             Fw = Ft * wt
             acc = torch.stack([Ft.sum(0), Fw.sum(0), Fw[0::2].sum(0), Fw[1::2].sum(0)])
             out[:, y0:y0 + tile, x0:x0 + tile] += torch.fft.irfft2(acc, s=(tile, tile)) * win
@@ -283,25 +315,30 @@ def motion_correct(frames: np.ndarray, gain: np.ndarray | None, apix: float, dos
     sh = align_frames(Fa, p * ny / na)
     ky, kx = _grid(ny, nx, p, dev)
     if patches:
-        Rg = torch.empty((n, ny, nx), device=dev)
-        for i in range(0, n, 4):
-            Rg[i:i + 4] = torch.fft.irfft2(F[i:i + 4] * _shift_phase(ky, kx, sh[i:i + 4, 1], sh[i:i + 4, 0]),
-                                           s=(ny, nx), norm="forward")
-        cen, rs = patch_shifts(Rg, p, grid=patches)
-        del Rg
+        # the globally aligned frames, made one at a time for the patch measurement (holding them all next to F
+        # took another stack's worth of memory)
+        def aligned(i):
+            return torch.fft.irfft2(F[i] * _shift_phase(ky, kx, sh[i:i + 1, 1], sh[i:i + 1, 0])[0], s=(ny, nx),
+                                    norm="forward")
+        cen, rs = patch_shifts(aligned, p, grid=patches, shape=(n, ny, nx))
         model = MotionModel(cen, torch.linspace(0, 1, n, device=dev), rs)
-        out = _local_sums(F, sh, model, dose_per_frame, p, pre_dose=pre_dose, kv=kv)
+        R = _frames(F)
+        if not keep_frames:
+            del F, Fa                                  # the spectra are not needed again
+            F = None
+        out = _local_sums(R, sh, model, dose_per_frame, p, pre_dose=pre_dose, kv=kv)
+        del R
         return Micrograph(sum=out[0], sum_dw=out[1], apix=p, shifts=sh.cpu().numpy(), halves=(out[2], out[3]),
                           dose_per_frame=dose_per_frame, frames_ft=F if keep_frames else None, model=model,
                           local=dict(rms_a=model.rms, used=model.n_used, measured=rs.cpu().numpy(),
                                      centres=cen.cpu().numpy(),
                                      model=model(cen, torch.linspace(0, 1, n, device=dev)).cpu().numpy()))
-    w = dose_weights(n, dose_per_frame, torch.sqrt(ky ** 2 + kx ** 2), pre_dose, kv)
+    kk = torch.sqrt(ky ** 2 + kx ** 2)
     S = torch.zeros((ny, nx // 2 + 1), dtype=torch.complex64, device=dev)
     Sw, He, Ho = torch.zeros_like(S), torch.zeros_like(S), torch.zeros_like(S)
-    for i in range(0, n, 4):                                         # i is even: rows 0, 2 of a chunk are even
-        Fi = F[i:i + 4] * _shift_phase(ky, kx, sh[i:i + 4, 1], sh[i:i + 4, 0])
-        Fw = Fi * w[i:i + 4]
+    for i in range(0, n, 2):                                         # i is even: row 0 of a pair is an even frame
+        Fi = F[i:i + 2] * _shift_phase(ky, kx, sh[i:i + 2, 1], sh[i:i + 2, 0])
+        Fw = Fi * dose_weights(n, dose_per_frame, kk, pre_dose, kv, frames=range(i, min(i + 2, n)))
         S += Fi.sum(0)
         Sw += Fw.sum(0)
         He += Fw[0::2].sum(0)

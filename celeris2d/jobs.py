@@ -81,11 +81,11 @@ def drop_duplicates(centres: np.ndarray, movie: np.ndarray, fit: np.ndarray, dis
     return keep
 
 
-def _session(project: Project, job: Job, src, diameter_a, max_res_a, gpus, log, workdir=None):
+def _session(project: Project, job: Job, src, diameter_a, max_res_a, gpus, log, workdir=None, **params):
     from .session import Session
     s = Session(workdir or os.path.join(job.path, "session"), log=log)
     _migrate_session(s.workdir, src.path)
-    info = s.load(src, diameter=diameter_a or None, max_res=max_res_a, gpus=gpus)
+    info = s.load(src, diameter=diameter_a or None, max_res=max_res_a, gpus=gpus, **params)
     return s, info
 
 
@@ -297,6 +297,9 @@ class Refine3DSettings:
     global_res_a: float = 12.0      # resolution of that search
     diameter_a: float = 0.0
     classes: tuple = ()             # poses from a HeteroRefine: only the particles of these 1-based classes
+    mask: str = "auto"              # solvent mask during refinement: "auto" (made from the map every iteration below
+                                    # 15 A, masking.auto_mask), "sphere" (the particle sphere only), or a MaskCreate job
+                                    # / .mrc path (fixed)
     gpus: str = "auto"
 
 
@@ -350,9 +353,10 @@ def _posed_particles(project: Project, job: Job, pj: Job, qj: Job, classes=(), l
     """The particles of particle job pj that have poses in job qj (optionally only those in these 1-based classes of a
     HeteroRefine), duplicates removed. Returns (source, poses (dict of arrays, rows matching the source), starting
     shifts (n, 2) A, halves or None, number of duplicates, duplicate distance)."""
+    # every particle with a pose, also those the poses job left out of its reconstruction: the refinement leaves out
+    # its own worst-fitting share. Taking only the "used" ones compounded: InitialModel -> Refine3D -> Refine3D
+    # (polished) -> Refine3D (CTF-refined) kept 4,317 -> 3,885 -> 3,496 -> 3,146 of beta-gal's particles.
     poses = project.table(qj, "particles").read()
-    if "used" in poses and qj.type != "HeteroRefine":
-        poses = {k: v[poses["used"]] for k, v in poses.items()}
     if classes:
         if "cls" not in poses:
             raise ValueError(f"{qj.name} has no 3D classes")
@@ -390,6 +394,17 @@ def _posed_particles(project: Project, job: Job, pj: Job, qj: Job, classes=(), l
     return src, {k: v[row] for k, v in poses.items()}, t_start, half, n_dup, dist
 
 
+def load_mask(project: Project, ref: str, b: int, apix: float) -> np.ndarray:
+    """A mask for a map of box b at apix: a MaskCreate job (its mask.mrc) or an .mrc path (absolute or relative to
+    the project), resampled to that grid and clipped to 0..1."""
+    import mrcfile
+    path = ref if str(ref).endswith(".mrc") else os.path.join(project.job(ref).path, "mask.mrc")
+    path = path if os.path.isabs(path) else project.abs(path)
+    with mrcfile.open(path, permissive=True) as f:
+        m, ap = np.asarray(f.data, np.float32), float(f.voxel_size.x)
+    return np.clip(map_to_box(m, ap, b, apix).cpu().numpy(), 0, 1)
+
+
 def _reference_map(rj: Job, cls: int = 0) -> tuple[np.ndarray, float, str]:
     """A job's map before masking: a HeteroRefine class (1-based cls), else map_nomask.mrc / map.mrc."""
     import mrcfile
@@ -411,7 +426,7 @@ def run_refine3d(project: Project, job, log=print) -> dict:
     pj, qj, rj = (project.job(job.params[k]) for k in ("particles", "poses", "reference"))
     src, poses, t_start, half, n_dup, dist = _posed_particles(project, job, pj, qj, tuple(s.classes), log)
     max_res = s.max_res_a or 2.0 * src.apix
-    ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log)
+    ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log, nyquist_margin=1.0)
     clf = ses.clf
     clf._wait_loaded(clf.N)
     dev, b, box_a = clf.dev, clf.bmax, clf.box_a
@@ -434,15 +449,21 @@ def run_refine3d(project: Project, job, log=print) -> dict:
     init.set_real(vol.to(dev))
     t0 = time.time()
     A_start = A.clone()
+    sm = None if s.mask == "sphere" else ("auto" if s.mask == "auto" else torch.as_tensor(
+        load_mask(project, s.mask, b, box_a / b)))
     maps, A, t, z, fscs, res, vols = ab.refine_particles(clf, idx, A, t, init, sym=s.sym, n_iter=s.n_iter,
                                                          res_start=res0, n_local=s.n_local, drop_frac=s.drop_frac,
                                                          global_at=tuple(range(1, s.global_iters + 1)),
                                                          global_res=s.global_res_a, box=b,
-                                                         half=None if half is None else torch.as_tensor(half), log=log)
+                                                         half=None if half is None else torch.as_tensor(half),
+                                                         solvent_mask=sm, log=log)
     seconds = time.time() - t0
     apix = box_a / b
     h1, h2 = vols[0][0].real(), vols[0][1].real()
-    smask = ab.solvent_mask(maps[0], apix)
+    smask = ab.refine_particles.last_mask
+    if smask is None:                                   # sphere during refinement: a solvent mask for the report
+        from .masking import auto_mask
+        smask = auto_mask(maps[0], apix, res_a=float(res[0]), k_sigma=5.0, halves=(h1, h2), diameter_a=clf.p.diameter_a)
     fsc_sol = ab.corrected_masked_fsc(h1, h2, smask)
     fsc_unm = ab.fsc(vols[0][0], vols[0][1])
     fsc_msk = ab.fsc_maps(h1 * smask, h2 * smask)
@@ -550,7 +571,7 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
     src, poses, t_start, half, n_dup, dist = _posed_particles(project, job, pj, qj, (), log)
     max_res = s.max_res_a or 2.0 * src.apix
     t0 = time.time()
-    ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log)
+    ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log, nyquist_margin=1.0)
     clf = ses.clf
     clf._wait_loaded(clf.N)
     dev, box_a, n = clf.dev, clf.box_a, clf.N
@@ -735,6 +756,7 @@ class JobSpec:
 
 
 def registry() -> dict[str, JobSpec]:
+    from .ctfrefine import CtfRefineSettings, ctf_refine_job, run_ctf_refine
     from .polish import PolishSettings, polish_job, run_polish
     from .sharpen import SharpenSettings, run_sharpen, sharpen_job
     return {
@@ -743,6 +765,7 @@ def registry() -> dict[str, JobSpec]:
         "Refine3D": JobSpec(Refine3DSettings, ("particles", "poses", "reference"), refine3d_job, run_refine3d),
         "HeteroRefine": JobSpec(HeteroRefineSettings, ("particles", "poses"), hetero_refine_job, run_hetero_refine),
         "Polish": JobSpec(PolishSettings, ("refine",), polish_job, run_polish),
+        "CtfRefine": JobSpec(CtfRefineSettings, ("refine",), ctf_refine_job, run_ctf_refine),
         "Sharpen": JobSpec(SharpenSettings, ("refine",), sharpen_job, run_sharpen),
     }
 

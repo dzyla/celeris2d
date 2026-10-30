@@ -54,12 +54,36 @@ def polish_job(project: Project, refine, s: PolishSettings, label: str = "") -> 
 
 
 # --------------------------------------------------------------------------------------------- helpers
+class _BandVolume:
+    """A Volume built on a small box (Nyquist just past the band used) whose projections are zero-padded to the
+    frame box bi: the same spectra (norm='forward': cropping / padding is exact resampling), at (b/bi)^3 of the
+    memory. Two pad-2 volumes at bi = 360 held 6 GB and peaked at 18.7 GB while being built (GPU overflow)."""
+
+    def __init__(self, vol, bi: int):
+        self.vol, self.bi = vol, bi
+
+    def project(self, A: torch.Tensor) -> torch.Tensor:
+        P = self.vol.project(A)                                       # (n, b, b//2+1)
+        b, bi = self.vol.b, self.bi
+        if b == bi:
+            return P
+        P = P * (bi / b)                    # a projection sums along the ray: its amplitude scales with the box
+        out = torch.zeros((len(P), bi, bi // 2 + 1), dtype=P.dtype, device=P.device)
+        h = b // 2
+        out[:, :h, :b // 2 + 1] = P[:, :h]
+        out[:, bi - h:, :b // 2 + 1] = P[:, b - h:]
+        return out
+
+
 def _half_maps(project: Project, rj: Job, bi: int, apix: float, max_res: float, dev) -> list:
-    """The refinement's two half maps, masked, FSC-weighted and low-passed to max_res, resampled to box bi at
-    apix: Volumes for projection."""
+    """The refinement's two half maps, masked, FSC-weighted and low-passed to max_res, for projection at box bi and
+    pixel size apix (built on the smallest box whose Nyquist is a little beyond max_res: _BandVolume)."""
     import mrcfile
     from .abinitio import Volume
     from .jobs import map_to_box
+    bi_full, apix_full = bi, apix
+    bi = min(bi_full, int(math.ceil(2 * bi_full * apix_full / max_res / 2)) * 2 + 8)
+    apix = bi_full * apix_full / bi                                   # same box in A, coarser pixels
     out = []
     summ = project.summary_of(rj)
     with mrcfile.open(os.path.join(rj.path, "mask.mrc"), permissive=True) as f:
@@ -79,7 +103,7 @@ def _half_maps(project: Project, rj: Job, bi: int, apix: float, max_res: float, 
         v = torch.fft.ifftn(torch.fft.fftn(v) * w).real
         vol = Volume(bi, dev)
         vol.set_real(v)
-        out.append(vol)
+        out.append(_BandVolume(vol, bi_full))
     return out
 
 
@@ -137,7 +161,8 @@ def _particles(project: Project, job: Job):
         raise ValueError(f"{rj.name} has no half sets (made by an older version: run the refinement again)")
     half = r["half"]
     return dict(uid=r["uid"], movie=e["movie"][j].astype(np.int64), centre=centre, pick=pick, A=A, half=half,
-                ctf=torch.as_tensor(np.asarray(ctf, np.float32)), optics=src.optics)
+                ctf=torch.as_tensor(np.asarray(ctf, np.float32)), optics=src.optics,
+                per_particle_ctf="defocus_u" in ex_t.columns)
 
 
 def _movie_frames(project: Project, mc: Job, movie_id: int, frames=None):
@@ -318,10 +343,13 @@ def run_polish(project: Project, job, log=print) -> dict:
         else:
             imgs, new_c = np.zeros((0, box, box), np.float32), np.zeros((0, 2))
             trk, mvd = np.zeros(0, np.float32), np.zeros(0, np.float32)
+        cols = dict(score=np.zeros(len(sel), np.float32), track_rms_a=trk, track_mean_a=mvd,
+                    half=P["half"][sel].astype(np.uint8))
+        if P["per_particle_ctf"]:                    # refined defocus (CtfRefine) goes on with the polished particles
+            c_ = P["ctf"][sel].numpy()
+            cols.update(defocus_u=c_[:, 0], defocus_v=c_[:, 1], defocus_angle=c_[:, 2])
         project.add_particles(job, int(m), new_c, imgs, out_apix, dtype=s.dtype, uid=P["uid"][sel],
-                              pick_xy_a=P["pick"][sel], columns=dict(score=np.zeros(len(sel), np.float32),
-                                                                     track_rms_a=trk, track_mean_a=mvd,
-                                                                     half=P["half"][sel].astype(np.uint8)))
+                              pick_xy_a=P["pick"][sel], columns=cols)
         done += 1
         del mic
         if done % 10 == 0 or done == len(movies):

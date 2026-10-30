@@ -25,7 +25,9 @@ def _files(d):
     return sorted(os.listdir(d))
 
 
-def test_refine3d_report(tmp_path):
+def test_refine3d_report(tmp_path, monkeypatch):
+    from celeris2d import plotstyle
+    monkeypatch.setattr(plotstyle, "THEMES", ("dark", "light"))      # default is dark only; the light one on request
     A, hist, f, maps, masks = _inputs()
     n = len(A)
     out = refinement_report(str(tmp_path), "test", "D7", 100.0, 100.0 / 32, A, A, torch.zeros(n, 2),
@@ -37,6 +39,13 @@ def test_refine3d_report(tmp_path):
               "progress.png", "particles.png", "map_views.png", "map_views.light.png"):
         assert x in fs, x
     assert 0 < out["scf"] <= 1 and out["history"] == hist
+    monkeypatch.setattr(plotstyle, "THEMES", ("dark",))
+    os.makedirs(tmp_path / "d")
+    refinement_report(str(tmp_path / "d"), "test", "D7", 100.0, 100.0 / 32, A, A, torch.zeros(n, 2),
+                      np.random.rand(n), np.random.rand(n) > 0.1, hist,
+                      fsc=dict(corrected=f, unmasked=f * 0.9, masked=f, sphere_masked=f), resolution_a=6.0,
+                      maps=maps, masks=masks)
+    assert not [x for x in _files(tmp_path / "d") if ".light." in x]
 
 
 def test_hetero_report(tmp_path):

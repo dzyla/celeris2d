@@ -57,11 +57,12 @@ CREATE TABLE IF NOT EXISTS chunks (
 """
 
 JOB_TYPES = ("Import", "MotionCtf", "Pick", "Extract", "Select", "Class2D", "InitialModel", "Refine3D", "HeteroRefine",
-             "Polish", "Sharpen")
+             "Polish", "CtfRefine", "Sharpen")
 PER_MOVIE = dict(MotionCtf="micrographs", Pick="picks", Extract="chunks", Polish="chunks")
 HEAVY = dict(MotionCtf=(".mrc",), Extract=(".mrcs",), Polish=(".mrcs",))   # purgeable files of a job's data folder
 REBUILDABLE = ("MotionCtf", "Extract")         # purged files can be made again from the recorded parameters
-PARTICLE_JOBS = ("Extract", "Polish")          # jobs that hold particle images (a "particles" table + stacks)
+PARTICLE_JOBS = ("Extract", "Polish", "CtfRefine")   # jobs that hold particle images (a "particles" table + stacks;
+                                                      # a CtfRefine job's are those of the job it refined)
 
 
 def movie_fingerprint(path: str, chunk: int = 1 << 20) -> str:
@@ -588,6 +589,16 @@ class Project:
         mics = self.micrographs(job.params["micrographs"])[
             ["movie_id", "stem", "subdir", "defocus_u", "defocus_v", "defocus_angle", "ctf_fit_res", "path", "apix",
              "ny", "nx"]].rename(columns=dict(path="mic_path", apix="mic_apix", ny="mic_ny", nx="mic_nx"))
+        per = [k for k in ("defocus_u", "defocus_v", "defocus_angle") if k in df]
+        if not per and "defocus_u" in self.table(job, "particles").columns:   # not among the columns asked for
+            d = self.table(job, "particles").read(["defocus_u", "defocus_v", "defocus_angle"], movies)
+            per = ["defocus_u", "defocus_v", "defocus_angle"]
+            for k in per:
+                df[k] = d[k]
+        if per:                                       # per-particle CTF (CtfRefine, or carried through a polishing)
+            mics = mics.drop(columns=per)
+            for k in per:
+                df[k] = df[k].astype(np.float64)
         return df.merge(ch, on="movie_id", how="left").merge(mics, on="movie_id", how="left")
 
     def particle_keys(self, df: pd.DataFrame) -> np.ndarray:

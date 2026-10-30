@@ -100,9 +100,9 @@ def movie_figure(path: str, mic, fit, title: str = "", frc_eo=None):
     # power spectrum: left half data (background removed), right half fitted model; fit resolution circle
     pr = fit.profile
     d2, m2 = np.fft.fftshift(pr["data2d"], 0), np.fft.fftshift(pr["model2d"], 0)
-    T = d2.shape[0]
+    ns = d2.shape[0]                                                 # (not T: that is the theme)
     full = np.concatenate([d2[::-1, :0:-1], m2[:, :-1]], 1)          # Hermitian mirror for the left half
-    full = np.concatenate([np.full((T, 1), np.nan), full], 1)[:, :T]
+    full = np.concatenate([np.full((ns, 1), np.nan), full], 1)[:, :ns]
     v = np.nanpercentile(np.abs(d2), 98)
     a_ps.imshow(full, cmap=GRAY, vmin=-v, vmax=v, extent=[-0.5 / pr["apix"], 0.5 / pr["apix"]] * 2)
     th = np.linspace(0, 2 * math.pi, 200)
@@ -393,8 +393,11 @@ def overview_figure(path: str, panels: list[tuple[str, str, np.ndarray]], title:
     n = len(panels)
     cols = min(3, n)
     rows = int(math.ceil(n / cols))
-    fig, axs = plt.subplots(rows, cols, figsize=(4.4 * cols, 2.9 * rows + 0.8), squeeze=False)
-    fig.subplots_adjust(left=0.06, right=0.98, top=top(fig, 0.75), bottom=0.1, wspace=0.28, hspace=0.55)
+    W, H = max(5.6, 4.4 * cols), 2.9 * rows + 0.8
+    fig, axs = plt.subplots(rows, cols, figsize=(W, H), squeeze=False)
+    # margins in inches (as fractions they left no room for tick and axis labels in a one-panel figure)
+    fig.subplots_adjust(left=0.8 / W, right=1 - 0.2 / W, top=top(fig, 0.75), bottom=0.55 / H, wspace=0.3,
+                        hspace=0.55)
     for a in axs.ravel()[n:]:
         a.axis("off")
     for a, (name, unit, v) in zip(axs.ravel(), panels):
@@ -411,5 +414,45 @@ def overview_figure(path: str, panels: list[tuple[str, str, np.ndarray]], title:
         a.set(title=name, xlabel="micrograph (processing order)", ylabel=unit)
         grid_y(a)
     title_block(fig, title, sub)
+    fig.savefig(path)
+    plt.close(fig)
+
+
+@themed
+def shifts_figure(path: str, d: np.ndarray, per_mic: np.ndarray, title: str, diameter_a: float | None = None):
+    """Re-centring shifts (n, 2) in A (aligned centre - pick): magnitude histogram, 2D density (with the pick
+    diameter's quarter as a reference circle) and the median per micrograph."""
+    from .plotstyle import grid_y, note, title as title_block, top
+    r = np.linalg.norm(d, axis=1)
+    fig, ax = plt.subplots(1, 3, figsize=(15, 4.2), gridspec_kw=dict(width_ratios=[1.1, 1, 1.1]))
+    fig.subplots_adjust(left=0.06, right=0.98, top=top(fig, 0.75), bottom=0.14, wspace=0.45)
+    a = ax[0]
+    a.hist(r, bins=60, color=T.series[0])
+    for q, ls in ((50, "--"), (95, ":")):
+        v = np.percentile(r, q)
+        a.axvline(v, color=T.ink2, lw=1, ls=ls)
+        a.text(v, a.get_ylim()[1] * 0.95, f" {q}%: {v:.1f} Å", color=T.ink2, fontsize=8, va="top")
+    a.set(xlabel="shift from the pick (Å)", ylabel="particles", title="Shift magnitude")
+    grid_y(a)
+    a = ax[1]
+    lim = float(np.percentile(r, 99.5)) * 1.1 + 1
+    h = a.hexbin(d[:, 0], d[:, 1], gridsize=40, extent=(-lim, lim, -lim, lim), cmap=T.density, mincnt=1)
+    a.axhline(0, color=T.line, lw=0.8)
+    a.axvline(0, color=T.line, lw=0.8)
+    if diameter_a:
+        th = np.linspace(0, 2 * math.pi, 200)
+        a.plot(diameter_a / 4 * np.cos(th), diameter_a / 4 * np.sin(th), color=T.ink3, lw=1, ls="--")
+    m = d.mean(0)
+    a.plot([0, m[0]], [0, m[1]], color=T.series[1], lw=2)
+    a.set(xlim=(-lim, lim), ylim=(-lim, lim), xlabel="dx (Å)", ylabel="dy (Å)", aspect="equal",
+          title="2D distribution")
+    note(a, f"mean ({m[0]:.1f}, {m[1]:.1f}) Å" + (f"\ncircle: ¼ pick diameter" if diameter_a else ""), "upper left")
+    fig.colorbar(h, ax=a, fraction=0.046, pad=0.02).set_label("particles")
+    a = ax[2]
+    a.plot(np.arange(len(per_mic)), per_mic, "o", color=T.series[0], ms=4)
+    a.axhline(np.median(per_mic), color=T.ink2, lw=1, ls="--")
+    a.set(xlabel="micrograph (processing order)", ylabel="median shift (Å)", title="Per micrograph")
+    grid_y(a)
+    title_block(fig, "Re-centring shifts", title)
     fig.savefig(path)
     plt.close(fig)
