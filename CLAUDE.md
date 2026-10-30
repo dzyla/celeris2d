@@ -113,7 +113,7 @@ Layers, bottom to top:
   15 A) / static (once from the starting map) / none (particle sphere) / a MaskCreate job or .mrc
   (`jobs.solvent_mask_arg`). NU refinements write `nu_cutoff.mrc`, `nu.png` and per-iteration `nu` statistics.
 - **Dashboard (/project)**: `scheduler.py` is the queue (statuses queued / waiting / running / finished / failed /
-  cancelled in the catalog; a queued job runs when its inputs finished; after a Class2D / HeteroRefine / Class3D run
+  cancelled in the catalog; a queued job runs when its inputs finished, in a process of its own (`start`) that `stop` ends; after a Class2D / HeteroRefine / Class3D run
   from the queue a Select job waits for the user - `complete_select`; MCP / scripts get none). `gallery.py` gives
   class galleries and 8-bit volumes for the browser's WebGL2 raymarcher (`web/volume.js`). Every `themed` figure also
   writes `x.plot.json` (`figjson.py`; `Job.out` keeps it next to x.png) that `web/plots.js` draws with Plotly in the
