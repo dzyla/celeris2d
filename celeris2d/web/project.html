@@ -38,62 +38,88 @@
   input[type=checkbox] { accent-color: var(--data); }
 
   /* frame */
-  .top { display: flex; align-items: center; gap: 14px; height: 52px; padding: 0 18px; border-bottom: 1px solid var(--line); background: var(--surface); }
-  .brand { font-weight: 700; font-size: 17px; letter-spacing: -.2px; white-space: nowrap; }
+  .top { display: flex; align-items: center; gap: 16px; height: 50px; padding: 0 16px 0 18px; border-bottom: 1px solid var(--line); background: var(--surface); }
+  .brand { font-weight: 700; font-size: 16px; letter-spacing: -.2px; white-space: nowrap; }
   .brand b { color: var(--data); font-weight: 700; }
-  .proj { min-width: 0; flex: 1; display: flex; align-items: baseline; gap: 10px; }
+  .proj { min-width: 0; flex: 1; display: flex; align-items: baseline; gap: 10px; padding-left: 16px; border-left: 1px solid var(--line); }
   .proj .name { font-weight: 600; font-size: 15px; white-space: nowrap; }
   .proj .path { color: var(--ink3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .pulse { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: var(--ink2); white-space: nowrap; }
+  .pulse { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--ink2); white-space: nowrap; }
   .pulse .d { width: 8px; height: 8px; border-radius: 50%; background: var(--good); display: inline-block; }
   .pulse .d.on { background: var(--you); animation: blink 1.6s ease-in-out infinite; }
   @keyframes blink { 50% { opacity: .35; } }
   @media (prefers-reduced-motion: reduce) { .pulse .d.on { animation: none; } }
-  .wrap { display: grid; grid-template-columns: 330px 1fr; height: calc(100vh - 52px); }
+  .menu { position: relative; }
+  .menu summary { list-style: none; cursor: pointer; padding: 6px 12px; border: 1px solid var(--line); border-radius: 7px; font-size: 13px; background: var(--well); }
+  .menu summary::-webkit-details-marker { display: none; }
+  .menu summary::after { content: " ▾"; color: var(--ink3); }
+  .menu[open] summary { border-color: var(--ink3); }
+  .menu-list { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; background: var(--raise); border: 1px solid var(--line); border-radius: 9px; padding: 5px; display: flex; flex-direction: column; min-width: 210px; box-shadow: 0 12px 30px rgba(0,0,0,.45); }
+  .menu-list button { text-align: left; background: none; border: none; padding: 8px 10px; border-radius: 6px; }
+  .menu-list button:hover:not(:disabled) { background: var(--well); }
+  .wrap { display: grid; grid-template-columns: 318px 1fr; height: calc(100vh - 50px); }
   .rail { overflow-y: auto; background: var(--surface); border-right: 1px solid var(--line); }
   main { overflow-y: auto; min-width: 0; }
 
-  /* rail */
+  /* rail: the waiting choices, the queue, then the project as its processing line - stages in order, each job a
+     stop on the line */
   .sect { padding: 12px 14px 6px; }
   .sect h2 { font-size: 13px; font-weight: 600; color: var(--ink2); margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; }
   .ask { display: block; width: 100%; text-align: left; background: var(--you-dim); border: 1px solid var(--you); border-radius: 9px;
          padding: 9px 11px; margin: 0 0 8px; color: var(--ink); cursor: pointer; }
   .ask strong { color: var(--you); display: block; font-size: 13px; }
   .ask span { color: var(--ink2); font-size: 12px; }
-  .q { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px; padding: 5px 2px; font-size: 13px; }
+  .q { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px; padding: 4px 2px; font-size: 13px; }
   .q .who { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .q .who:hover { color: var(--data); }
   .q .st { color: var(--ink3); font-size: 12px; }
   .tog { display: flex; gap: 7px; align-items: center; color: var(--ink2); font-size: 12px; margin: 6px 0 2px; }
-  .find { position: sticky; top: 0; z-index: 2; background: var(--surface); padding: 10px 14px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .find { position: sticky; top: 0; z-index: 2; background: var(--surface); padding: 10px 14px; border-top: 1px solid var(--line); }
   .find input { width: 100%; }
-  .job { display: grid; grid-template-columns: 30px 1fr auto; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--line); cursor: pointer; align-items: center; }
+  .stg { position: relative; padding: 4px 0 8px; }
+  .stg::before { content: ""; position: absolute; left: 25px; top: 30px; bottom: 0; width: 2px; background: var(--line); }
+  .stg:last-child::before { bottom: 18px; }
+  .stg h3 { display: flex; align-items: baseline; gap: 8px; margin: 0; padding: 8px 14px 6px 14px; font-size: 13.5px; font-weight: 600; }
+  .stg h3 .mark { width: 24px; height: 24px; flex: none; border-radius: 50%; background: var(--plane); border: 2px solid var(--line); display: inline-grid;
+                  place-items: center; font-size: 11px; color: var(--ink2); position: relative; top: 6px; margin-right: 2px; }
+  .stg h3 .hl { margin-left: auto; color: var(--ink2); font-weight: 400; font-size: 12px; }
+  .job { position: relative; display: grid; grid-template-columns: 1fr auto; gap: 1px 8px; padding: 6px 14px 6px 46px; cursor: pointer; }
+  .job::before { content: ""; position: absolute; left: 22px; top: 12px; width: 8px; height: 8px; border-radius: 50%; background: var(--ink3); box-shadow: 0 0 0 3px var(--surface); }
+  .job.finished::before { background: var(--good); } .job.running::before { background: var(--you); } .job.failed::before { background: var(--bad); }
+  .job.queued::before { background: var(--surface); border: 1.5px solid var(--ink2); width: 5px; height: 5px; } .job.waiting::before { background: var(--you); border-radius: 2px; }
+  .job.cancelled::before { background: var(--axis); }
   .job:hover { background: var(--well); }
   .job.sel { background: var(--data-dim); }
-  .job .n { color: var(--ink3); font-size: 12px; }
-  .job .t { font-weight: 600; font-size: 13.5px; }
-  .job .l { color: var(--ink2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .job .k { color: var(--ink2); font-size: 12px; text-align: right; white-space: nowrap; max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
+  .job.sel::before { box-shadow: 0 0 0 3px var(--data-dim); }
+  .job .t { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .job .t .n { color: var(--ink3); font-weight: 400; margin-left: 4px; }
+  .job .l { color: var(--ink3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; grid-column: 1 / -1; }
+  .job .k { color: var(--ink2); font-size: 12px; text-align: right; white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis; align-self: center; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; vertical-align: 1px; background: var(--ink3); }
   .dot.finished { background: var(--good); } .dot.running { background: var(--you); } .dot.failed { background: var(--bad); }
   .dot.queued { background: transparent; border: 1.5px solid var(--ink2); } .dot.waiting { background: var(--you); border-radius: 2px; }
   .dot.cancelled { background: var(--axis); }
-  .fin { color: var(--you); font-size: 12px; margin-left: 6px; }
+  .fin { color: var(--you); font-size: 12px; margin-left: 6px; font-weight: 400; }
 
   /* job */
-  .head { display: flex; align-items: flex-start; gap: 16px; padding: 18px 26px 12px; flex-wrap: wrap; }
-  .head h1 { font-size: 22px; font-weight: 700; margin: 0; letter-spacing: -.3px; }
-  .head .sub { color: var(--ink2); font-size: 13px; margin-top: 2px; }
-  .head .acts { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-  .warn { margin: 0 26px 10px; border-left: 3px solid var(--serious); background: var(--well); padding: 7px 12px; border-radius: 0 7px 7px 0; font-size: 13px; }
+  .head { display: grid; grid-template-columns: auto 1fr auto; align-items: start; gap: 6px 36px; padding: 18px 26px 14px; }
+  .head .title { min-width: 0; }
+  .head h1 { font-size: 22px; font-weight: 700; margin: 0; letter-spacing: -.3px; white-space: nowrap; }
+  .head h1 .jn { color: var(--ink3); font-weight: 500; }
+  .head .sub { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; color: var(--ink2); font-size: 13px; margin-top: 4px; }
+  .head .sub .lab { color: var(--ink3); }
+  .head .sub .fin { margin: 0; }
+  .head .acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .nums { display: flex; gap: 6px 30px; flex-wrap: wrap; align-self: center; }
+  .num .v { font-size: 21px; font-weight: 700; letter-spacing: -.4px; line-height: 1.15; white-space: nowrap; }
+  .num .v small { font-size: 13px; font-weight: 500; color: var(--ink2); margin-left: 2px; }
+  .num .c { color: var(--ink3); font-size: 12px; white-space: nowrap; }
+  @media (max-width: 1250px) { .head { grid-template-columns: 1fr auto; } .head .nums { grid-column: 1 / -1; grid-row: 2; } }
+  .warn { margin: 0 26px 8px; border-left: 3px solid var(--serious); background: var(--well); padding: 6px 12px; border-radius: 0 7px 7px 0; font-size: 13px; }
   .err { color: var(--bad); }
-  .stage { background: #000; margin: 0 26px; border-radius: 10px; position: relative; overflow: hidden; border: 1px solid var(--line); }
-  .nums { display: flex; gap: 34px; flex-wrap: wrap; padding: 16px 26px 4px; }
-  .num { min-width: 90px; }
-  .num .v { font-size: 26px; font-weight: 700; letter-spacing: -.5px; line-height: 1.1; }
-  .num .v small { font-size: 15px; font-weight: 500; color: var(--ink2); margin-left: 2px; }
-  .num .c { color: var(--ink2); font-size: 12.5px; }
-  .tabs { display: flex; gap: 2px; padding: 14px 26px 0; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--plane); z-index: 3; }
+  .stage { background: #000; margin: 4px 26px 0; border-radius: 10px; position: relative; overflow: hidden; }
+  .stage:empty { display: none; }
+  .tabs { display: flex; gap: 2px; padding: 16px 26px 0; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--plane); z-index: 3; }
   .tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--ink2); padding: 8px 12px; font-size: 13.5px; }
   .tabs button.on { color: var(--ink); border-bottom-color: var(--data); }
   .pane { padding: 18px 26px 70px; }
@@ -101,12 +127,13 @@
   .empty { color: var(--ink2); padding: 60px 30px; text-align: center; }
   .empty h1 { color: var(--ink); font-size: 20px; }
 
-  /* figures */
-  .fig { margin: 0 0 26px; }
-  .fig .bar { display: flex; justify-content: space-between; align-items: center; margin: 0 0 6px; font-size: 12.5px; color: var(--ink2); }
-  .fig .plot { background: var(--surface); border-radius: 8px; overflow: hidden; min-height: 40px; }
-  .fig img { max-width: min(100%, 1150px); display: block; border-radius: 8px; }
-  .fig .plot { max-width: 1150px; }
+  /* figures: a grid at their own size (a wide figure takes the row) */
+  .figs { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 18px; align-items: start; }
+  .fig { margin: 0; background: var(--surface); border-radius: 10px; overflow: hidden; min-width: 0; }
+  .fig.wide { grid-column: 1 / -1; }
+  .fig .bar { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; font-size: 13px; color: var(--ink2); border-bottom: 1px solid var(--line); }
+  .fig .plot { min-height: 40px; }
+  .fig img { width: 100%; display: block; }
   .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
   .seg button { border: none; border-radius: 0; padding: 3px 10px; font-size: 12px; background: var(--well); color: var(--ink2); }
   .seg button.on { background: var(--raise); color: var(--ink); }
@@ -171,16 +198,21 @@
   .mpkpi .v { font-size: 20px; font-weight: 600; } .mpkpi .c { font-size: 12px; color: var(--ink3); }
   .mpview { display: grid; grid-template-columns: auto auto minmax(220px, 1fr); gap: 14px; align-items: start; justify-content: start; }
   .mpmic, .mpps { margin: 0; background: #000; border-radius: 8px; overflow: hidden; }
-  .mpmic img { display: block; height: min(54vh, 34vw); width: auto; max-width: 100%; object-fit: contain; }
+  .mpmic canvas { display: block; height: min(54vh, 34vw); width: auto; max-width: 100%; aspect-ratio: auto; }
+  .lp { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 12.5px; color: var(--ink2); }
+  .lp input { grid-column: 1 / -1; grid-row: 2; width: 100%; }
+  .pnote { padding: 12px 14px; font-size: 13px; color: var(--ink2); } .pnote b { display: block; color: var(--ink); font-size: 12px; margin-bottom: 4px; }
   .mpps img { display: block; height: min(54vh, 34vw); aspect-ratio: 1; width: auto; }
   .mpmic figcaption, .mpps figcaption { font-size: 12px; color: var(--ink3); padding: 6px 10px; background: var(--surface); }
   .mpside { display: flex; flex-direction: column; gap: 10px; }
   .mpnav { display: flex; gap: 8px; align-items: center; } .mpnav input { flex: 1; }
   .mpt { border-collapse: collapse; font-size: 13px; } .mpt td { padding: 3px 14px 3px 0; } .mpt td:first-child { color: var(--ink3); }
   .mpcharts { margin-top: 16px; min-height: 60px; }
-  .mpplots { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; margin-top: 14px; }
+  .mpplots { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
+  .mpplots .w2 { grid-column: span 2; }
+  @media (max-width: 1500px) { .mpplots { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   .mpplots > div { background: var(--surface); border-radius: 8px; min-height: 120px; overflow: hidden; }
-  @media (max-width: 1100px) { .mpplots { grid-template-columns: 1fr; } }
+  @media (max-width: 1100px) { .mpplots { grid-template-columns: 1fr; } .mpplots .w2 { grid-column: auto; } }
   @media (max-width: 1300px) { .mpview { grid-template-columns: auto auto; } .mpside { grid-column: 1 / -1; } }
   @media (max-width: 900px) { .mpview { grid-template-columns: 1fr; } .mpmic img, .mpps img { height: auto; width: 100%; } }
   .lhead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; min-width: 0; }
@@ -210,9 +242,11 @@
   <div class="brand">Celeris<b>2D</b></div>
   <div class="proj"><span class="name" id="pname">…</span><span class="path" id="ppath"></span></div>
   <div class="pulse" id="pulse"></div>
-  <button id="open" title="open another project folder (the one with project.db)">Open project…</button>
-  <button id="create" title="a new project in a new or empty folder; then Import your movies">New project…</button>
-  <button id="report" title="flowchart, methods text and settings of the jobs marked final and everything they came from">Report</button>
+  <details class="menu"><summary>Project</summary><div class="menu-list">
+    <button id="open" title="open another project folder (the one with project.db)">Open a project…</button>
+    <button id="create" title="a new project in a new or empty folder; then Import your movies">New project…</button>
+    <button id="report" title="flowchart, methods text and settings of the jobs marked final and everything they came from">Publication report</button>
+  </div></details>
   <button id="newjob" class="go">New job</button>
 </header>
 <div class="wrap">
@@ -298,16 +332,37 @@ function renderQueue() {
   });
   $('#autosel').onchange = async e => { await api('/api/project/queue', {auto_select: e.target.checked}); };
 }
+// the project as its processing line: stages in order, newest job first within a stage
+const STAGES = [
+  ['Micrographs', ['Import', 'MotionCtf', 'Curate', 'Pick', 'Extract', 'ImportParticles']],
+  ['2D classes', ['Class2D', 'Select']],
+  ['3D', ['InitialModel', 'Refine3D', 'HeteroRefine', 'Class3D', 'LocalRefine', 'SymExpand', 'Subtract', 'CtfRefine', 'Polish', 'Modes3D', 'ModeMaps']],
+  ['Maps', ['Sharpen', 'MaskCreate', 'MapScore']],
+];
+function stageOf(t) { const i = STAGES.findIndex(([, ts]) => ts.includes(t)); return i < 0 ? STAGES.length : i; }
+function headline(i, js) {
+  const fin = js.filter(j => j.status === 'finished');
+  const num = (k, re) => { const m = String(k || '').match(re); return m ? m[1] : null; };
+  if (i === 0) {
+    const mc = fin.find(j => j.type === 'MotionCtf'), ex = fin.find(j => j.type === 'Extract');
+    return [mc && num(mc.key, /([\d,]+) mics/) + ' micrographs', ex && num(ex.key, /([\d,]+) ptcls/) + ' particles'].filter(Boolean).join(', ');
+  }
+  if (i === 1) { const s = fin.find(j => j.type === 'Select'); return s ? num(s.key, /([\d,]+) kept/) + ' particles kept' : ''; }
+  const r = fin.map(j => parseFloat(num(j.key, /([\d.]+) Å/))).filter(x => x > 0);
+  return r.length ? `best ${Math.min(...r).toFixed(2)} Å` : '';
+}
 function renderList() {
   const q = $('#q').value.trim().toLowerCase();
-  const rows = jobs.filter(j => !q || `${j.name} ${j.type} ${j.status} ${j.final ? 'final' : ''}`.toLowerCase().includes(q)).reverse();
-  $('#list').innerHTML = rows.map(j => `
-    <div class="job ${j.name === current ? 'sel' : ''}" data-n="${esc(j.name)}" tabindex="0">
-      <div class="n">${String(j.id).padStart(3, '0')}</div>
-      <div><div class="t"><span class="dot ${esc(j.status)}" title="${esc(j.status)}"></span>${esc(j.type)}${j.final ? '<span class="fin" title="' + esc(j.final_note || 'final') + '">★ final</span>' : ''}</div>
-           <div class="l">${esc(j.label || '')}</div></div>
+  const rows = jobs.filter(j => !q || `${j.name} ${j.type} ${j.status} ${j.label || ''} ${j.final ? 'final' : ''}`.toLowerCase().includes(q)).reverse();
+  const groups = [...STAGES.map(([n]) => [n, []]), ['Other', []]];
+  rows.forEach(j => groups[stageOf(j.type)][1].push(j));
+  const row = j => `<div class="job ${esc(j.status)} ${j.name === current ? 'sel' : ''}" data-n="${esc(j.name)}" tabindex="0" title="${esc(j.status)}">
+      <div class="t">${esc(j.type)}<span class="n">${String(j.id).padStart(3, '0')}</span>${j.final ? '<span class="fin" title="' + esc(j.final_note || 'final') + '">★ final</span>' : ''}</div>
       <div class="k" title="${esc(j.key || j.status)}">${esc(j.status === 'finished' ? (j.key || '') : j.status)}</div>
-    </div>`).join('') || '<div class="empty">No jobs yet. Start with New job.</div>';
+      <div class="l">${esc(j.label || '')}</div></div>`;
+  $('#list').innerHTML = groups.filter(([, js]) => js.length).map(([n, js]) => `
+    <section class="stg"><h3><span class="mark">${STAGES.findIndex(([x]) => x === n) + 1 || '·'}</span>${esc(n)}<span class="hl">${esc(headline(STAGES.findIndex(([x]) => x === n), js))}</span></h3>
+      ${js.map(row).join('')}</section>`).join('') || `<div class="empty">${q ? 'No job matches.' : 'No jobs yet: start with New job, Import.'}</div>`;
   document.querySelectorAll('.job').forEach(e => { e.onclick = () => showJob(e.dataset.n); e.onkeydown = ev => { if (ev.key === 'Enter') showJob(e.dataset.n); }; });
 }
 $('#q').oninput = renderList;
@@ -342,8 +397,10 @@ async function showJob(name, scroll = true) {
   const runLabel = ['failed', 'cancelled'].includes(j.status) ? 'Restart' : ['MotionCtf', 'Pick', 'Extract'].includes(j.type) ? 'Continue with new movies' : 'Run again';
   $('#main').innerHTML = `
     <div class="head">
-      <div><h1>${esc(j.type)} <span class="muted" style="font-weight:500">${esc(j.name.slice(0, 3))}</span></h1>
-        <div class="sub"><span class="dot ${esc(j.status)}"></span>${esc(j.status === 'waiting' ? 'waiting for your choice' : j.status)}${meta.label ? ' · ' + esc(meta.label) : ''}${j.final ? ' · <span style="color:var(--you)">★ final</span>' : ''}</div></div>
+      <div class="title"><h1>${esc(j.type)} <span class="jn">${esc(j.name.slice(0, 3))}</span></h1>
+        <div class="sub"><span class="state ${esc(j.status)}"><span class="dot ${esc(j.status)}"></span>${esc(j.status === 'waiting' ? 'waiting for your choice' : j.status)}</span>
+          ${meta.label ? `<span class="lab">${esc(meta.label)}</span>` : ''}${j.final ? '<span class="fin">★ final</span>' : ''}</div></div>
+      <div class="nums">${numbers(j).map(([v, u, c]) => `<div class="num"><div class="v">${fmt(v)}${u ? `<small>${u}</small>` : ''}</div><div class="c">${esc(c)}</div></div>`).join('')}</div>
       <div class="acts">
         ${canRerun ? `<button id="rerun" class="${['failed', 'cancelled'].includes(j.status) ? 'go' : ''}" ${['running', 'queued', 'waiting'].includes(j.status) ? 'disabled' : ''} title="a new job with the same inputs and settings, through the queue">${runLabel}</button>` : ''}
         ${types[j.type] ? `<button id="edit" title="the New job form with this job's inputs and settings">Change settings…</button>` : ''}
@@ -356,7 +413,6 @@ async function showJob(name, scroll = true) {
     ${j.error || s.error ? `<div class="warn err">${esc(j.error || s.error)}</div>` : ''}
     ${warns.map(w => `<div class="warn">${esc(w)}</div>`).join('')}
     <div id="stage"></div>
-    <div class="nums">${numbers(j).map(([v, u, c]) => `<div class="num"><div class="v">${fmt(v)}${u ? `<small>${u}</small>` : ''}</div><div class="c">${esc(c)}</div></div>`).join('')}</div>
     <div class="tabs" role="tablist">${['plots', 'files', 'log', 'settings', 'lineage'].map(t => `<button data-t="${t}" class="${t === tab ? 'on' : ''}" role="tab">${{plots: 'Plots', files: 'Files', log: 'Log', settings: 'Settings', lineage: 'Made from'}[t]}</button>`).join('')}</div>
     <div class="pane" id="pane"></div>`;
   document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { tab = b.dataset.t; document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b)); renderPane(j); });
@@ -490,17 +546,18 @@ function stageMicPanel(st, j) {
       <span id="llast" class="muted lastline"></span></div>
     <div class="mpkpi" id="mpkpi"></div>
     <div class="mpview">
-      <figure class="mpmic"><img id="mpmic" alt="micrograph"><figcaption id="mpcap"></figcaption></figure>
+      <figure class="mpmic"><canvas id="mpc" aria-label="micrograph"></canvas><figcaption id="mpcap"></figcaption></figure>
       <figure class="mpps"><img id="mpps" alt="power spectrum and CTF fit"><figcaption>spectrum (left) · fitted CTF (right) · ring: fit resolution</figcaption></figure>
       <div class="mpside">
         <div class="mpnav"><button id="mpp" aria-label="previous micrograph">‹</button><input type="range" id="mpr" min="1" max="1" value="1" aria-label="micrograph"><button id="mpx" aria-label="next micrograph">›</button></div>
         <label class="tog"><input type="checkbox" id="mpf" ${running ? 'checked' : ''}> Follow the newest micrograph</label>
+        <div class="lp"><label for="mplp">Low-pass filter</label><input type="range" id="mplp" min="0" max="60" step="1"><span id="mplpv"></span></div>
         <label class="tog" id="mpkl" style="display:none"><input type="checkbox" id="mpk" checked> Show picks</label>
         <table class="mpt" id="mpt"></table>
         <div id="mpdet"></div>
       </div>
     </div>
-    <div class="mpplots"><div id="mpctf"></div><div id="mpmot"></div></div>
+    <div class="mpplots"><div id="mpctf" class="w2"></div><div id="mpmot"></div><div id="mploc"></div><div id="mppz"></div></div>
     <div class="mpcharts" id="mpcharts"></div></div>`;
   const defs = MICSTATS;
   let rows = [], sel = null, lastN = -1, offset = 0;
@@ -512,8 +569,7 @@ function stageMicPanel(st, j) {
     if (fromUser && $('#mpf')) $('#mpf').checked = i === rows.length && running;
     sel = i; const r = rows[i - 1];
     $('#mpr').max = rows.length; $('#mpr').value = i;
-    const k = $('#mpk') && $('#mpk').checked ? 1 : 0;
-    $('#mpmic').src = `/api/project/mic.png?job=${encodeURIComponent(name)}&stem=${encodeURIComponent(r.stem)}&size=1400&picks=${k}`;
+    loadMic(r.stem);
     $('#mpps').src = `/api/project/ps.png?job=${encodeURIComponent(name)}&stem=${encodeURIComponent(r.stem)}`;
     $('#mpcap').textContent = `${i} of ${rows.length} · ${r.stem}`;
     $('#mpt').innerHTML = defs.filter(([key]) => r[key] != null).map(([key, lab, u, d]) => `<tr><td>${lab}</td><td>${fv(r[key], d)} ${u}</td></tr>`).join('');
@@ -522,12 +578,54 @@ function stageMicPanel(st, j) {
     $('#mpdet').innerHTML = det ? `<a href="${file(det)}" target="_blank" rel="noopener">detailed figure of this micrograph</a>` : '';
     charts();
   };
+  // the micrograph: unfiltered from the server, low-passed and contrast-stretched here (the slider), picks drawn here
+  let micImg = null, micPicks = null, micDet = null, micStem = '';
+  let lp = 20; try { lp = +(localStorage.getItem('celeris-lowpass') ?? 20); } catch (e) {}
+  const lpText = () => { $('#mplp').value = lp; $('#mplpv').textContent = lp ? lp + ' Å' : 'off'; };
+  const drawMic = () => {
+    const c = $('#mpc'); if (!c || !micImg || !micImg.naturalWidth) return;
+    const W = micImg.naturalWidth, H = micImg.naturalHeight, g = c.getContext('2d', {willReadFrequently: true});
+    if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
+    const ap = micDet && micDet.apix ? micDet.apix : 1, bin = micDet && micDet.shape ? micDet.shape[1] / W : 1, px = ap * bin;
+    const sigma = lp ? 0.1874 * lp / px : 0;                     // Gaussian: half amplitude at the low-pass resolution
+    g.filter = 'none'; g.fillStyle = '#808080'; g.fillRect(0, 0, W, H);
+    g.filter = sigma > 0.3 ? `blur(${sigma.toFixed(2)}px)` : 'none';
+    g.drawImage(micImg, 0, 0); g.filter = 'none';
+    const im = g.getImageData(0, 0, W, H), a = im.data, h = new Uint32Array(256);
+    const m = Math.max(2, Math.round(Math.min(W, H) * 0.03));   // the stretch from the inside (blur darkens edges)
+    for (let y = m; y < H - m; y += 2) for (let x = m; x < W - m; x += 2) h[a[(y * W + x) * 4]]++;
+    let tot = h.reduce((x, y) => x + y, 0), lo = 0, hi = 255, acc = 0;
+    for (let i = 0; i < 256; i++) { acc += h[i]; if (acc < tot * 0.005) lo = i; if (acc < tot * 0.995) hi = i + 1; }
+    const lut = new Uint8ClampedArray(256), span = Math.max(hi - lo, 1);
+    for (let i = 0; i < 256; i++) lut[i] = (i - lo) * 255 / span;
+    for (let i = 0; i < a.length; i += 4) { const v = lut[a[i]]; a[i] = a[i + 1] = a[i + 2] = v; }
+    g.putImageData(im, 0, 0);
+    if (micPicks && micPicks.xy && micPicks.xy.length && $('#mpk') && $('#mpk').checked) {
+      const r = 0.5 * (micPicks.diameter_a || 150) / px;
+      g.lineWidth = Math.max(1, W / 700);
+      [[0, 'rgba(160,160,160,.45)'], [1, css('--data')]].forEach(([k, col]) => {
+        g.strokeStyle = col; g.beginPath();
+        micPicks.xy.forEach((q, i) => { if (micPicks.keep[i] === k) { g.moveTo(q[0] / px + r, q[1] / px); g.arc(q[0] / px, q[1] / px, r, 0, 2 * Math.PI); } });
+        g.stroke();
+      });
+    }
+  };
+  const loadMic = async stem => {
+    micStem = stem;
+    const im = new Image();
+    im.onload = () => { if (micStem === stem) { micImg = im; drawMic(); } };
+    im.src = `/api/project/micraw.png?job=${encodeURIComponent(name)}&stem=${encodeURIComponent(stem)}`;
+    micPicks = null;
+    if (fam && fam.pick) api(`/api/project/micpicks?job=${encodeURIComponent(name)}&stem=${encodeURIComponent(stem)}`)
+      .then(d => { if (micStem === stem) { micPicks = d; drawMic(); } }).catch(() => {});
+  };
   let detailFor = '';
   const detail = async stem => {                    // this micrograph's 1D CTF fit and motion (drawn here, data from the server)
     detailFor = stem;
     let d;
     try { d = await api(`/api/project/micdetail?job=${encodeURIComponent(name)}&stem=${encodeURIComponent(stem)}`); } catch (e) { return; }
     if (detailFor !== stem || !$('#mpctf')) return;
+    micDet = d; drawMic();
     const T = THEME(), P = await CelerisPlots.plotly();
     const base = {paper_bgcolor: T.surface, plot_bgcolor: T.surface, font: {family: T.font, size: 11, color: T.ink2}, height: 250,
       margin: {l: 48, r: 14, t: 30, b: 40}, showlegend: true, legend: {orientation: 'h', x: 1, xanchor: 'right', y: 1.12, font: {size: 11}},
@@ -544,17 +642,47 @@ function stageMicPanel(st, j) {
       title: {text: `<b>CTF fit</b> · defocus ${fmt(Math.round((d.defocus_u + d.defocus_v) / 2))} Å · fit ${d.fit_res_a ? d.fit_res_a.toFixed(2) + ' Å' : '–'}`, x: 0.01, xanchor: 'left', font: {size: 12, color: T.ink}},
       xaxis: Object.assign({title: {text: 'resolution (Å)', font: {size: 11}}, tickvals: ticks.map(x => 1 / x), ticktext: ticks.map(String)}, ax),
       yaxis: Object.assign({showticklabels: false}, ax)}), {displaylogo: false, responsive: true});
+    const note = (id, t) => { $(id).innerHTML = `<div class="pnote"><b>${t[0]}</b><span>${t[1]}</span></div>`; };
+    const titled = t => ({text: t, x: 0.01, xanchor: 'left', font: {size: 12, color: T.ink}});
     const sh = d.shifts || [];
-    if (sh.length > 1) {
-      P.react($('#mpmot'), [{type: 'scatter', mode: 'lines+markers', x: sh.map(q => q[0]), y: sh.map(q => q[1]), name: 'frame shifts',
-          marker: {color: sh.map((_, i) => i), colorscale: 'Blues', size: 6}, line: {color: T.ink3, width: 1},
+    if (sh.length > 1) {                                   // global: the whole frame's path, frame 1 marked
+      const x0 = sh[0][0], y0 = sh[0][1];
+      P.react($('#mpmot'), [{type: 'scatter', mode: 'lines+markers', x: sh.map(q => q[0] - x0), y: sh.map(q => q[1] - y0),
+          marker: {color: sh.map((_, i) => i), colorscale: [[0, css('--data-dim')], [1, css('--data')]], size: 6}, line: {color: T.ink3, width: 1},
           customdata: sh.map((_, i) => i + 1), hovertemplate: 'frame %{customdata}: %{x:.2f}, %{y:.2f} Å<extra></extra>'}],
-        Object.assign({}, base, {showlegend: false, title: {text: `<b>Motion</b> · ${sh.length} frames`, x: 0.01, xanchor: 'left', font: {size: 12, color: T.ink}},
-          xaxis: Object.assign({title: {text: 'x shift (Å)', font: {size: 11}}}, ax), yaxis: Object.assign({title: {text: 'y shift (Å)', font: {size: 11}}, scaleanchor: 'x'}, ax)}),
+        Object.assign({}, base, {showlegend: false, title: titled(`<b>Global motion</b> · ${sh.length} frames · ${fv(d.drift_a, 1)} Å path`),
+          xaxis: Object.assign({title: {text: 'x (Å)', font: {size: 11}}}, ax), yaxis: Object.assign({title: {text: 'y (Å)', font: {size: 11}}, scaleanchor: 'x'}, ax)}),
         {displaylogo: false, responsive: true});
-    } else {
-      $('#mpmot').innerHTML = `<div class="muted" style="padding:24px 16px">Motion: ${sh.length === 1 ? 'a single-frame micrograph (no frames to align)' : 'no motion recorded'}.</div>`;
-    }
+    } else note('#mpmot', ['Motion', 'A single-frame micrograph: no frames to align.']);
+    $('#mploc').style.display = sh.length > 1 ? '' : 'none';     // single frames: one note for both
+    const L = d.local;
+    if (L && L.model && L.centres) {                       // local: each patch's path beyond the global one, exaggerated
+      const mx = Math.max(1e-6, ...L.model.flat().map(q => Math.hypot(q[0], q[1])));
+      const k = 0.16 / mx, tr = [];
+      L.model.forEach((path, p) => {
+        const [cx, cy] = L.centres[p];
+        tr.push({type: 'scatter', mode: 'lines', x: path.map(q => cx + k * q[0]), y: path.map(q => cy + k * q[1]), line: {color: css('--data'), width: 1.6}, hoverinfo: 'skip'});
+        if (L.measured) tr.push({type: 'scatter', mode: 'markers', x: L.measured[p].map(q => cx + k * q[0]), y: L.measured[p].map(q => cy + k * q[1]),
+          marker: {size: 3, color: T.ink3}, hoverinfo: 'skip'});
+        tr.push({type: 'scatter', mode: 'markers', x: [cx], y: [cy], marker: {size: 5, color: T.ink2}, hovertemplate: `patch ${p + 1}: up to ${Math.max(...path.map(q => Math.hypot(q[0], q[1]))).toFixed(2)} Å<extra></extra>`});
+      });
+      P.react($('#mploc'), tr, Object.assign({}, base, {showlegend: false, title: titled(`<b>Local motion</b> · rms ${fv(d.local_rms_a, 2)} Å · paths ×${(k * 1000 / 1000 * (d.shape ? d.shape[1] * d.apix / 2 : 1)).toFixed(0)}`),
+        xaxis: Object.assign({visible: false, range: [-1.15, 1.15]}, ax), yaxis: Object.assign({visible: false, range: [1.15, -1.15], scaleanchor: 'x'}, ax)}),
+        {displaylogo: false, responsive: true});
+    } else note('#mploc', ['Local motion', sh.length <= 1 ? 'Needs a movie with several frames.'
+      : L && L.rms_a != null ? `rms ${fv(L.rms_a, 2)} Å. The patch paths are kept by MotionCtf jobs run from now on; this one has only the rms.`
+      : 'No patch motion measured (patches = 0).']);
+    const pz = d.ctf_patch;
+    if (pz && pz.regions_a && pz.offsets_a) {             // patch defocus: each region's offset from the micrograph's fit
+      const lim = Math.max(30, ...pz.offsets_a.map(Math.abs));
+      P.react($('#mppz'), [{type: 'scatter', mode: 'markers+text', x: pz.regions_a.map(q => q[0]), y: pz.regions_a.map(q => q[1]),
+          text: pz.offsets_a.map(v => (v > 0 ? '+' : '') + Math.round(v)), textfont: {size: 11, color: T.ink},
+          marker: {symbol: 'square', size: 40, color: pz.offsets_a, cmin: -lim, cmax: lim, colorscale: [[0, '#2c7bb6'], [0.5, '#3a3d48'], [1, '#d7191c']]},
+          hovertemplate: 'region at %{x:.0f}, %{y:.0f} Å: %{text} Å<extra></extra>'}],
+        Object.assign({}, base, {showlegend: false, title: titled(`<b>Patch defocus</b> · tilt ${fv(pz.tilt_deg, 1)}° · ${pz.applied ? 'applied' : pz.significant ? 'significant, not applied' : 'not significant'}`),
+          xaxis: Object.assign({visible: false}, ax), yaxis: Object.assign({visible: false, autorange: 'reversed', scaleanchor: 'x'}, ax)}),
+        {displaylogo: false, responsive: true});
+    } else note('#mppz', ['Patch defocus', 'Not measured for this micrograph.']);
   };
   const charts = async () => {
     const box = $('#mpcharts'); if (!box || !rows.length) return;
@@ -626,10 +754,12 @@ function stageMicPanel(st, j) {
     } catch (e) { /* next tick */ }
     if (running || j.status === 'running') liveTimer = setTimeout(tick, 5000);
   };
+  lpText();
+  $('#mplp').oninput = e => { lp = +e.target.value; lpText(); try { localStorage.setItem('celeris-lowpass', lp); } catch (err) {} drawMic(); };
   $('#mpr').oninput = e => show(+e.target.value, true);
   $('#mpp').onclick = () => show((sel || 1) - 1, true);
   $('#mpx').onclick = () => show((sel || 1) + 1, true);
-  if ($('#mpk')) $('#mpk').onchange = () => show(sel || 1, false);
+  if ($('#mpk')) $('#mpk').onchange = drawMic;
   st.tabIndex = 0;
   st.onkeydown = e => { if (e.key === 'ArrowLeft') show((sel || 1) - 1, true); if (e.key === 'ArrowRight') show((sel || 1) + 1, true); };
   tick();
@@ -825,16 +955,20 @@ function panePlots(p, j) {
   const figs = j.files.filter(f => /\.(png|gif)$/.test(f.path) && !/\.(light|dark)\.png$/.test(f.path));
   const hasJson = f => j.files.some(x => x.path === f.path.replace(/\.png$/, '.plot.json'));
   if (!figs.length) { p.innerHTML = `<p class="muted">${j.status === 'running' ? 'No figures yet: they appear here as the job writes them (its log is above).' : 'This job has no figures.'}</p>`; return; }
-  p.innerHTML = figs.map((f, i) => `<div class="fig"><div class="bar"><span>${esc(f.path.split('/').pop().replace(/^j\d+_/, '').replace(/\.(png|gif)$/, '').replace(/_/g, ' '))}</span>
+  p.innerHTML = '<div class="figs">' + figs.map((f, i) => `<div class="fig" id="card${i}"><div class="bar"><span>${esc(f.path.split('/').pop().replace(/^j\d+_/, '').replace(/\.(png|gif)$/, '').replace(/_/g, ' '))}</span>
       ${hasJson(f) ? `<span class="seg"><button data-i="${i}" data-m="live" class="${interactive ? 'on' : ''}">Interactive</button><button data-i="${i}" data-m="img" class="${interactive ? '' : 'on'}">Image</button></span>` : ''}</div>
-      <div class="plot" id="fig${i}"></div></div>`).join('');
+      <div class="plot" id="fig${i}"></div></div>`).join('') + '</div>';
+  const wide = (i, ratio) => { $('#card' + i).classList.toggle('wide', ratio > 2.1); };   // a strip of panels takes the row
   const draw = (i, live) => {
     const f = figs[i], box = $('#fig' + i);
     if (live && hasJson(f)) {
       box.innerHTML = '<p class="muted" style="padding:14px">drawing…</p>';
-      fetch(file(f.path.replace(/\.png$/, '.plot.json'))).then(r => r.json()).then(spec => { box.innerHTML = ''; return CelerisPlots.render(box, spec, THEME()); })
+      fetch(file(f.path.replace(/\.png$/, '.plot.json'))).then(r => r.json()).then(spec => { wide(i, spec.width / spec.height); box.innerHTML = ''; return CelerisPlots.render(box, spec, THEME()); })
         .catch(e => { box.innerHTML = `<img src="${file(f.path)}" alt=""><p class="muted">${esc(e.message)}</p>`; });
-    } else box.innerHTML = `<img loading="lazy" src="${file(f.path)}" alt="${esc(f.path)}">`;
+    } else {
+      box.innerHTML = `<img loading="lazy" src="${file(f.path)}" alt="${esc(f.path)}">`;
+      const im = box.querySelector('img'); im.onload = () => wide(i, im.naturalWidth / im.naturalHeight);
+    }
   };
   const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { io.unobserve(e.target); draw(+e.target.id.slice(3), interactive); } }), {rootMargin: '300px'});
   figs.forEach((f, i) => io.observe($('#fig' + i)));
@@ -908,6 +1042,7 @@ $('#report').onclick = async () => {
     <div class="pane" style="padding-top:4px"><div class="flow"><img src="${file(d.flowchart)}&t=${Date.now()}" alt="flowchart"></div>
     <h3 class="muted" style="margin:22px 0 6px;font-size:13px">Methods</h3><div class="methods">${esc(d.methods_text)}</div></div>`;
 };
+document.querySelectorAll('.menu-list button').forEach(b => b.addEventListener('click', () => b.closest('details').open = false));
 $('#open').onclick = async () => {
   const root = prompt('Project folder (the one with project.db). Windows paths such as E:\\linux\\celeris\\inx6 work too:', '');
   if (!root) return;

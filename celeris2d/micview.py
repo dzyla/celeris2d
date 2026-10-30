@@ -1,6 +1,8 @@
 """Micrographs of a movie job for the dashboard, while it runs and after (cryoSPARC Live-like): the per-micrograph
-numbers so far (mic_rows: CTF, motion, picks), and on request a render of one micrograph (low-passed, with its picks
-for a Pick / Extract job) and its power spectrum beside the fitted CTF (ps_png). Read-only: the jobs' own files.
+numbers so far (mic_rows: CTF, motion, picks) and, per micrograph, preview files the dashboard's worker makes as
+micrographs come in (warm: data/NNN/Preview/<stem>.png raw binned micrograph, .ps.png spectrum beside the fitted CTF,
+.json the 1D CTF fit, global and local motion, patch defocus) - the page filters and draws from them. Read-only
+for the jobs' own files; the job never waits for any of this.
 """
 from __future__ import annotations
 
@@ -185,6 +187,114 @@ def _ctf2(s: dict, mc, tile: int, apix: float) -> np.ndarray | None:
     return ctf_2d(p, opt, g, g, tile * apix)[0].pow(2).numpy()
 
 
+def _preview(project: Project, mc, stem: str, kind: str) -> str:
+    d = os.path.join(project.root, "data", f"{mc.id:03d}", "Preview")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, stem + kind)
+
+
+def _cached(project: Project, mc, stem: str, kind: str, make):
+    """A preview file of one micrograph (the dashboard's worker makes them as micrographs come in, see warm()):
+    read when it is there and newer than the micrograph's stats, else made and written now."""
+    p = _preview(project, mc, stem, kind)
+    st = os.path.join(_stats_dir(project, mc), stem + ".json")
+    if os.path.exists(p) and os.path.getmtime(p) >= os.path.getmtime(st):
+        with open(p, "rb") as fh:
+            data = fh.read()
+        return json.loads(data) if kind.endswith(".json") else data
+    out = make()
+    data = json.dumps(out).encode() if kind.endswith(".json") else out
+    with open(p + ".tmp", "wb") as fh:
+        fh.write(data)
+    os.replace(p + ".tmp", p)
+    return out
+
+
+def detail(root: str, job_id: int, stem: str) -> dict:
+    project = Project(root)
+    mc = _mc_job(project, project.job(job_id))
+    return _cached(project, mc, stem, ".json", lambda: _clean_json(mic_detail(root, mc.id, stem)))
+
+
+def spectrum_png(root: str, job_id: int, stem: str) -> bytes:
+    project = Project(root)
+    mc = _mc_job(project, project.job(job_id))
+    return _cached(project, mc, stem, ".ps.png", lambda: ps_png(root, mc.id, stem))
+
+
+def raw_png(root: str, job_id: int, stem: str) -> bytes:
+    """The micrograph binned to <= 1024 px, unfiltered, 8 bits (median +- 4 sd): the page low-passes and stretches it
+    itself (the filter slider), and draws the picks."""
+    project = Project(root)
+    mc = _mc_job(project, project.job(job_id))
+
+    def make():
+        img, apix, _ = _micrograph(project, mc, stem)
+        small, _ = _bin(img, 1024)
+        m, sd = float(np.median(small)), float(small.std())
+        from PIL import Image
+        a = np.clip((small - (m - 4 * sd)) / max(8 * sd, 1e-12), 0, 1)
+        buf = io.BytesIO()
+        Image.fromarray((a * 255).astype(np.uint8)).save(buf, format="PNG")
+        return buf.getvalue()
+    return _cached(project, mc, stem, ".png", make)
+
+
+def picks_of(project: Project, job, stem: str) -> dict:
+    """The candidates of one micrograph of the chain's Pick job: centres (A), kept or not, the blob diameter."""
+    fam = family(project, job)
+    pj = fam["pick"]
+    if pj is None:
+        return dict(xy=[], keep=[])
+    mv = project.movies()
+    mid = mv[mv["stem"] == stem]["id"]
+    try:
+        p = project.picks(pj, int(mid.iloc[0]))
+    except Exception:                                 # noqa: BLE001 - not picked yet
+        return dict(xy=[], keep=[], diameter_a=pj.params.get("diameter_a"))
+    keep = np.asarray(p.get("keep", np.ones(len(p["xy_a"]), bool)), bool)
+    return dict(xy=np.round(np.asarray(p["xy_a"], np.float32), 1).tolist(), keep=keep.astype(int).tolist(),
+                diameter_a=pj.params.get("diameter_a"), job=pj.name)
+
+
+def warm(project: Project, budget_s: float = 4.0) -> int:
+    """The dashboard's preview worker: makes the preview files of micrographs that have none yet - the running
+    MotionCtf jobs first, newest micrographs first - for at most budget_s seconds. Returns how many it made."""
+    import time
+    t0, n = time.time(), 0
+    jobs = project.jobs()
+    mcs = [project.job(int(r.id)) for r in jobs[jobs["type"] == "MotionCtf"].itertuples()]
+    mcs.sort(key=lambda j: (j.status != "running", -j.id))
+    for mc in mcs:
+        stats = sorted(glob.glob(os.path.join(_stats_dir(project, mc), "*.json")), key=os.path.getmtime, reverse=True)
+        for st in stats[:400]:
+            stem = os.path.splitext(os.path.basename(st))[0]
+            if all(os.path.exists(_preview(project, mc, stem, k)) for k in (".json", ".ps.png", ".png")):
+                continue
+            try:
+                detail(project.root, mc.id, stem)
+                spectrum_png(project.root, mc.id, stem)
+                raw_png(project.root, mc.id, stem)
+                n += 1
+            except Exception:                         # noqa: BLE001 - being written; next pass
+                pass
+            if time.time() - t0 > budget_s:
+                return n
+    return n
+
+
+def _clean_json(d):
+    if isinstance(d, dict):
+        return {k: _clean_json(v) for k, v in d.items()}
+    if isinstance(d, (list, tuple)):
+        return [_clean_json(v) for v in d]
+    if isinstance(d, (float, np.floating)):
+        return float(d) if math.isfinite(d) else None
+    if isinstance(d, np.integer):
+        return int(d)
+    return d
+
+
 @functools.lru_cache(maxsize=64)
 def mic_detail(root: str, job_id: int, stem: str, tile: int = 512) -> dict:
     """Data for the per-micrograph plots (drawn by the browser): the 1D CTF fit - rotational average of the
@@ -199,9 +309,12 @@ def mic_detail(root: str, job_id: int, stem: str, tile: int = 512) -> dict:
     idx = np.arange(1, n)
     meas = ndimage.mean(flat, labels=ri, index=idx)
     k = idx / (tile * apix)                                        # 1/A
+    loc = s.get("local") or None
     out = dict(stem=stem, res_a=[round(1 / x, 3) for x in k], measured=np.round(meas, 5).tolist(),
                fit_res_a=s.get("fit_res_a"), defocus_u=s.get("defocus_u"), defocus_v=s.get("defocus_v"),
-               angle=s.get("angle"), frames=s.get("frames"), shifts=s.get("shifts"), local=s.get("local"))
+               angle=s.get("angle"), frames=s.get("frames"), shifts=s.get("shifts"), apix=apix,
+               shape=s.get("shape"), local=loc, ctf_patch=s.get("ctf_patch"),
+               drift_a=s.get("motion_path_a"), local_rms_a=s.get("local_rms_a"))
     c2 = _ctf2(s, mc, tile, apix)
     if c2 is not None:
         fit = ndimage.mean(c2, labels=ri, index=idx)

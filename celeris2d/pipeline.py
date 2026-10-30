@@ -397,7 +397,10 @@ def process_movie_motion(project: Project, job: Job, movie_id: int, frames: np.n
         st = dict(stats, movie=mv["path"], micrograph=project.rel(mpath), apix=mic.apix, shape=shape,
                   defocus_u=fit.defocus_u, defocus_v=fit.defocus_v, angle=fit.angle, fit_res_a=fit.fit_res_a,
                   shifts=sh.tolist(), local=None if not mic.local else
-                  dict(centres=mic.local["centres"].tolist(), rms_a=mic.local["rms_a"]))
+                  dict(centres=mic.local["centres"].tolist(), rms_a=mic.local["rms_a"],
+                       # per patch and frame (A): measured shifts and the fitted model - the dashboard draws them
+                       measured=np.round(np.asarray(mic.local["measured"], np.float32), 2).tolist(),
+                       model=np.round(np.asarray(mic.local["model"], np.float32), 2).tolist()))
         json.dump(st, open(job.per_movie("Stats", mv, ".json"), "w"))
         project.add_micrograph(job, movie_id, mpath, mic.apix, shape, fit, meta=stats)
     if len(_mem_ctf) > 4096:

@@ -1144,6 +1144,25 @@ def create(workdir, project_dir=None):
 
     threading.Thread(target=_scheduler, daemon=True, name="project-queue").start()
 
+    def _previews():
+        """The preview worker: micrograph previews of the open project (micview.warm) as micrographs come in, so the
+        live panel opens each at once; the jobs never wait for it."""
+        from .micview import warm
+        from .project import Project
+        while True:
+            time.sleep(3.0)
+            root = proj_state.get("root")
+            if not root:
+                continue
+            try:
+                if warm(Project(root), budget_s=6.0):
+                    continue
+            except Exception:                         # noqa: BLE001 - the worker must keep running
+                pass
+            time.sleep(5.0)
+
+    threading.Thread(target=_previews, daemon=True, name="previews").start()
+
     @app.get("/api/project/queue")
     def project_queue():
         from .scheduler import queue_state
@@ -1217,22 +1236,40 @@ def create(workdir, project_dir=None):
 
     @app.get("/api/project/micdetail")
     def project_micdetail(job: str, stem: str):
-        """One micrograph's 1D CTF fit and motion, as data for the page's plots (micview.mic_detail)."""
-        from .figjson import _clean
-        from .micview import mic_detail
+        """One micrograph's 1D CTF fit, global / local motion and patch defocus, as data for the page's plots
+        (micview.detail: the preview worker's JSON, or made now)."""
+        from .micview import detail
         prj = _prj()
         try:
-            return _clean(mic_detail(prj.root, prj.job(job).id, os.path.basename(stem)))
+            return detail(prj.root, prj.job(job).id, os.path.basename(stem))
         except (OSError, KeyError, ValueError) as e:
             raise HTTPException(404, str(e))
+
+    @app.get("/api/project/micraw.png")
+    def project_micraw(job: str, stem: str):
+        """One micrograph binned to <= 1024 px, unfiltered (the page low-passes it with its slider)."""
+        from .micview import raw_png
+        prj = _prj()
+        try:
+            data = raw_png(prj.root, prj.job(job).id, os.path.basename(stem))
+        except (OSError, KeyError, ValueError) as e:
+            raise HTTPException(404, str(e))
+        return Response(data, media_type="image/png", headers={"Cache-Control": "max-age=600"})
+
+    @app.get("/api/project/micpicks")
+    def project_micpicks(job: str, stem: str):
+        """The picks of one micrograph (the chain's Pick job), drawn by the page."""
+        from .micview import picks_of
+        prj = _prj()
+        return picks_of(prj, prj.job(job), os.path.basename(stem))
 
     @app.get("/api/project/ps.png")
     def project_ps_png(job: str, stem: str):
         """A micrograph's power spectrum beside its fitted CTF."""
-        from .micview import ps_png
+        from .micview import spectrum_png
         prj = _prj()
         try:
-            data = ps_png(prj.root, prj.job(job).id, os.path.basename(stem))
+            data = spectrum_png(prj.root, prj.job(job).id, os.path.basename(stem))
         except (OSError, KeyError, ValueError) as e:
             raise HTTPException(404, str(e))
         return Response(data, media_type="image/png", headers={"Cache-Control": "max-age=600"})
