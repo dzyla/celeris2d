@@ -112,6 +112,10 @@ Layers, bottom to top:
 - **Refinement masks**: every refinement job has `mask` = auto (dynamic, from each model's map every iteration below
   15 A) / static (once from the starting map) / none (particle sphere) / a MaskCreate job or .mrc
   (`jobs.solvent_mask_arg`). NU refinements write `nu_cutoff.mrc`, `nu.png` and per-iteration `nu` statistics.
+- **Sharpening inside refinement jobs**: Refine3D / HeteroRefine / Class3D / LocalRefine have `sharpen`, `local_res`,
+  `mtf`, `mtf_apix`: the job sharpens its own half maps with its own mask (`sharpen.sharpen_in_job`, same code as
+  the Sharpen job via `sharpen_maps`; files sharpened.mrc, postprocess.png, localres*, sharpen_fsc.json; classNN_
+  prefix per class). MTF files are RELION's .star (not shipped here; RELION has them in relion/data/).
 - **TIFF orientation**: frames are read in file row order; RELION's micrographs of the same TIFF movies are their
   y-mirror (`MotionSettings.flip_y=True` matches RELION: coordinates, astigmatism angle, hand). Motion shifts are
   relative to the frame average (RELION: frame 1), so coordinates differ from RELION's by the mean drift.

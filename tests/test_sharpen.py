@@ -42,3 +42,19 @@ def test_b_factor_recovered_and_mask_checks():
     # a mask smaller than the particle is reported
     o3 = postprocess(h1, h2, tight, APIX, SharpenSettings(resolution_a=3.0), dev="cpu")
     assert any("outside the mask" in w for w in o3["warnings"]), o3["warnings"]
+
+
+def test_mtf_file_and_correction(tmp_path):
+    """A RELION MTF .star is read and interpolated at the detector pixel; beyond its last frequency its last value."""
+    import numpy as np
+    from celeris2d import sharpen as sh
+    f = np.linspace(0, 0.5, 51)
+    mtf = np.exp(-(f / 0.35) ** 2)
+    p = tmp_path / "mtf.star"
+    p.write_text("data_mtf\nloop_\n_rlnResolutionInversePixel\n_rlnMtfValue\n"
+                 + "".join(f"{a:.4f} {b:.6f}\n" for a, b in zip(f, mtf)))
+    fr, v = sh.read_mtf(str(p))
+    assert len(fr) == 51 and abs(v[0] - 1) < 1e-6
+    c = sh.mtf_curve(str(p), 1.0, np.array([0.0, 0.25, 10.0]))
+    assert abs(c[0] - 1) < 1e-6 and abs(c[1] - np.exp(-(0.25 / 0.35) ** 2)) < 1e-3
+    assert abs(c[2] - max(mtf[-1], 0.05)) < 1e-6                         # beyond the file: its last value

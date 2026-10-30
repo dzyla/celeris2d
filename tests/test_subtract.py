@@ -297,12 +297,11 @@ def test_symmetry_expansion_copies(sim):
 
 
 def test_refine_writes_sharpened_map(sim):
-    """Refine3D sharpen=True (default): a Sharpen job on the finished refinement, its numbers in the refinement's
-    summary, the sharpened map on disk."""
+    """Refine3D sharpen=True (default): the refinement sharpens its own half maps with its own mask (no separate job):
+    sharpened map, post-processing figure and local resolution in the job, the numbers in its summary."""
     prj, cons = sim["prj"], sim["cons"]
-    sh = prj.jobs("Sharpen")
-    sj = [prj.job(int(i)) for i in sh.id if prj.job(int(i)).params.get("refine") == cons.id]
-    assert len(sj) == 1 and sj[0].status == "finished"
-    summ = prj.summary_of(prj.job(cons.id))
-    assert summ["sharpened"]["job"] == sj[0].name and summ["sharpened"]["resolution_a"] > 0
-    assert sj[0].find("sharpened.mrc")
+    rj = prj.job(cons.id)
+    summ = prj.summary_of(rj)
+    assert summ["sharpened"]["resolution_a"] > 0 and "b_factor" in summ["sharpened"]
+    assert rj.find("sharpened.mrc") and rj.find("postprocess.png") and rj.find("localres.mrc")
+    assert not [i for i in prj.jobs("Sharpen").id if prj.job(int(i)).params.get("refine") == cons.id]

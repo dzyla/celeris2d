@@ -209,8 +209,9 @@ engine's model convention (the particle's centre is at +shift from the box centr
   up to 25 deg): SymExpand + LocalRefine on subunit 0, no subtraction: 6.4 vs 6.86 A in the mask, pose error 4.4 vs
   10.2 deg.
 - **Sharpen** (on a Refine3D job or a HeteroRefine class; `celeris2d/sharpen.py`, RELION PostProcess; every Refine3D,
-  NU or not, starts one with default settings when it finishes - `Refine3DSettings.sharpen`, on by default - and
-  copies its resolution, B-factor and map into its own summary): corrected masked FSC (phases
+  HeteroRefine, Class3D and LocalRefine also sharpen their own half maps with their own mask when they finish -
+  `sharpen` / `local_res` / `mtf`, on by default, files in the job, numbers under `sharpened` in its summary; a Sharpen
+  job is for another mask or B-factor): corrected masked FSC (phases
   randomised beyond the shell where the unmasked FSC drops below 0.8, the correction applied from 2 shells further,
   as RELION does), automatic Guinier B-factor (10 A to the resolution), FSC weighting, low-pass at the resolution.
   Mask (`mask="auto"`, default; `masks.py`): the half maps' average and half difference low-passed to 15 A, the

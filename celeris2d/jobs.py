@@ -336,6 +336,25 @@ def run_initial_model(project: Project, job, log=print) -> dict:
     return keep
 
 
+def _sharpen_job_maps(project: Project, job: Job, s, classes=(0,), log=print) -> dict:
+    """The job's own sharpening and local resolution (settings sharpen / local_res / mtf / mtf_apix) of each map
+    (classes: 0 for a single map, else the 1-based classes). A failure is logged, not fatal: the refinement stands."""
+    if not getattr(s, "sharpen", False):
+        return {}
+    from .sharpen import sharpen_in_job
+    out = {}
+    for c in classes:
+        try:
+            r = sharpen_in_job(project, job, cls=c, mtf=s.mtf, mtf_apix=s.mtf_apix, local_res=s.local_res, log=log)
+            out[str(c) if c else "map"] = {k: r[k] for k in ("resolution_a", "resolution_fsc05_a", "b_factor",
+                                                             "guinier_fit", "local_resolution", "map", "warnings")
+                                           if k in r}
+        except Exception as e:                       # noqa: BLE001 - reported, the refinement's own results stand
+            log(f"[sharpen] {job.name}{f' class {c}' if c else ''}: not sharpened ({e})")
+            out[str(c) if c else "map"] = dict(error=str(e))
+    return out if classes != (0,) else out.get("map", {})
+
+
 # ---------------------------------------------------------------------------------------------- Refine3D
 @dataclass
 class Refine3DSettings:
@@ -363,9 +382,12 @@ class Refine3DSettings:
     align_symmetry: bool = True     # sym differs from the start job's: first rotate the map and the poses so the
                                     # group's axes (n-fold on z, 2-fold on x) lie on the map's (symalign.py); the
                                     # symmetry itself is the user's choice, the scores say how well it holds
-    sharpen: bool = True            # when it finishes, a Sharpen job on its half maps (automatic mask, corrected
-                                    # masked FSC, Guinier B-factor, sharpened map, local resolution) - rerun that job
-                                    # for another B-factor or mask
+    sharpen: bool = True            # sharpen the final half maps with the job's own mask and compute their local
+                                    # resolution (sharpened.mrc, postprocess.png, localres.mrc ...; a few seconds), as a
+                                    # Sharpen job with mask "refine" would - no separate job needed
+    local_res: bool = True          # ... including the local resolution
+    mtf: str = ""                   # ... detector MTF (RELION .star) for the sharpening; empty: none
+    mtf_apix: float = 0.0           # ... the pixel size (A) the MTF refers to (0: the map's)
     gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
 
@@ -662,34 +684,18 @@ def run_refine3d(project: Project, job, log=print) -> dict:
                           maps[0].cpu().numpy(), last["candidates_a"], tag)
         nu_summ = dict(nu={k: last[k] for k in ("p05_a", "median_a", "p95_a", "at_global_pct", "coarse_pct",
                                                  "halves_r", "strict", "window_a")})
+    sharp = _sharpen_job_maps(project, job, s, log=log)
     summ = dict(particles=int(n_rows), images=int(clf.N), particles_used=int(used.sum()), duplicates_removed=n_dup,
                 duplicate_distance_a=round(dist, 1), sym=s.sym, symmetry_frame=sym_frame,
                 resolution_a=round(float(res[0]), 2),
                 resolution_solvent_mask_a=round(res_sol, 2),
                 resolution_unmasked_a=round(ab.resolution_from_fsc(fsc_unm, box_a), 2),
                 apix=round(apix, 4), box=b, res_start_a=round(res0, 1), seconds=round(seconds, 1), **report,
-                fsc_solvent=[round(float(x), 4) for x in fsc_sol.cpu()], map=project.rel(job.find("map.mrc")), **nu_summ)
+                fsc_solvent=[round(float(x), 4) for x in fsc_sol.cpu()], map=project.rel(job.find("map.mrc")), **nu_summ,
+                **({"sharpened": sharp} if sharp else {}))
     project.set_status(job, "finished", summ)
     ses.clf = None
     release_cache()
-    if s.sharpen:
-        summ = _sharpen_after(project, job, summ, log)
-    return summ
-
-
-def _sharpen_after(project: Project, job: Job, summ: dict, log) -> dict:
-    """Refine3D sharpen=True: a Sharpen job (default settings) on the finished refinement; its numbers go into the
-    refinement's summary. A failure there leaves the refinement finished (warning)."""
-    from .sharpen import SharpenSettings, run_sharpen, sharpen_job
-    try:
-        sj = sharpen_job(project, job, SharpenSettings())
-        r = run_sharpen(project, sj, log=log)
-        summ = dict(summ, sharpened=dict(job=sj.name, resolution_a=r.get("resolution_a"), b_factor=r.get("b_factor"),
-                                         map=r.get("map")))
-    except Exception as e:      # the refinement itself is done; sharpening can be run again as its own job
-        log(f"[refine] warning: sharpening failed ({type(e).__name__}: {e}); run a Sharpen job on {job.name}")
-        summ = dict(summ, warnings=list(summ.get("warnings") or []) + [f"sharpening failed: {e}"])
-    project.set_status(job, "finished", summ)
     return summ
 
 
@@ -723,6 +729,12 @@ class HeteroRefineSettings:
                                     # particle sphere only), or a MaskCreate job / .mrc path (one mask for every class)
     seed: int = 0                   # random seed (noise added to repeated references)
     decoy_res_a: float = 30.0       # "decoy" references keep the first reference only to this resolution (A)
+    sharpen: bool = True            # sharpen the final half maps with the job's own mask and compute their local
+                                    # resolution (sharpened.mrc, postprocess.png, localres.mrc ...; a few seconds), as a
+                                    # Sharpen job with mask "refine" would - no separate job needed
+    local_res: bool = True          # ... including the local resolution
+    mtf: str = ""                   # ... detector MTF (RELION .star) for the sharpening; empty: none
+    mtf_apix: float = 0.0           # ... the pixel size (A) the MTF refers to (0: the map's)
     gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
 
@@ -913,8 +925,15 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
     cv = {c["cls"]: c for c in report.pop("class_views", [])}
     for row in table:
         row["scf"] = cv.get(row["cls"], {}).get("scf")
+    sharp = _sharpen_job_maps(project, job, s, classes=tuple(r_["cls"] for r_ in table if r_["particles"] >= 100),
+                              log=log)
+    for row in table:                                 # each class's sharpened resolution / B-factor in its row
+        sr = sharp.get(str(row["cls"]), {})
+        if "resolution_a" in sr:
+            row.update(sharpened_resolution_a=sr["resolution_a"], b_factor=sr["b_factor"])
     summ = dict(particles=int(n), classes=table, duplicates_removed=n_dup, duplicate_distance_a=round(dist, 1),
-                sym=s.sym, apix=round(apix, 4), box=b, seconds=round(seconds, 1), **report)
+                sym=s.sym, apix=round(apix, 4), box=b, seconds=round(seconds, 1), **report,
+                **({"sharpened": sharp} if sharp else {}))
     project.set_status(job, "finished", summ)
     log("[hetero] " + ", ".join(f"class {r['cls']}: {r['particles']} ({r['resolution_solvent_mask_a']} A)" for r in table))
     ses.clf = None
@@ -1047,7 +1066,8 @@ def registry() -> dict[str, JobSpec]:
                  Input("poses", _POSES_CLS, doc="starting orientations, matched by particle uid"),
                  Input("reference", _POSES_CLS, optional=True, doc="starting map (default: the poses job's)")),
                 refine3d_job, run_refine3d, key=_res_key,
-                figures=("map_views.png", "fsc.png", "views.png", "progress.png", "particles.png", "nu.png")),
+                figures=("map_views.png", "fsc.png", "postprocess.png", "localres.png", "views.png", "progress.png",
+                         "particles.png", "nu.png")),
         JobSpec("HeteroRefine", "heterogeneous refinement: K maps, particles sorted among them (hard or soft)",
                 HeteroRefineSettings,
                 (Input("particles", _PARTICLES, doc="particles"),
@@ -1066,7 +1086,7 @@ def registry() -> dict[str, JobSpec]:
         JobSpec("Polish", "per-particle motion tracks and per-frame dose weights from a refinement", PolishSettings,
                 (Input("refine", ("Refine3D",), doc="the refinement (its particles and map)"),),
                 polish_job, run_polish,
-                key=lambda s: f"{_n(s.get('particles'))} ptcls · {s.get('box', '')} px", figures=("polish.png",)),
+                key=lambda s: f"{_n(s.get('particles'))} ptcls · {s.get('box', '')} px", figures=("polish.png", "tracks.png")),
         JobSpec("CtfRefine", "per-particle defocus against the particle's own half map (gold standard)",
                 CtfRefineSettings, (Input("refine", ("Refine3D",), doc="the refinement (its particles, poses, maps)"),),
                 ctf_refine_job, run_ctf_refine,

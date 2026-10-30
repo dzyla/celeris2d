@@ -321,7 +321,7 @@ def run_polish(project: Project, job, log=print) -> dict:
             continue
         mic = _movie_frames(project, mc, int(m), fr)
         sel = np.flatnonzero(P["movie"] == m)
-        imgs, new_c, trk, mvd = [], [], [], []
+        imgs, new_c, trk, mvd, coef = [], [], [], [], []
         for j, X, ref in batches(mic, sel):
             G = (X[..., band] * ref[:, None][..., band].conj()) * wl[None]           # (B, n, F)
             c = torch.zeros((len(j), 3, 2), device=dev, requires_grad=True)
@@ -339,6 +339,7 @@ def run_polish(project: Project, job, log=print) -> dict:
                 d = torch.einsum("nk,bkx->bnx", basis, c)
                 trk.append((d - d.mean(1, keepdim=True)).pow(2).sum(-1).mean(1).sqrt().cpu().numpy())
                 mvd.append(d.mean(1).norm(dim=-1).cpu().numpy())
+                coef.append(c.detach().reshape(len(j), 6).cpu().numpy())
                 # frames moved back along the track (by -d), weighted, summed
                 S = (X * torch.exp(2j * math.pi * (d[..., 0, None, None] * kx_f + d[..., 1, None, None] * ky_f))
                      * wsum[None]).sum(1)
@@ -352,11 +353,14 @@ def run_polish(project: Project, job, log=print) -> dict:
         if len(sel):
             imgs, new_c = np.concatenate(imgs), np.concatenate(new_c)
             trk, mvd = np.concatenate(trk).astype(np.float32), np.concatenate(mvd).astype(np.float32)
+            coef = np.concatenate(coef).astype(np.float32)
         else:
             imgs, new_c = np.zeros((0, box, box), np.float32), np.zeros((0, 2))
             trk, mvd = np.zeros(0, np.float32), np.zeros(0, np.float32)
+            coef = np.zeros((0, 6), np.float32)
         cols = dict(score=np.zeros(len(sel), np.float32), track_rms_a=trk, track_mean_a=mvd,
-                    half=P["half"][sel].astype(np.uint8))
+                    half=P["half"][sel].astype(np.uint8),
+                    **{f"track_c{k}{ax}": coef[:, 2 * k + i] for k in range(3) for i, ax in enumerate("xy")})
         if P["per_particle_ctf"]:                    # refined defocus (CtfRefine) goes on with the polished particles
             c_ = P["ctf"][sel].numpy()
             cols.update(defocus_u=c_[:, 0], defocus_v=c_[:, 1], defocus_angle=c_[:, 2])
@@ -371,47 +375,168 @@ def run_polish(project: Project, job, log=print) -> dict:
     tt = project.table(job, "particles").read(["track_rms_a", "track_mean_a"])
     tr, mv_ = tt["track_rms_a"], tt["track_mean_a"]
     np.savez(job.out("frame_weights.npz"), B=B_fr.cpu().numpy(), scale=s_fr.cpu().numpy(),
-             a_raw=a_raw.cpu().numpy(), sigma2=sig2.cpu().numpy(), weights=w.cpu().numpy(), apix=mic_apix, box=bi)
-    _figure(job.out("polish.png"), B_rel.cpu().numpy(), (s_fr / s_fr.max()).cpu().numpy(),
-            w.cpu().numpy(), box_a, tr, job.name)
+             a_raw=a_raw.cpu().numpy(), a_model=a_mod.cpu().numpy(), sigma2=sig2.cpu().numpy(),
+             weights=w.cpu().numpy(), apix=mic_apix, box=bi)
+    # SNR of the weighted sum relative to the plain sum, per shell: (sum a^2 / s2) / ((sum a)^2 / sum s2)
+    am, sg = a_mod.double(), sig2.double().clamp_min(1e-30)
+    gain = ((am ** 2 / sg).sum(0) / ((am.sum(0) ** 2) / sg.sum(0)).clamp_min(1e-30)).float().cpu().numpy()
+    per_mic = {}
+    for mid, v in zip(np.asarray(tt["movie"]), np.asarray(tr)):
+        per_mic.setdefault(int(mid), []).append(float(v))
+    mic_rms = np.array([np.median(per_mic[k]) for k in sorted(per_mic)]) if per_mic else np.zeros(0)
+    title_ = f"{job.name} · {len(P['uid']):,} particles · {len(movies)} micrographs · {n_fr} frames"
+    _figure(job.out("polish.png"), B_rel.cpu().numpy(), (s_fr / s_fr.max()).cpu().numpy(), w.cpu().numpy(), box_a,
+            tr, title_, a_raw=a_raw.cpu().numpy(), a_mod=a_mod.cpu().numpy(), gain=gain, moved=mv_,
+            mic_rms=mic_rms, max_res=max_res)
+    tracks_figure(project, job, n_fr, title_)
+    k_gain = {f"{r_:g}": round(float(gain[int(round(box_a / r_))]), 3) for r_ in (20, 8, 5, 4, 3)
+              if int(round(box_a / r_)) < len(gain) and r_ >= max_res}
     summ = dict(particles=int(len(P["uid"])), micrographs=int(len(movies)), box=box, apix=out_apix,
                 box_a=round(box * out_apix, 1), max_res_a=round(max_res, 2),
                 frame_B_rel=[round(float(b), 1) for b in B_rel], frame_scale=[round(float(x), 3) for x in s_fr / s_fr.max()],
                 track_rms_a_median=round(float(np.median(tr)), 3) if len(tr) else None,
                 centre_moved_a_median=round(float(np.median(mv_)), 3) if len(mv_) else None,
+                snr_gain_by_res_a=k_gain,
+                micrograph_track_rms_a=dict(median=round(float(np.median(mic_rms)), 3),
+                                            p95=round(float(np.percentile(mic_rms, 95)), 3)) if len(mic_rms) else None,
                 seconds=round(time.time() - t_start, 1), dtype=s.dtype)
     project.set_status(job, "finished", summ)
     return summ
 
 
-def _figure(path, B_rel, scale, w, box_a, track_rms, title_):
+def _figure(path, B_rel, scale, w, box_a, track_rms, title_, **extra):
     from .plotstyle import themed
-    themed(_draw)(path, B_rel, scale, w, box_a, track_rms, title_)
+    themed(_draw)(path, B_rel, scale, w, box_a, track_rms, title_, **extra)
 
 
-def _draw(path, B_rel, scale, w, box_a, track_rms, title_):
-    """Per-frame B-factor and scale (separate axes), the resulting frame weights at a few resolutions, and the
-    spread of the particle tracks."""
+def _draw(path, B_rel, scale, w, box_a, track_rms, title_, a_raw=None, a_mod=None, gain=None, moved=None,
+          mic_rms=None, max_res=None):
+    """Top: per-frame B-factor and scale, the frame weights over frame x resolution, and the SNR gain of the weighted
+    sum over the plain sum per resolution. Bottom: the measured per-frame signal at a few resolutions with the fitted
+    model, the particle tracks (rms about their mean position), how far particle centres moved, and the median track
+    per micrograph (a micrograph far above the others: drift the patch model missed, or a bad movie)."""
     from .plotstyle import T, grid_y, note, plt, title, top
-    fig, ax = plt.subplots(1, 4, figsize=(15, 3.6))
-    fig.subplots_adjust(left=0.05, right=0.98, top=top(fig, 0.75), bottom=0.17, wspace=0.32)
-    fr = np.arange(1, len(B_rel) + 1)
-    ax[0].plot(fr, B_rel, "o-", ms=3, color=T.series[0])
-    ax[0].set(title="Relative B-factor", xlabel="frame", ylabel="Å²")
-    ax[1].plot(fr, scale, "o-", ms=3, color=T.series[0])
-    ax[1].set(title="Scale", xlabel="frame", ylabel="relative")
-    for q, res in enumerate((20, 5, 3)):
-        i = int(round(box_a / res))
-        if i < w.shape[1]:
-            ax[2].plot(fr, w[:, i], color=T.series[q], label=f"{res} Å")
-    ax[2].set(title="Frame weight", xlabel="frame", ylabel="weight")
-    ax[2].legend(loc="upper right")
-    ax[3].hist(track_rms, bins=60, color=T.series[0])
+    fig, ax = plt.subplots(2, 4, figsize=(17, 7.6))
+    fig.subplots_adjust(left=0.05, right=0.98, top=top(fig, 0.8), bottom=0.08, wspace=0.34, hspace=0.5)
+    n = len(B_rel)
+    fr = np.arange(1, n + 1)
+    a = ax[0, 0]
+    a.plot(fr, B_rel, "o-", ms=3, color=T.series[0])
+    a.set(title="Relative B-factor per frame", xlabel="frame", ylabel="Å²")
+    a = ax[0, 1]
+    a.plot(fr, scale, "o-", ms=3, color=T.series[0])
+    a.set(title="Scale per frame", xlabel="frame", ylabel="relative")
+    a = ax[0, 2]
+    nk = w.shape[1]
+    k_hi = min(nk - 1, int(box_a / max_res) if max_res else nk - 1)
+    W = w[:, 1:k_hi + 1] / np.maximum(w[:, 1:k_hi + 1].max(0, keepdims=True), 1e-30)
+    im = a.imshow(W.T, origin="lower", aspect="auto", cmap=T.density, extent=(0.5, n + 0.5, 1, k_hi),
+                  vmin=0, vmax=1)
+    ticks = [r for r in (30, 15, 8, 5, 4, 3, 2.5) if 1 <= box_a / r <= k_hi]
+    a.set_yticks([box_a / r for r in ticks], [f"{r:g}" for r in ticks])
+    a.set(title="Frame weights (each resolution scaled to 1)", xlabel="frame", ylabel="resolution (Å)")
+    fig.colorbar(im, ax=a, fraction=0.05, pad=0.02)
+    a = ax[0, 3]
+    if gain is not None:
+        k = np.arange(1, k_hi + 1)
+        a.plot(k, gain[1:k_hi + 1], color=T.series[0])
+        a.axhline(1, color=T.ink3, lw=1, ls="--")
+        a.set_xticks([box_a / r for r in ticks], [f"{r:g}" for r in ticks])
+        i5 = int(round(box_a / 5))
+        if i5 <= k_hi:
+            note(a, f"x{gain[i5]:.2f} at 5 Å", "upper left")
+    a.set(title="SNR gain of the weighting", xlabel="resolution (Å)", ylabel="weighted / plain sum")
+    a = ax[1, 0]
+    if a_raw is not None:
+        for q, res in enumerate((20, 8, 5, 3)):
+            i = int(round(box_a / res))
+            if i <= k_hi:
+                a.plot(fr, a_raw[:, i], "o", ms=3, color=T.series[q], label=f"{res} Å")
+                a.plot(fr, a_mod[:, i], "-", lw=1.2, color=T.series[q])
+        a.legend(loc="upper right")
+    a.set(title="Signal per frame: measured (dots), model", xlabel="frame", ylabel="correlation with the map")
+    a = ax[1, 1]
+    a.hist(track_rms, bins=60, color=T.series[0])
     if len(track_rms):
-        note(ax[3], f"median {np.median(track_rms):.2f} Å", "upper right")
-    ax[3].set(title="Particle tracks", xlabel="rms about the mean position (Å)", ylabel="particles")
-    for a in ax:
-        grid_y(a)
+        note(a, f"median {np.median(track_rms):.2f} Å", "upper right")
+    a.set(title="Particle tracks", xlabel="rms about the mean position (Å)", ylabel="particles")
+    a = ax[1, 2]
+    if moved is not None and len(moved):
+        a.hist(moved, bins=60, color=T.series[0])
+        note(a, f"median {np.median(moved):.2f} Å", "upper right")
+    a.set(title="Centre moved by the track", xlabel="Å", ylabel="particles")
+    a = ax[1, 3]
+    if mic_rms is not None and len(mic_rms):
+        x = np.arange(len(mic_rms))
+        a.plot(x, mic_rms, "o", ms=3 if len(x) < 500 else 1.5, color=T.series[0], mew=0)
+        med = float(np.median(mic_rms))
+        a.axhline(med, color=T.ink2, lw=1, ls="--")
+        note(a, f"median {med:.2f} Å, 95 % {np.percentile(mic_rms, 95):.2f} Å", "upper right")
+    a.set(title="Median track per micrograph", xlabel="micrograph", ylabel="rms (Å)")
+    for a in ax.ravel():
+        if a is not ax[0, 2]:
+            grid_y(a)
     title(fig, "Polishing", title_)
+    fig.savefig(path)
+    plt.close(fig)
+
+
+def tracks_figure(project: Project, job, n_frames: int, title_: str = "", n_mic: int = 2):
+    """tracks.png of a Polish job from what it stores: the first n_mic micrographs (MotionCtf sums, low-passed), the
+    particles' polished positions and their track coefficients (track_cKX, K = 0..2, X = x / y on _basis)."""
+    from .pipeline import _load_mic
+    from .plots_preprocess import display_blur
+    job = project.job(job)
+    mc = project.job(job.params["micrographs"])
+    t = project.table(job, "particles").read()
+    if "track_c0x" not in t or not len(t["movie"]):
+        return None
+    basis = _basis(n_frames, "cpu").numpy()                                         # (n, 3)
+    examples = []
+    for m in list(dict.fromkeys(np.asarray(t["movie"]).tolist()))[:n_mic]:
+        sel = np.flatnonzero(t["movie"] == m)
+        C = np.stack([np.stack([t[f"track_c{k}{ax}"][sel] for ax in "xy"], -1) for k in range(3)], 1)   # (p, 3, 2)
+        tr = np.einsum("nk,pkx->pnx", basis, C)                                    # (p, n, 2) A
+        img, apix, _ = _load_mic(project, mc, int(m))
+        f_ = max(1, int(round(4.0 / apix)))                                         # ~4 A/px for the figure
+        im = torch.nn.functional.avg_pool2d(img.float()[None, None], f_)[0, 0].cpu().numpy()
+        xy = np.stack([t["x_a"][sel], t["y_a"][sel]], 1) if "x_a" in t else None
+        if xy is None:
+            continue
+        examples.append(dict(stem=project.movie(int(m))["stem"], image=display_blur(im, apix * f_, 20.0),
+                             apix=apix * f_, centre=xy - tr.mean(1), tracks=tr))
+    if not examples:
+        return None
+    from .plotstyle import themed
+    themed(_draw_tracks)(job.out("tracks.png"), examples, title_ or job.name)
+    return job.out("tracks.png")
+
+
+def _draw_tracks(path, examples, title_, mag: float = 0.0):
+    """Particle tracks on the first micrographs (low-passed): every particle's path over the frames, magnified mag
+    times (0: so that the median path is ~35 pixels of the figure), the start marked."""
+    from matplotlib.collections import LineCollection
+    from .plotstyle import GRAY, T, image_axes, plt, title, top
+    if not mag:
+        L = np.concatenate([np.abs(np.diff(e["tracks"], axis=1)).sum((1, 2)) for e in examples])     # path length (A)
+        mag = float(np.clip(np.round(35 * examples[0]["apix"] / max(float(np.median(L)), 1e-3), -1), 10, 1000))
+    k = len(examples)
+    fig, ax = plt.subplots(1, k, figsize=(8.2 * k, 8.4), squeeze=False)
+    fig.subplots_adjust(left=0.02, right=0.98, top=top(fig, 0.85), bottom=0.04, wspace=0.05)
+    for a, e in zip(ax[0], examples):
+        img, ap = e["image"], e["apix"]
+        lo, hi = np.percentile(img, [0.5, 99.5])
+        a.imshow(img, cmap=GRAY, vmin=lo, vmax=hi)
+        c = e["centre"] / ap                                              # (n, 2) px
+        tr = e["tracks"]                                                  # (n, frames, 2) A
+        pts = c[:, None] + (tr - tr[:, :1]) * mag / ap
+        a.add_collection(LineCollection(pts, colors=T.series[1], linewidths=1.4, alpha=0.95))
+        a.plot(pts[:, 0, 0], pts[:, 0, 1], "o", ms=2.4, color=T.series[2], mew=0)
+        a.set_xlim(0, img.shape[1])
+        a.set_ylim(img.shape[0], 0)
+        image_axes(a)
+        rms = np.sqrt(((tr - tr.mean(1, keepdims=True)) ** 2).sum(-1).mean(1))
+        a.set_title(f"{e['stem']} · {len(c)} particles · median track {np.median(rms):.2f} Å", fontsize=10)
+    title(fig, f"Particle tracks (x{mag:g}, start dotted)", title_)
     fig.savefig(path)
     plt.close(fig)

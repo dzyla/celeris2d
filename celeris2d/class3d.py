@@ -538,6 +538,11 @@ class Class3DSettings:
     max_res_a: float = 0.0          # finest resolution loaded and of the final maps / FSC (0: Nyquist of the particles)
     diameter_a: float = 0.0         # particle diameter for the sphere mask (0: from the extraction)
     seed: int = 0                   # random seed (starting subsets, noise, half split if the poses have none)
+    sharpen: bool = True            # sharpen the final half maps with the job's own mask and compute their local
+                                    # resolution (as a Sharpen job with mask "refine"; no separate job needed)
+    local_res: bool = True          # ... including the local resolution
+    mtf: str = ""                   # ... detector MTF (RELION .star) for the sharpening; empty: none
+    mtf_apix: float = 0.0           # ... the pixel size (A) the MTF refers to (0: the map's)
     gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
 
@@ -704,12 +709,19 @@ def run_class3d(project, job, log=print) -> dict:
                         "distinguishable at this resolution / in this mask")
     for row in table:
         row["scf"] = figs["class_views"].get(row["cls"])
+    from .jobs import _sharpen_job_maps
+    sharp = _sharpen_job_maps(project, job, s, classes=tuple(x["cls"] for x in table if x["particles"] >= 100), log=log)
+    for row in table:
+        sr = sharp.get(str(row["cls"]), {})
+        if "resolution_a" in sr:
+            row.update(sharpened_resolution_a=sr["resolution_a"], b_factor=sr["b_factor"])
     summ = dict(particles=int(n), rows=int(n_rows), classes=table, duplicates_removed=n_dup,
                 duplicate_distance_a=round(dist, 1), sym=s.sym, sym_expand=s.sym_expand.upper() or None,
                 res_a=s.res_a, reg_t=s.reg_t, mask=s.mask or None, subtract=bool(focus is not None and s.subtract),
                 init=s.init, soft=s.soft, apix=round(apix, 4), box=b, box_iter=r.box_iter, iterations=r.iterations,
                 converged=r.converged, median_max_posterior=round(mmp, 3), seconds=round(seconds, 1),
-                seconds_load=round(t_load, 1), history=r.history, figures=figs["figures"], warnings=warnings)
+                seconds_load=round(t_load, 1), history=r.history, figures=figs["figures"], warnings=warnings,
+                **({"sharpened": sharp} if sharp else {}))
     project.set_status(job, "finished", summ)
     log("[class3d] " + ", ".join(f"class {x['cls']}: {x['particles']} ({x['resolution_solvent_mask_a']} A)"
                                  for x in table) + f"; {seconds:.0f}s")

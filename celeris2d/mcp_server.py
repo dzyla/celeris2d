@@ -373,7 +373,8 @@ def refine3d(particles_job: str, poses_job: str, reference_job: str = "", sym: s
     starting map from reference_job (default the poses job; for a HeteroRefine / Class3D / ModeMaps, the map of the
     particles' class). classes: with such a poses job, only the particles of these 1-based classes (the user's choice). global_iters: first
     iterations that also search all orientations. nu: non-uniform regularisation (NU refinement). sharpen: when it
-    finishes, a Sharpen job on its half maps (sharpened map, B-factor, corrected FSC, local resolution). Writes FSC
+    finishes, it sharpens its own half maps with its own mask (sharpened map, B-factor, corrected FSC, local
+    resolution; in the job, no separate Sharpen job). Writes FSC
     (png + json/star/xml), angular distribution, progress per iteration and per-particle diagnostics."""
     from . import jobs
     prj = _p()

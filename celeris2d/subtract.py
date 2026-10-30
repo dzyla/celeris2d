@@ -593,6 +593,11 @@ class LocalRefineSettings:
     max_res_a: float = 0.0          # finest resolution loaded (0: Nyquist)
     diameter_a: float = 0.0         # mask diameter for the particle images (0: from the particles - the region's size
                                     # for a re-centred Subtract job)
+    sharpen: bool = True            # sharpen the final half maps with the job's own mask and compute their local
+                                    # resolution (as a Sharpen job with mask "refine"; no separate job needed)
+    local_res: bool = True          # ... including the local resolution
+    mtf: str = ""                   # ... detector MTF (RELION .star) for the sharpening; empty: none
+    mtf_apix: float = 0.0           # ... the pixel size (A) the MTF refers to (0: the map's)
     gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
 
@@ -789,6 +794,10 @@ def run_local_refine(project: Project, job, log=print) -> dict:
                 fsc_consensus_region=None if fsc_cons is None else [None if x != x else round(float(x), 4)
                                                                     for x in fsc_cons.cpu()],
                 map=project.rel(job.find("map.mrc")))
+    from .jobs import _sharpen_job_maps
+    sharp = _sharpen_job_maps(project, job, s, log=log)               # with the focus mask
+    if sharp:
+        summ["sharpened"] = sharp
     project.set_status(job, "finished", summ)
     log(f"[local] {job.name}: focused region {res_loc:.2f} A (consensus in the same mask {res_cons:.2f} A), orientation "
         f"change median {summ['angle_change_deg_median']} deg, shift {summ['shift_change_a_median']} A, {seconds:.0f} s")

@@ -6,8 +6,11 @@ the diagnostics needed to trust it.
                  (0.143) is read from the corrected curve, so a mask that creates correlation by itself does not
                  count.
     B-factor     Guinier fit, ln(spherically averaged amplitude) vs 1/d^2, between fit_from_a (10 A) and the
-                 resolution (RELION's automatic B-factor); or given. RELION's sign: negative sharpens.
-    filter       map x exp(-B s^2 / 4) x sqrt(2 FSC / (1 + FSC)) (Rosenthal & Henderson 2003, corrected FSC),
+                 resolution (RELION's automatic B-factor); or given. RELION's sign: negative sharpens. With a detector
+                 MTF (mtf, RELION's .star files) the map is divided by it first, as RELION does: beta-gal (RELION
+                 tutorial) B -55 A^2 without, -27 with (RELION -31). The MTF moves the B-factor, hardly the result:
+                 B absorbs the detector's fall-off otherwise.
+    filter       map / MTF x exp(-B s^2 / 4) x sqrt(2 FSC / (1 + FSC)) (Rosenthal & Henderson 2003, corrected FSC),
                  low-passed at the resolution with a cosine edge of edge_shells shells.
     outputs      sharpened.mrc (whole box), sharpened_masked.mrc, postprocess.png (FSC curves, Guinier plot,
                  central slices with the mask outline), summary: resolutions (corrected / masked / unmasked, 0.143
@@ -40,6 +43,15 @@ class SharpenSettings:
                                     # else a MaskCreate job (number) or a mask .mrc (path, absolute or relative to the project)
     edge_shells: int = 2            # cosine edge of the low-pass (Fourier shells)
     fsc_weight: bool = True         # weight each shell by sqrt(2 FSC / (1 + FSC)) (RELION)
+    mtf: str = ""                   # detector MTF (RELION .star: rlnResolutionInversePixel, rlnMtfValue; RELION ships
+                                    # them in relion/data/, e.g. mtf_k2_300kV.star): the map is divided by it before the
+                                    # B-factor fit and sharpening. Empty: no correction (the B-factor then also has to
+                                    # make up for the detector, which over-weights the middle resolutions)
+    mtf_apix: float = 0.0           # pixel size (A) the MTF refers to: the detector's (counting) pixel, before any
+                                    # binning; 0: the half maps' pixel size
+    fit_weighted: bool = False      # Guinier fit on the FSC-weighted amplitudes instead of the measured ones. Off: the
+                                    # RELION tutorial's beta-gal (its MTF, 0.885 A) gives B -27 A^2 like RELION's -31
+                                    # (weighted: -49); INX-6 -221 vs -251 (weighted over-weights 5-10 A even more)
     cls: int = 0                    # a HeteroRefine / Class3D / ModeMaps job: the class (1-based) to sharpen
     local_res: bool = True          # local resolution (localres.py): localres.mrc + localres_filtered.mrc + figure
     local_window_a: float = 0.0     # its window (0: ~7x the resolution)
@@ -113,8 +125,39 @@ def content_end(h: torch.Tensor, kk: torch.Tensor) -> int:
     return nsh - 1
 
 
-def postprocess(h1: np.ndarray, h2: np.ndarray, mask: np.ndarray, apix: float, s: SharpenSettings, dev=None) -> dict:
-    """The sharpening of two half maps (n^3, same box) with a soft mask; returns maps, curves and numbers."""
+def read_mtf(path: str) -> tuple[np.ndarray, np.ndarray]:
+    """A RELION MTF .star: (frequency in 1 / detector pixel, 0 .. 0.5; MTF value)."""
+    cols, rows, in_loop = [], [], False
+    with open(path) as f:
+        for ln in f:
+            t = ln.strip()
+            if not t or t.startswith("#") or t.startswith("data_"):
+                continue
+            if t == "loop_":
+                in_loop = True
+                continue
+            if t.startswith("_"):
+                cols.append(t.split()[0])
+                continue
+            if in_loop:
+                rows.append([float(x) for x in t.split()[:len(cols)]])
+    a = np.asarray(rows, float)
+    if a.ndim != 2 or len(a) < 2 or "_rlnResolutionInversePixel" not in cols or "_rlnMtfValue" not in cols:
+        raise ValueError(f"{path}: not a RELION MTF file (rlnResolutionInversePixel, rlnMtfValue)")
+    return a[:, cols.index("_rlnResolutionInversePixel")], a[:, cols.index("_rlnMtfValue")]
+
+
+def mtf_curve(path: str, mtf_apix: float, s_inv_a: np.ndarray) -> np.ndarray:
+    """The MTF at spatial frequencies s (1/A) for a detector pixel of mtf_apix (A); beyond the file's last frequency its
+    last value; clamped at 0.05 (dividing by less amplifies noise only)."""
+    f, v = read_mtf(path)
+    return np.clip(np.interp(np.asarray(s_inv_a) * mtf_apix, f, v), 0.05, None)
+
+
+def postprocess(h1: np.ndarray, h2: np.ndarray, mask: np.ndarray, apix: float, s: SharpenSettings, dev=None,
+                mtf_path: str = "") -> dict:
+    """The sharpening of two half maps (n^3, same box) with a soft mask; returns maps, curves and numbers. mtf_path:
+    the detector MTF file (resolved s.mtf), the map divided by it before the fit and the sharpening."""
     from .abinitio import corrected_masked_fsc
     dev = dev or ("cuda" if torch.cuda.is_available() else "cpu")
     t1, t2, m = (torch.as_tensor(x, device=dev) for x in (h1, h2, mask))
@@ -132,26 +175,38 @@ def postprocess(h1: np.ndarray, h2: np.ndarray, mask: np.ndarray, apix: float, s
     k_res = box_a / res                                               # shell of the low-pass
 
     full = 0.5 * (t1 + t2)
+    s_sh = np.arange(nsh) / box_a                                     # 1/A per shell
+    mtf_sh = mtf_curve(mtf_path, s.mtf_apix or apix, s_sh) if mtf_path else np.ones(nsh)
+    inv_mtf = torch.as_tensor(1.0 / mtf_sh, device=dev, dtype=torch.float32)[sh.clamp(max=nsh - 1)]
     F = torch.fft.rfftn(full * m)
     shc = sh.clamp(max=nsh - 1).reshape(-1)
     pw = torch.zeros(nsh, device=dev).index_add_(0, shc, (F.abs() ** 2).reshape(-1).float())
     cnt = torch.zeros(nsh, device=dev).index_add_(0, shc, torch.ones_like(shc, dtype=torch.float32))
-    amp = torch.sqrt(pw / cnt.clamp_min(1)).cpu().numpy()
-    s2 = (np.arange(nsh) / box_a) ** 2
+    amp = torch.sqrt(pw / cnt.clamp_min(1)).cpu().numpy()            # as measured (the Guinier plot's "map")
+    amp_fit = amp / mtf_sh                                            # MTF-corrected
+    if s.fit_weighted:                                                # RELION fits the FSC-weighted amplitudes
+        fc_ = np.clip(np.nan_to_num(f_c, nan=0.0), 0, 1)
+        amp_fit = amp_fit * np.sqrt(2 * fc_ / (1 + fc_))
+    s2 = s_sh ** 2
     lo, hi_ = int(np.ceil(box_a / s.fit_from_a)), int(np.floor(k_res))
-    fit = dict(from_a=s.fit_from_a, to_a=round(res, 2), shells=max(0, hi_ - lo + 1), r2=float("nan"))
+    fit = dict(from_a=s.fit_from_a, to_a=round(res, 2), shells=max(0, hi_ - lo + 1), r2=float("nan"),
+               mtf=bool(mtf_path), weighted=bool(s.fit_weighted))
     if hi_ - lo + 1 >= 3:
-        x, y = s2[lo:hi_ + 1], np.log(np.maximum(amp[lo:hi_ + 1], 1e-30))
+        x, y = s2[lo:hi_ + 1], np.log(np.maximum(amp_fit[lo:hi_ + 1], 1e-30))
         slope, icpt = np.polyfit(x, y, 1)
         pred = slope * x + icpt
         fit.update(r2=float(1 - ((y - pred) ** 2).sum() / max(((y - y.mean()) ** 2).sum(), 1e-30)), slope=float(slope),
                    intercept=float(icpt))
         b_auto = 4 * slope                                            # ln A = c - B s^2 / 4: applied B = -B = 4 slope
+        half = len(x) // 2                                            # the two halves of the range: a curved plot
+        if half >= 3 and len(x) - half >= 3:                          # (membrane proteins, flexible parts) has two B
+            fit.update(b_lower=float(4 * np.polyfit(x[:half], y[:half], 1)[0]),
+                       b_upper=float(4 * np.polyfit(x[half:], y[half:], 1)[0]))
     else:
         b_auto = 0.0
     b = s.b_factor or b_auto
     s2v = (kk / box_a) ** 2
-    filt = torch.exp(-b * s2v / 4)
+    filt = torch.exp(-b * s2v / 4) * inv_mtf
     if s.fsc_weight:
         fc = torch.as_tensor(np.clip(f_c, 0, 1), device=dev)
         filt = filt * torch.sqrt(2 * fc / (1 + fc)).nan_to_num(0)[sh.clamp(max=nsh - 1)]
@@ -174,6 +229,13 @@ def postprocess(h1: np.ndarray, h2: np.ndarray, mask: np.ndarray, apix: float, s
                         f"too tight or too sharp an edge; the corrected FSC accounts for it")
     if outside > 0.02:
         warnings.append(f"{outside * 100:.1f} % of the low-passed density lies outside the mask: it cuts the particle")
+    if "b_lower" in fit and not s.b_factor and abs(fit["b_upper"] - fit["b_lower"]) > max(50.0, 0.3 * abs(b_auto)):
+        hi_over = b_auto < fit["b_upper"]           # steeper than the finest shells need: those are over-sharpened
+        warnings.append(f"curved Guinier plot: B {fit['b_lower']:.0f} A^2 over the lower half of the fit range, "
+                        f"{fit['b_upper']:.0f} over the upper half; B {b_auto:.0f} over-sharpens the "
+                        f"{'finest' if hi_over else 'middle'} resolutions and under-sharpens the "
+                        f"{'middle' if hi_over else 'finest'} - set b_factor between them, or look at "
+                        f"localres_filtered.mrc")
     if fit["shells"] < 5 or not fit["r2"] > 0.8:
         warnings.append(f"Guinier fit on {fit['shells']} shells, r^2 {fit['r2']:.2f}: the B-factor is uncertain (set it)")
     dips = _dips(f_un, box_a, i_res)
@@ -181,7 +243,7 @@ def postprocess(h1: np.ndarray, h2: np.ndarray, mask: np.ndarray, apix: float, s
         warnings.append(f"single-shell drops of the unmasked FSC at {dips} A: a reconstruction artifact, not signal")
     return dict(sharp=sharp.cpu().numpy(), mask=m.cpu().numpy(), apix=apix, box_a=box_a,
                 fsc=dict(unmasked=f_un, masked=f_m, randomised=f_r, corrected=f_c), randomised_from_a=box_a / max(k_r, 1),
-                amp=amp, amp_sharp=amp_s, s2=s2, fit=fit, b_factor=float(b), b_auto=float(b_auto), resolution_a=float(res),
+                amp=amp, amp_fit=amp_fit, mtf=mtf_sh, amp_sharp=amp_s, s2=s2, fit=fit, b_factor=float(b), b_auto=float(b_auto), resolution_a=float(res),
                 resolution_masked_a=_res(f_m, box_a, 0.143), resolution_unmasked_a=_res(f_un, box_a, 0.143),
                 resolution_05_a=_res(f_c, box_a, 0.5), mask_fraction=float(m.mean()), density_outside_mask=outside,
                 fsc_dips_a=dips, warnings=warnings, content_to_a=round(box_a / max(k_end, 1), 2))
@@ -192,6 +254,37 @@ def run_sharpen(project: Project, job, log=print) -> dict:
     job = project.job(job)
     s = settings_of(job, SharpenSettings)
     rj = project.job(job.params["refine"])
+    summ = sharpen_maps(project, rj, s, job, log=log)
+    project.set_status(job, "finished", summ)
+    return summ
+
+
+class _InJob:
+    """Where a refinement job's own sharpening writes: its folders, with names that do not clash with its refinement
+    outputs (mask.mrc, fsc.json) and a class prefix for several maps."""
+
+    RENAME = {"mask.mrc": "sharpen_mask.mrc", "fsc.json": "sharpen_fsc.json"}
+
+    def __init__(self, job: Job, prefix: str = ""):
+        self.job, self.prefix, self.root, self.name = job, prefix, job.root, job.name
+
+    def out(self, name: str) -> str:
+        return self.job.out(self.prefix + self.RENAME.get(name, name))
+
+
+def sharpen_in_job(project: Project, job: Job, cls: int = 0, mtf: str = "", mtf_apix: float = 0.0,
+                   local_res: bool = True, log=print) -> dict:
+    """Sharpening and local resolution of a refinement job's own half maps with its own (solvent) mask, written into
+    the job (sharpened.mrc, postprocess.png, localres.mrc, ...; a class of a HeteroRefine / Class3D job with its
+    classNN_ prefix): what a Sharpen job would give with mask="refine", without a separate job. Returns the summary
+    (resolution, B-factor, local resolution)."""
+    s = SharpenSettings(mask="refine", cls=cls, mtf=mtf, mtf_apix=mtf_apix, local_res=local_res)
+    return sharpen_maps(project, job, s, _InJob(job, f"class{cls:02d}_" if cls else ""), log=log)
+
+
+def sharpen_maps(project: Project, rj: Job, s: SharpenSettings, out, log=print) -> dict:
+    """The sharpening of rj's half maps (class s.cls of a class job) with s; files through out.out(name) (a Sharpen
+    job, or _InJob for the refinement job itself). Returns the summary."""
     t0 = time.time()
     pre = f"class{s.cls:02d}_" if rj.type in CLASS_JOBS else ""
     h1, apix = _read(rj.find(f"{pre}half1_unfil.mrc"))
@@ -200,7 +293,7 @@ def run_sharpen(project: Project, job, log=print) -> dict:
     if s.mask in ("auto", ""):
         from .masks import auto_mask
         mask, mask_info = auto_mask(h1, h2, apix)
-        mpath = job.out("mask.mrc")
+        mpath = out.out("mask.mrc")
         _write(mpath, mask, apix)
         mapix = apix
         log(f"[sharpen] automatic mask: threshold {mask_info['threshold_sigma']} sd of the noise "
@@ -217,21 +310,28 @@ def run_sharpen(project: Project, job, log=print) -> dict:
             mask, mapix = load_mask(project, s.mask, h1.shape[0], apix), apix
     if mask.shape != h1.shape or abs(mapix - apix) > 1e-3 * apix:
         raise ValueError(f"mask {mpath}: {mask.shape} at {mapix:.4f} A/px, half maps {h1.shape} at {apix:.4f} A/px")
-    r = postprocess(h1, h2, np.clip(mask, 0, 1), apix, s)
-    _write(job.out("sharpened.mrc"), r["sharp"], apix)
-    _write(job.out("sharpened_masked.mrc"), r["sharp"] * r["mask"], apix)
+    mtf_path = ""
+    if s.mtf:
+        mtf_path = s.mtf if os.path.isabs(s.mtf) else project.abs(s.mtf)
+        if not os.path.exists(mtf_path):
+            raise ValueError(f"MTF file {s.mtf} not found (RELION ships them in relion/data/, e.g. mtf_k2_300kV.star)")
+        log(f"[sharpen] detector MTF {os.path.basename(mtf_path)} at {s.mtf_apix or apix:.3f} A/px")
+    r = postprocess(h1, h2, np.clip(mask, 0, 1), apix, s, mtf_path=mtf_path)
+    _write(out.out("sharpened.mrc"), r["sharp"], apix)
+    _write(out.out("sharpened_masked.mrc"), r["sharp"] * r["mask"], apix)
     src_name = rj.name + (f" class {s.cls}" if pre else "")
-    figure(job.out("postprocess.png"), r, f"{job.name} (from {src_name})")
+    tag = src_name if out.name == rj.name else f"{out.name} (from {src_name})"
+    figure(out.out("postprocess.png"), r, tag)
     from .diagnostics import write_fsc
-    write_fsc(job.out("fsc.json")[:-5], r["fsc"], r["box_a"], resolution_a=round(r["resolution_a"], 3),
-              main="corrected", title=f"{job.name} (from {src_name})")
-    with open(job.out("guinier.json"), "w") as f:
+    write_fsc(out.out("fsc.json")[:-5], r["fsc"], r["box_a"], resolution_a=round(r["resolution_a"], 3),
+              main="corrected", title=tag)
+    with open(out.out("guinier.json"), "w") as f:
         json.dump(dict(s2_inv_a2=r["s2"].round(6).tolist(), ln_amplitude=np.log(np.maximum(r["amp"], 1e-30)).round(4).tolist(),
                        ln_amplitude_sharpened=np.log(np.maximum(r["amp_sharp"], 1e-30)).round(4).tolist(),
                        fit={k: v for k, v in r["fit"].items()}, b_factor=r["b_factor"], b_auto=r["b_auto"]), f)
     lres = None
     if s.local_res:
-        lres = local_resolution(job, h1, h2, r, apix, s, f"{job.name} (from {src_name})", log)
+        lres = local_resolution(out, h1, h2, r, apix, s, tag, log)
         r["warnings"] += lres.pop("warnings", [])
     for w in r["warnings"]:
         log(f"[sharpen] warning: {w}")
@@ -239,18 +339,19 @@ def run_sharpen(project: Project, job, log=print) -> dict:
                 resolution_unmasked_a=round(r["resolution_unmasked_a"], 2), resolution_fsc05_a=round(r["resolution_05_a"], 2),
                 b_factor=round(r["b_factor"], 1), b_factor_auto=round(r["b_auto"], 1),
                 guinier_fit=dict(from_a=r["fit"]["from_a"], to_a=r["fit"]["to_a"], shells=r["fit"]["shells"],
+                                 mtf=r["fit"]["mtf"], **{k: round(r["fit"][k], 1) for k in ("b_lower", "b_upper")
+                                                         if k in r["fit"]},
                                  r2=round(r["fit"]["r2"], 3) if r["fit"]["r2"] == r["fit"]["r2"] else None),
                 randomised_phases_from_a=round(r["randomised_from_a"], 2), mask=project.rel(mpath), mask_auto=mask_info or None, content_to_a=r["content_to_a"],
                 mask_fraction=round(r["mask_fraction"], 4), density_outside_mask=round(r["density_outside_mask"], 4),
                 fsc_dips_a=r["fsc_dips_a"], warnings=r["warnings"], apix=round(apix, 4), box=int(h1.shape[0]),
-                fsc_corrected=[round(float(x), 4) for x in r["fsc"]["corrected"]], map=project.rel(job.out("sharpened.mrc")),
+                fsc_corrected=[round(float(x), 4) for x in r["fsc"]["corrected"]], map=project.rel(out.out("sharpened.mrc")),
                 **({"local_resolution": lres} if lres else {}), seconds=round(time.time() - t0, 1))
-    project.set_status(job, "finished", summ)
-    log(f"[sharpen] {summ['resolution_a']} A (corrected masked FSC 0.143), B {summ['b_factor']} A^2")
+    log(f"[sharpen] {src_name}: {summ['resolution_a']} A (corrected masked FSC 0.143), B {summ['b_factor']} A^2")
     return summ
 
 
-def local_resolution(job: Job, h1, h2, r: dict, apix: float, s: SharpenSettings, title_: str, log=print) -> dict:
+def local_resolution(job, h1, h2, r: dict, apix: float, s: SharpenSettings, title_: str, log=print) -> dict:
     """Local resolution of the half maps inside the mask (localres.py): localres.mrc (A per voxel), localres_filtered.mrc
     (the B-sharpened map low-passed at every voxel to its local resolution), localres.png, localres.json."""
     from . import plots3d
@@ -316,11 +417,18 @@ def figure(path: str, r: dict, title_: str):
     a0 = np.log(np.maximum(r["amp"][sel], 1e-30))
     a1 = np.log(np.maximum(r["amp_sharp"][sel], 1e-30))
     ax.plot(s2[sel], a0 - a0[0], color=T.series[0], lw=1.6, label="map (masked)")
+    ref0 = a0[0]
+    if f.get("mtf") or f.get("weighted"):                    # the curve the B-factor is fitted to
+        a2 = np.log(np.maximum(r["amp_fit"][sel], 1e-30))
+        ref0 = a2[0]
+        ax.plot(s2[sel], a2 - ref0, color=T.series[2], lw=1.3,
+                label=" + ".join(x for x, on in (("MTF-corrected", f.get("mtf")), ("FSC-weighted", f.get("weighted"))) if on)
+                + " (fitted)")
     ax.plot(s2[sel], a1 - a1[0], color=T.series[1], lw=1.6, label="sharpened")
     if "slope" in f:
         x = np.array([1 / f["from_a"] ** 2, 1 / f["to_a"] ** 2])
         ax.axvspan(*x, color=T.well, zorder=0)
-        ax.plot(x, f["slope"] * x + f["intercept"] - a0[0], "--", color=T.ink, lw=1.2,
+        ax.plot(x, f["slope"] * x + f["intercept"] - ref0, "--", color=T.ink, lw=1.2,
                 label=f"fit {f['from_a']:.0f}-{f['to_a']:.1f} Å: B {r['b_auto']:.0f} Å², r² {f['r2']:.2f}")
     ax.set_xlabel("1/d² (1/Å²)")
     ax.set_ylabel("ln amplitude (relative)")
