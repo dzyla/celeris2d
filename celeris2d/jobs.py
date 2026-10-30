@@ -353,3 +353,36 @@ def _fsc_figure(path, box_a, curves, title):
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)
+
+
+# ------------------------------------------------------------------------------------------------- rerun
+def rerun(project: Project, ref, log=print):
+    """Run a job again, RELION-style: a particle job (Class2D, InitialModel, Refine3D, Polish) becomes a new job with
+    the same parameters and inputs (the old one stays, for comparison); a movie job (MotionCtf, Pick, Extract)
+    carries on with the movies it does not have yet (e.g. new ones of a live Import). Returns (job, run) where
+    run() does the work (call it on a worker thread)."""
+    from . import pipeline as pl
+    from .polish import PolishSettings, polish_job, run_polish
+    old = project.job(ref)
+    q = old.params
+
+    def pick(cls):
+        return cls(**{k: v for k, v in q.items() if k in cls.__dataclass_fields__})
+    if old.type == "Class2D":
+        j = class2d_job(project, q["particles"], pick(Class2DSettings))
+        return j, lambda: run_class2d(project, j, log=log)
+    if old.type == "InitialModel":
+        s = pick(InitialModelSettings)
+        s.classes = tuple(s.classes)
+        j = initial_model_job(project, q["class2d"], s)
+        return j, lambda: run_initial_model(project, j, log=log)
+    if old.type == "Refine3D":
+        j = refine3d_job(project, q["particles"], q["poses"], q["reference"], pick(Refine3DSettings))
+        return j, lambda: run_refine3d(project, j, log=log)
+    if old.type == "Polish":
+        j = polish_job(project, q["refine"], pick(PolishSettings))
+        return j, lambda: run_polish(project, j, log=log)
+    if old.type in ("MotionCtf", "Pick", "Extract"):
+        project.set_status(old, "running")
+        return old, lambda: pl.run(project, [old], log=log)
+    raise ValueError(f"{old.type} jobs are not run again (make a new one)")

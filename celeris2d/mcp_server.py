@@ -255,6 +255,103 @@ def extract_particles(picks_job: str, particle_a: float, box_a: float = 0.0, par
                     box_a=ej.params["box_a_used"]))
 
 
+def _background_job(job, fn):
+    """Run fn() (one particle job: Class2D, InitialModel, Refine3D, Polish) on a background thread, one GPU job at a
+    time; progress and errors through job_status."""
+    prj = _p()
+    st = _bg[job.name] = dict(done=0, of=None, error=None, jobs=[job.id], started=__import__("time").time())
+
+    def work():
+        try:
+            with _lock:
+                st["result"] = fn()
+        except Exception as e:
+            st["error"] = repr(e)
+            prj.set_status(job, "failed", dict(error=repr(e)))
+    st["thread"] = threading.Thread(target=work, daemon=True)
+    st["thread"].start()
+    return job.name
+
+
+@server.tool()
+def classify_job(particles_job: str, n_classes: int = 50, max_res_a: float = 0.0, diameter_a: float = 0.0,
+                 seeds: int = 1, label: str = "") -> str:
+    """A Class2D job on the particles of an Extract, Polish or Select job, in the background (job_status; then
+    job_report shows the gallery). max_res_a 0: Nyquist of the particles but not finer than 6 A; diameter_a 0: mask
+    1.25 x the extraction's particle size."""
+    from . import jobs
+    prj = _p()
+    c = jobs.class2d_job(prj, particles_job, jobs.Class2DSettings(n_classes, max_res_a, diameter_a, seeds), label)
+    _background_job(c, lambda: jobs.run_class2d(prj, c, log=lambda *a: None))
+    return _js(dict(job=c.name))
+
+
+@server.tool()
+def select_classes(class2d_job: str, classes: list[int], label: str = "", note: str = "") -> str:
+    """A Select job with the particles of these classes (1-based, as in the gallery) of a Class2D job; the other
+    particles are kept as its rejected set, with kept / rejected class stacks and a selection figure. The user
+    decides which classes are good: a selection proposed by an agent must say so in its label or note."""
+    from . import jobs
+    prj = _p()
+    sel = jobs.select_classes(prj, class2d_job, classes, label, note)
+    return _js(dict(job=sel.name, **prj.summary_of(sel)))
+
+
+@server.tool()
+def initial_model(class2d_job: str, sym: str = "C1", classes: list[int] | None = None, n_models: int = 1,
+                  label: str = "") -> str:
+    """Ab initio 3D (InitialModel job) from a Class2D job's classes (1-based; default all) and their particles, in
+    the background. sym: the user's choice (C1, Cn, Dn, T, O, I) - never guessed."""
+    from . import jobs
+    prj = _p()
+    m = jobs.initial_model_job(prj, class2d_job, jobs.InitialModelSettings(sym, tuple(classes or ()), n_models), label)
+    _background_job(m, lambda: jobs.run_initial_model(prj, m, log=lambda *a: None))
+    return _js(dict(job=m.name))
+
+
+@server.tool()
+def refine3d(particles_job: str, poses_job: str, reference_job: str = "", sym: str = "C1", n_iter: int = 10,
+             global_iters: int = 0, label: str = "") -> str:
+    """A Refine3D job in the background: particles of an Extract / Polish job (e.g. re-centred at full box),
+    starting orientations from an InitialModel or Refine3D job (matched by uid), starting map from reference_job
+    (default the poses job). global_iters: first iterations that also search all orientations."""
+    from . import jobs
+    prj = _p()
+    r = jobs.refine3d_job(prj, particles_job, poses_job, reference_job or poses_job,
+                          jobs.Refine3DSettings(sym=sym, n_iter=n_iter, global_iters=global_iters), label)
+    _background_job(r, lambda: jobs.run_refine3d(prj, r, log=lambda *a: None))
+    return _js(dict(job=r.name))
+
+
+@server.tool()
+def polish(refine_job: str, label: str = "") -> str:
+    """A Polish job in the background: per-particle motion tracks and per-frame weights from the movies against the
+    Refine3D job's half maps; the result is a particle job (refine3d on it with that job's poses)."""
+    from .polish import PolishSettings, polish_job, run_polish
+    prj = _p()
+    j = polish_job(prj, refine_job, PolishSettings(), label)
+    _background_job(j, lambda: run_polish(prj, j, log=lambda *a: None))
+    return _js(dict(job=j.name))
+
+
+@server.tool()
+def particle_size_survey(micrographs_job: str, n_micrographs: int = 3,
+                         diameters_a: list[float] | None = None) -> list:
+    """Particle size of an unknown sample from the first micrographs of a MotionCtf job: one figure with the
+    micrographs (phase-flipped, low-passed, 500 A bar, circles of the candidate diameters) and, per diameter, the
+    best blob picks and their average with its radial profile. Choose the diameter whose gallery shows whole,
+    separated particles; then pick with it."""
+    from .plots_preprocess import size_survey
+    prj = _p()
+    mc = prj.job(micrographs_job)
+    ids = prj.micrographs(mc)["movie_id"].tolist()[:n_micrographs]
+    path = os.path.join(mc.path, "size_survey.png")
+    with _lock:
+        r = size_survey(path, prj, mc, ids, diameters_a=tuple(diameters_a or (80, 120, 160, 220, 300)))
+    with open(path, "rb") as fh:
+        return [_js(dict(figure=prj.rel(path), per_diameter=r)), Image(data=fh.read(), format="png")]
+
+
 @server.tool()
 def rethreshold_picks(picks_job: str, threshold: float | None = None, max_std: float = 2.0, max_mean: float = 3.0,
                       label: str = "") -> str:
@@ -297,6 +394,14 @@ def job_report(job: str, movies: list[str] | None = None, max_figures: int = 3) 
     if j.type == "MotionCtf":
         rep["micrographs"] = prj.micrograph_stats(j)
     out = [None]
+    if j.type not in ("MotionCtf", "Pick"):                # the job's own figures
+        figs = [os.path.join(j.path, f) for f in ("gallery.png", "selection.png", "map_views.png", "fsc.png",
+                                                    "polish.png", "reprojections.png")
+                if os.path.exists(os.path.join(j.path, f))][:max_figures]
+        for f in figs:
+            with open(f, "rb") as fh:
+                out.append(Image(data=fh.read(), format="png"))
+        rep["figures"] = [prj.rel(f) for f in figs]
     if j.type in ("MotionCtf", "Pick"):
         if movies:
             mi = prj.micrographs(mc)

@@ -774,7 +774,7 @@ def tile_png(img, size=192):
     return buf.getvalue()
 
 
-def create(workdir):
+def create(workdir, project_dir=None):
     from fastapi import Body, FastAPI, HTTPException
     from fastapi.responses import HTMLResponse, Response
 
@@ -851,6 +851,92 @@ def create(workdir):
             raise HTTPException(404, fn)
         with open(path) as fh:
             return Response(fh.read(), media_type="text/javascript", headers={"Cache-Control": "no-cache"})
+
+    # ------------------------------------------------------------------ a Celeris2D project (jobs/, data/, project.db)
+    proj_state = dict(root=os.path.abspath(project_dir) if project_dir else None, runs={})
+
+    def _prj(root=None):
+        from .project import Project
+        r = root or proj_state["root"]
+        if not r or not os.path.isfile(os.path.join(r, "project.db")):
+            raise HTTPException(404, "no Celeris2D project open (start with --project DIR, or open one)")
+        proj_state["root"] = os.path.abspath(r)
+        return Project(proj_state["root"])
+
+    def _small(summ):
+        return {k: v for k, v in (summ or {}).items() if not isinstance(v, (list, dict))}
+
+    @app.get("/project", response_class=HTMLResponse)
+    def project_page():
+        with open(os.path.join(os.path.dirname(__file__), "web", "project.html")) as fh:
+            return HTMLResponse(fh.read(), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/project")
+    def project_jobs(root: str = ""):
+        """Every job: number, type, label, status, inputs, key numbers; newest last."""
+        prj = _prj(root or None)
+        out = []
+        for r in prj.jobs().itertuples():
+            out.append(dict(id=int(r.id), name=r.name, type=r.type, label=r.label, status=r.status,
+                            inputs=[prj.job(int(i)).name for i in json.loads(r.inputs)],
+                            created=float(r.created), updated=float(r.updated),
+                            summary=_small(prj.summary_of(int(r.id)))))
+        running = [k for k, t in proj_state["runs"].items() if t["thread"].is_alive()]
+        return dict(root=prj.root, jobs=out, running=running)
+
+    @app.get("/api/project/job")
+    def project_job(job: str):
+        """One job: parameters, full summary, lineage, dependents, its files (figures shown, maps listed)."""
+        prj = _prj()
+        j = prj.job(job)
+        files = []
+        for dp, dn, fn in os.walk(j.path):
+            dn[:] = [d for d in dn if d not in ("particles", "picks", "rejected", "session", "staging")]
+            for f in sorted(fn):
+                if f.endswith((".png", ".mrc", ".mrcs", ".star", ".cs", ".md")):
+                    full = os.path.join(dp, f)
+                    files.append(dict(path=prj.rel(full), size=os.path.getsize(full)))
+        run = proj_state["runs"].get(j.name)
+        return dict(name=j.name, type=j.type, status=j.status, params=j.params, summary=prj.summary_of(j),
+                    lineage=prj.lineage(j), dependents=prj.dependents(j), files=files,
+                    error=run["error"] if run else None)
+
+    @app.get("/api/project/file")
+    def project_file(path: str):
+        """A file of the project (figures are shown in the page; others download)."""
+        prj = _prj()
+        full = os.path.realpath(os.path.join(prj.root, path))
+        if not full.startswith(os.path.realpath(prj.root) + os.sep) or not os.path.isfile(full):
+            raise HTTPException(404, path)
+        with open(full, "rb") as fh:
+            data = fh.read()
+        mt = "image/png" if full.endswith(".png") else "application/octet-stream"
+        return Response(data, media_type=mt, headers={"Cache-Control": "no-cache"})
+
+    @app.post("/api/project/rerun")
+    def project_rerun(body: dict = Body(...)):
+        """Run a job again (jobs.rerun): particle jobs as a new job with the same parameters, movie jobs carry on
+        with movies they do not have. One run at a time."""
+        from .jobs import rerun
+        prj = _prj()
+        if any(t["thread"].is_alive() for t in proj_state["runs"].values()):
+            raise HTTPException(409, "a project job is running")
+        try:
+            j, fn = rerun(prj, body["job"], log=lambda *a: None)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        rec = dict(error=None)
+
+        def work():
+            try:
+                fn()
+            except Exception as e:
+                rec["error"] = repr(e)
+                prj.set_status(j, "failed", dict(error=repr(e)))
+        rec["thread"] = threading.Thread(target=work, daemon=True)
+        proj_state["runs"][j.name] = rec
+        rec["thread"].start()
+        return dict(job=j.name)
 
     @app.get("/api/defaults")
     def defaults():
@@ -1156,12 +1242,17 @@ def main(argv=None):
     ap.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to serve on the network")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--workdir", default=os.path.abspath("celeris2d_web"))
+    ap.add_argument("--project", default="", help="a Celeris2D project directory: its jobs at /project "
+                    "(default: the current directory, if it is a project)")
     a = ap.parse_args(argv)
     os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     os.makedirs(a.workdir, exist_ok=True)
+    project = a.project or (os.getcwd() if os.path.isfile("project.db") else None)
     import uvicorn
     print(f"Celeris2D dashboard on http://{a.host}:{a.port}  (workdir {a.workdir})")
-    uvicorn.run(create(a.workdir), host=a.host, port=a.port, log_level="warning")
+    if project:
+        print(f"project {os.path.abspath(project)}: http://{a.host}:{a.port}/project")
+    uvicorn.run(create(a.workdir, project), host=a.host, port=a.port, log_level="warning")
 
 
 if __name__ == "__main__":

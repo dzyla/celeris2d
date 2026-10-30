@@ -110,6 +110,14 @@ start on unpolished / polished particles: 3.32 / 3.24 A (solvent mask 3.13 / 3.0
 C1: refined from the D7 solution 4.26 A; from the C1 ab initio model 6.3 A - that model is distorted (correlation
 with its own D7 average 0.62 vs 0.90 for the D7 map), so a reliable C1 ab initio is still open.
 
+## Reviewing a project
+
+`celeris2d-web --project DIR` (or `celeris2d-web` started inside a project directory) serves `/project`: every job
+with its type, label, status and key number (particles, resolution...), and per job its lineage and dependents,
+results, figures, files and parameters (`/project#014` opens job 14). "Run again" makes a particle job (Class2D,
+InitialModel, Refine3D, Polish) again as a new numbered job with the same parameters (`jobs.rerun`), so both stay
+for comparison; for MotionCtf / Pick / Extract it carries on with movies the job does not have yet.
+
 ## Compatibility (on request)
 
 RELION / cryoSPARC files are not written by default. An extract job's `export` option (`relion`, `cryosparc`)
