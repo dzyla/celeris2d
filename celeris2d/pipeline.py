@@ -401,6 +401,14 @@ def process_movie_motion(project: Project, job: Job, movie_id: int, frames: np.n
     return stats
 
 
+def _inside(img, apix: float, xy_a: np.ndarray) -> np.ndarray:
+    """Candidates centred in the micrograph's real area (its padded border excluded). Not half a diameter in: on
+    EMPIAR-10017 that drops ~1 % of the curated particles, whose boxes reach into the padding."""
+    x0, x1, y0, y1 = pk.valid_bounds(img)
+    x, y = np.asarray(xy_a)[:, 0] / apix, np.asarray(xy_a)[:, 1] / apix
+    return (x >= x0) & (x < x1) & (y >= y0) & (y < y1)
+
+
 def process_movie_pick(project: Project, job: Job, movie_id: int, log=print,
                        figures: ThreadPoolExecutor | None = None):
     if project.done(job, movie_id):
@@ -411,12 +419,13 @@ def process_movie_pick(project: Project, job: Job, movie_id: int, log=print,
     live = _live_figure(job, s.figures)
     c = pick_candidates(project, s, img, apix, ctf, optics_of(project, mic_job), keep_maps=live)
     cols = dict(xy_a=c.xy_a, score=c.score, local_std=c.local_std, local_mean=c.local_mean)
-    ok = np.ones(len(c.score), bool)
+    cols["inside"] = _inside(img, apix, c.xy_a)          # not on a padded border (picked as stripes)
+    ok = cols["inside"].copy()
     rm = None
     if s.region_filter:                              # ~2-5 ms: the region map, then the candidates in pickable ice
         rm = rg.region_map(img, apix, dark=s.dark, keep_input=live)
         cols["region"] = rm.ice_margin(c.xy_a, 0.5 * s.diameter_a)
-        ok = cols["region"] >= rg.MIN_ICE
+        ok &= cols["region"] >= rg.MIN_ICE
         np.savez_compressed(job.per_movie("Regions", project.movie(movie_id), ".npz"), **rm.compact())
     th = pk.auto_threshold(c.score[ok]) if s.threshold is None else s.threshold
     keep = np.zeros(len(c.score), bool)
@@ -546,6 +555,8 @@ def rethreshold(project: Project, picks: Job, threshold: float | None = None, ma
         c = pk.Candidates(np.stack([z["x_a"][a:b], z["y_a"][a:b]], 1), z["score"][a:b], z["local_std"][a:b],
                           z["local_mean"][a:b])
         ok = z["region"][a:b] >= rg.MIN_ICE if "region" in z else np.ones(b - a, bool)   # the region filter, if it ran
+        if "inside" in z:                            # not on the micrograph's padded border
+            ok &= z["inside"][a:b] > 0
         th = pk.auto_threshold(c.score[ok]) if threshold is None else threshold
         keep[a + pk.select(c, th, max_std, max_mean)] = True
         keep[a:b] &= ok
