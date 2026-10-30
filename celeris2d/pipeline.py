@@ -218,6 +218,8 @@ def _dedup(xy: np.ndarray, score: np.ndarray, dist: float) -> np.ndarray:
 _gain_cache: dict = {}
 _mem: dict = {}           # movie_id -> (micrograph on the GPU, apix, CTF): stages of one movie in one run
 _mem_picks: dict = {}     # (pick job id, movie_id) -> picks
+_mem_ctf: dict = {}       # (MotionCtf job id, movie_id) -> (du, dv, angle, patch): the catalog row is written on the
+                          # I/O thread, and extraction can reach a micrograph first (single-frame micrographs)
 _n_live: dict = {}        # job id -> figures drawn while processing (figures = N)
 
 
@@ -375,6 +377,9 @@ def process_movie_motion(project: Project, job: Job, movie_id: int, frames: np.n
                   dict(centres=mic.local["centres"].tolist(), rms_a=mic.local["rms_a"]))
         json.dump(st, open(job.per_movie("Stats", mv, ".json"), "w"))
         project.add_micrograph(job, movie_id, mpath, mic.apix, shape, fit, meta=stats)
+    if len(_mem_ctf) > 4096:
+        _mem_ctf.clear()
+    _mem_ctf[(job.id, movie_id)] = (fit.defocus_u, fit.defocus_v, fit.angle, fit.patch)
     _io(io, write)
     if _live_figure(job, s.figures):
         from .plots_preprocess import movie_figure
@@ -437,6 +442,8 @@ def _local_ctf(project: Project, mic_job: Job, movie_id: int, xy: np.ndarray) ->
     of the job gets the columns, so the table's columns stay the same). {} for jobs that never apply it."""
     if mic_job.params.get("patch_ctf", "off") not in ("auto", "apply"):
         return {}
+    if (mic_job.id, movie_id) in _mem_ctf:           # fitted in this run: its catalog row may not be written yet
+        return _ctf_columns(*_mem_ctf[(mic_job.id, movie_id)], xy)
     if mic_job.id not in _ctf_cache:
         _ctf_cache.clear()
         mi = project.micrographs(mic_job)
@@ -444,10 +451,19 @@ def _local_ctf(project: Project, mic_job: Job, movie_id: int, xy: np.ndarray) ->
                                                     (json.loads(r.meta or "{}") or {}).get("ctf_patch"))
                                   for r in mi.itertuples()}
     rows = _ctf_cache[mic_job.id]
-    if movie_id not in rows:                         # a micrograph processed after the cache was filled
+    if movie_id not in rows:                         # a micrograph processed after the cache was filled: read again
         _ctf_cache.pop(mic_job.id)
-        return _local_ctf(project, mic_job, movie_id, xy)
-    du, dv, an, pz = rows[movie_id]
+        mi = project.micrographs(mic_job)
+        rows = _ctf_cache[mic_job.id] = {int(r.movie_id): (r.defocus_u, r.defocus_v, r.defocus_angle,
+                                                           (json.loads(r.meta or "{}") or {}).get("ctf_patch"))
+                                         for r in mi.itertuples()}
+        if movie_id not in rows:
+            raise RuntimeError(f"{mic_job.name} has no CTF for movie {movie_id}")
+    return _ctf_columns(*rows[movie_id], xy)
+
+
+def _ctf_columns(du, dv, an, pz, xy: np.ndarray) -> dict:
+    """Defocus columns at positions xy (A): the micrograph's, plus its local-defocus plane where it was applied."""
     off = np.zeros(len(xy))
     if pz and pz.get("applied"):
         a, bx, by = pz["plane"]
@@ -816,6 +832,7 @@ def _run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thr
                 break
         _mem.clear()
         _mem_picks.clear()
+        _mem_ctf.clear()
         _sel_cache.clear()
         _rc_cache.clear()
         if pool is not None:
