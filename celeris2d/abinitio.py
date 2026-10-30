@@ -511,8 +511,11 @@ def _band(b: int, dev, box_a: float, lo_a: float, hi_a: float) -> torch.Tensor:
     return (kr >= box_a / lo_a) & (kr <= box_a / hi_a)
 
 
-def _regularise_solve(vol: Volume, frac: float = 0.05):
-    """num / (den + frac * mean den of the shell): damps sparsely sampled Fourier voxels."""
+def _regularise_solve(vol: Volume, frac: float = 0.05, fsc: torch.Tensor | None = None, tau2_fudge: float = 1.0):
+    """num / (den + frac * mean den of the shell): damps sparsely sampled Fourier voxels. fsc (the half maps' FSC per
+    shell, cycles / box b): the Wiener / MAP regulariser instead (RELION's tau2 term), mean den x (1 - FSC) / (T FSC) per
+    shell - the half map's noise-to-signal ratio from SSNR = FSC / (1 - FSC) - so a voxel weighs its data by how well
+    it is sampled against how much signal the shell holds; never less than frac x mean den."""
     vol._finish()
     sh = vol.acc_shells().reshape(-1)
     n = int(sh.max()) + 1
@@ -522,7 +525,14 @@ def _regularise_solve(vol: Volume, frac: float = 0.05):
     wx[0] = 1.0
     wv = wx.repeat(vol.G * vol.G)
     m = torch.bincount(sh, weights=vol.den * wv, minlength=n) / torch.bincount(sh, weights=wv, minlength=n).clamp_min(1)
-    vol.solve(frac * m + 1e-6 * m.max())
+    lam = frac * m
+    if fsc is not None:
+        f = torch.zeros(n, device=vol.dev)
+        k = min(n, len(fsc))
+        f[:k] = torch.as_tensor(fsc[:k], device=vol.dev).float().nan_to_num(0)
+        f = f.clamp(1e-3, 0.999)
+        lam = torch.maximum(lam, m * (1 - f) / (tau2_fudge * f))
+    vol.solve(lam + 1e-6 * m.max())
 
 
 def _real_space_constraints(vol: Volume, mask: torch.Tensor, positive: bool, center: bool):
@@ -947,7 +957,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                      step_min: float = 0.5,
                      half: torch.Tensor | None = None, soft: bool = False, solvent_mask=None,
                      solvent_from_a: float = 15.0, pad: int | None = None, grid_correct: bool = False,
-                     nu: bool = False, nu_strict: bool = True,
+                     nu: bool = False, nu_strict: bool = True, particle_scale: bool = False, wiener: float = 0.0,
                      max_angle: float | None = None, max_shift: float | None = None,
                      limit_A: torch.Tensor | None = None, limit_t: torch.Tensor | None = None,
                      shift_per_deg: float | None = None, log=print):
@@ -984,6 +994,14 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     history's "nu"), refine_particles.last_nu_map the last cutoff map (A, mean of the halves). nu_strict (default): the cutoffs of each
     half chosen by cross-validation between two folds of that half's own particles (each reconstructed on a small
     pad-1 box sized to the resolution), so no information crosses between the halves (gold standard).
+    particle_scale: a contrast scale a_i per particle (cryoSPARC's per-particle scale; RELION's scale correction is per
+    group): the model of a particle is a_i x its CTF-weighted projection - ice thickness and dose change the contrast -
+    used in the pose search (a_i cross - a_i^2 power / 2) and the reconstruction (a_i x, a_i^2 CTF^2), re-estimated
+    every iteration at the best pose (noise-weighted least squares over the alignment band; median 1, 0.2 - 5).
+    refine_particles.last_scale holds it.
+    wiener: > 0 - the half reconstructions regularised by the previous iteration's FSC (Wiener / MAP, RELION's tau2 with
+    this fudge factor; _regularise_solve), and the references then used as they are (they hold the FSC weighting);
+    0 - a fixed 2 % of the shell's mean weight, references and the final map weighted by sqrt(2 FSC / (1 + FSC)).
     max_angle (deg) / max_shift (A) (one model; local refinement, e.g. focused on a masked region): only poses within
     this angle of limit_A (n, 3, 3) and shifts within this distance of limit_t (n, 2) (default: the starting poses) are
     searched - RELION's local searches / cryoSPARC's search extents, as hard limits.
@@ -1038,6 +1056,8 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     fscs = [None] * M
     alive = [True] * M                    # a model that loses (almost) all its particles is retired
     wpart = torch.ones(n, device=dev)     # per-particle reconstruction weight (dropped particles 0, rebalancing < 1)
+    pscale = torch.ones(n, device=dev)    # per-particle contrast scale (particle_scale)
+    pscale_new = torch.ones(n, device=dev)
     score = torch.zeros(n, device=dev)    # normalised fit of the best pose (for dropping particles)
     dfz = clf.ctf_p[idx, :2].mean(1)      # defocus, to compare fits within defocus groups
     dgrp = torch.bucketize(dfz, torch.quantile(dfz, torch.linspace(0, 1, 9)[1:-1])).to(dev)
@@ -1065,6 +1085,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             sl = ar_n[i:i + bp]
             hh = half[i:i + bp].to(dev)
             wp = wpart[i:i + bp]
+            ps = pscale[i:i + bp][:, None, None]
             pp = post[i:i + bp]
             if not soft:
                 tt, AA = t[sl, zz], A[sl, zz]
@@ -1079,7 +1100,8 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                     sel = (hh == h) & (wp > 0) & ((pp[:, m] > 1e-3) if soft else (zz == m))
                     if sel.any():
                         w3 = (wp[sel] * (pp[sel, m] if soft else 1.0))[:, None, None]
-                        vols[m][h].insert((xs * ctf)[sel] * w3, (ctf * ctf)[sel] * w3, AA[sel], kmax=kmax,
+                        vols[m][h].insert((xs * ctf)[sel] * (w3 * ps[sel]), (ctf * ctf)[sel] * (w3 * ps[sel] ** 2), AA[sel],
+                                          kmax=kmax,
                                           ops=None if sym_after else ops)
             if subvols is not None:                  # the folds, on their small box
                 bs_ = subvols[0][0].b
@@ -1094,7 +1116,8 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                         sel = (hh == h) & (ff == f_) & (wp > 0)
                         if sel.any():
                             w3 = wp[sel][:, None, None]
-                            subvols[h][f_].insert((xs_s * c_s)[sel] * w3, (c_s * c_s)[sel] * w3, AA[sel], kmax=bs_ / 2 - 1)
+                            subvols[h][f_].insert((xs_s * c_s)[sel] * (w3 * ps[sel]), (c_s * c_s)[sel] * (w3 * ps[sel] ** 2),
+                                                  AA[sel], kmax=bs_ / 2 - 1)
         for vm in (vols if sym_after else []) + (subvols or []):   # the folds only choose cutoffs: resampled at pad 1 too
             for v in vm:
                 v.symmetrize(ops)
@@ -1129,7 +1152,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                 subvols = None
             for m in range(M):
                 for v in vols[m]:
-                    _regularise_solve(v, 0.02)
+                    _regularise_solve(v, 0.02, fsc=fscs[m] if wiener > 0 else None, tau2_fudge=wiener or 1.0)
                     v.free_acc()        # 3/2 of the volume's size; made again by the next back-projection (box 256:
                                         # 3.2 GB for two halves that sat idle through the alignment)
                 fixed_ = (solvent_mask[m] if isinstance(solvent_mask, (list, tuple)) else solvent_mask) \
@@ -1205,7 +1228,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             rm = []
             for v in vols[m]:
                 r = Volume(b, dev, pad=pad, ft=v.ft.clone(), pre=v.pre, grid_correct=gc)
-                if fscs[m] is not None and M == 1:
+                if fscs[m] is not None and M == 1 and not wiener:
                     r.filter_shells(torch.sqrt((2 * fscs[m] / (1 + fscs[m])).clamp(0, 1).nan_to_num(0)))
                 lowpass(r, box_a / k_al, box_a)
                 _real_space_constraints(r, mask if cur_masks[m] is None else cur_masks[m], positive=False, center=False)
@@ -1289,7 +1312,8 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             Z = (x.conj()[:, None] * e_t)[:, :, None] * CP * isig                                       # (nb, M, J, F)
             cross = (Z @ E.T).real                                                                      # (nb, M, J, Sh)
             pw = (CP.abs() ** 2 * isig).sum(-1)                                                         # (nb, M, J)
-            ll = (cross - 0.5 * pw[..., None])                                                         # (nb, M, J, Sh)
+            aa = pscale[i:i + bt][:, None, None, None]                                                  # contrast scale
+            ll = (aa * cross - 0.5 * aa * aa * pw[..., None])                                           # (nb, M, J, Sh)
             if limited:     # hypotheses beyond the angular / shift limits around the starting pose are not searched
                 okm = torch.ones(ll.shape, dtype=torch.bool, device=dev)
                 if max_angle is not None:      # trace(Ac limit_A^T) = 1 + 2 cos(angle between them)
@@ -1316,7 +1340,8 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             bj, bs = bj[ar, bm], bs[ar, bm]
             changed += float((bj != jc).float().sum() + (bs != Sh // 2).float().sum()) / 2
             # residual power for the noise model
-            mdl = CP[ar, bm, bj] * e_t[ar, bm] * E[bs]
+            pscale_new[i:i + bt] = cross[ar, bm, bj, bs] / pw[ar, bm, bj].clamp_min(1e-30)          # LS scale at the pose
+            mdl = CP[ar, bm, bj] * e_t[ar, bm] * E[bs] * pscale[i:i + bt][:, None]
             score[i:i + bt] = ((x.conj() * mdl).real.sum(1)
                                / ((x.abs() ** 2).sum(1) * (mdl.abs() ** 2).sum(1)).sqrt().clamp_min(1e-12))
             r2 = (x - mdl).abs() ** 2
@@ -1336,6 +1361,12 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             else:
                 post = F.one_hot(z, M).float()
         sigma2 = torch.where(res_cnt > 0, res_pow / res_cnt.clamp_min(1), sigma2)
+        if particle_scale:
+            a_ = pscale_new.nan_to_num(1.0)
+            pscale = (a_ / a_.median().clamp_min(1e-6)).clamp(0.2, 5.0)
+            q_ = torch.quantile(pscale[torch.randperm(n, device=dev)[:100000]], torch.tensor([0.05, 0.5, 0.95], device=dev))
+            if it == 0 or it == n_iter - 1:
+                log(f"[3d] per-particle scale: 5 / 50 / 95 % {float(q_[0]):.2f} / {float(q_[1]):.2f} / {float(q_[2]):.2f}")
         sigma2[res_cnt == 0] = sigma2[res_cnt > 0][-1] if (res_cnt > 0).any() else 1.0
         pops = torch.bincount(z, minlength=M).tolist()
         for m in range(M):
@@ -1374,7 +1405,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
         if fscs[m] is None or not alive[m]:
             res[m] = float("nan")
         out = Volume(b, dev, pad=pad, ft=0.5 * (vols[m][0].ft + vols[m][1].ft), pre=vols[m][0].pre, grid_correct=gc)
-        if fscs[m] is not None:
+        if fscs[m] is not None and not wiener:
             out.filter_shells(torch.sqrt((2 * fscs[m] / (1 + fscs[m])).clamp(0, 1).nan_to_num(0)))
         maps.append((out.real() * (mask if cur_masks[m] is None else cur_masks[m])).nan_to_num(0))
     fscs = [f if f is not None else torch.zeros(b // 2 + 1, device=dev) for f in fscs]
@@ -1384,6 +1415,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
         f" (unmasked {' / '.join(f'{r:.1f}' if r == r else '-' for r in unmasked)} A), {time.time() - t0:.1f}s")
     refine_particles.last_weights = wpart.cpu()   # read by run(): which particles the final maps used
     refine_particles.last_score = score.cpu()
+    refine_particles.last_scale = pscale.cpu()
     refine_particles.last_half = half.cpu()          # gold-standard half set of every particle (0 / 1)
     refine_particles.last_history = history
     refine_particles.last_post = post.cpu()

@@ -363,10 +363,17 @@ def local_resolution(job, h1, h2, r: dict, apix: float, s: SharpenSettings, titl
     out = localres(h1, h2, m, apix, r["resolution_a"], window_px=window, filtered=False, dev=dev)
     lr = out["map"]
     full = 0.5 * (torch.as_tensor(h1, device=dev) + torch.as_tensor(h2, device=dev))
-    kk = _shells(full.shape[0], dev) / (full.shape[0] * apix)
-    sharpB = torch.fft.irfftn(torch.fft.rfftn(full) * torch.exp(-r["b_factor"] * kk ** 2 / 4), s=full.shape)
+    if r.get("mtf") is not None and np.any(r["mtf"] != 1):          # the same MTF correction as the sharpened map
+        kk = _shells(full.shape[0], dev)
+        inv = torch.as_tensor(1.0 / r["mtf"], device=dev, dtype=torch.float32)
+        full = torch.fft.irfftn(torch.fft.rfftn(full) * inv[torch.round(kk).long().clamp(max=len(inv) - 1)], s=full.shape)
     from .localres import local_filter
-    filt = local_filter(sharpB, lr, apix)
+    # each voxel: low-passed to its local resolution, sharpened by the B-factor and weighted by the FSC curve moved to
+    # that resolution - the B-factor alone lifted the noise inside every voxel's limit into fragments
+    # never finer than the global resolution: the local estimates finer than it (INX-6 core 3.0 A vs 3.65 A) are noisy, and
+    # sharpening to them made the core fragmented too; the map gets less detail where the region is worse, not more
+    filt = local_filter(full, lr.clamp_min(r["resolution_a"]), apix, b_factor=r["b_factor"], fsc=r["fsc"]["corrected"],
+                        res_global=r["resolution_a"])
     lr_np = lr.cpu().numpy()
     _write(job.out("localres.mrc"), lr_np, apix)
     _write(job.out("localres_filtered.mrc"), filt.cpu().numpy(), apix)

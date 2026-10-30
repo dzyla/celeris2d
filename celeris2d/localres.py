@@ -114,9 +114,14 @@ def localres(h1: np.ndarray | torch.Tensor, h2: np.ndarray | torch.Tensor, mask:
     return out
 
 
-def local_filter(v: torch.Tensor, lres: torch.Tensor, apix: float, n_levels: int = 16) -> torch.Tensor:
+def local_filter(v: torch.Tensor, lres: torch.Tensor, apix: float, n_levels: int = 16, b_factor: float = 0.0,
+                 fsc: np.ndarray | None = None, res_global: float = 0.0) -> torch.Tensor:
     """Each voxel of v low-passed to its local resolution: maps low-passed at a ladder of resolutions (cosine edge),
-    linearly blended between the two levels bracketing the voxel's value."""
+    linearly blended between the two levels bracketing the voxel's value. With fsc (the global corrected FSC per shell
+    of the box, crossing 0.143 at res_global) every level is also sharpened by b_factor and weighted by sqrt(2 F / (1 +
+    F)) of that FSC curve shifted to cross 0.143 at the level's resolution (local FSC weighting, RELION's local-resolution
+    filtering): without it the sharpening lifts the noise just inside each voxel's limit hundreds of times (INX-6, B -220
+    A^2: the map fell apart into fragments)."""
     b = v.shape[0]
     dev = v.device
     k = torch.fft.fftfreq(b, device=dev)
@@ -127,10 +132,22 @@ def local_filter(v: torch.Tensor, lres: torch.Tensor, apix: float, n_levels: int
     levels = np.geomspace(max(lo, 2 * apix), max(hi, lo * 1.01), n_levels)
     out = torch.zeros_like(v)
     wsum = torch.zeros_like(v)
+    sharp = torch.exp(-b_factor * kk ** 2 / 4) if b_factor else None
+    if fsc is not None:
+        f_glob = torch.as_tensor(np.nan_to_num(np.asarray(fsc, np.float64), nan=0.0), device=dev, dtype=torch.float32)
+        s_glob = torch.arange(len(f_glob), device=dev, dtype=torch.float32) / (b * apix)     # 1/A per shell
     for i, r in enumerate(levels):
         edge = 1 / r
         w = 0.5 + 0.5 * torch.cos(math.pi * ((kk - edge) / (0.15 * edge)).clamp(0, 1))
         w = torch.where(kk <= edge, torch.ones_like(kk), w)
+        if sharp is not None:
+            w = w * sharp
+        if fsc is not None and res_global:
+            # the global FSC curve moved so it crosses 0.143 at r instead of res_global, read at every |k|
+            q = (kk * r / res_global).reshape(-1)
+            f = torch.from_numpy(np.interp(q.cpu().numpy(), s_glob.cpu().numpy(), f_glob.cpu().numpy(), right=0.0))
+            f = f.to(dev).float().reshape(kk.shape).clamp(0, 1)
+            w = w * torch.sqrt(2 * f / (1 + f))
         lp = torch.fft.irfftn(Fv * w, s=v.shape)
         # hat weight of this level for each voxel (in log resolution)
         lr = torch.log(lres.clamp_min(1e-3))

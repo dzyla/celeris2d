@@ -378,6 +378,10 @@ class Refine3DSettings:
     nu: bool = False                # non-uniform regularisation (cryoSPARC NU-refine's idea): each region of the
                                     # references low-passed at its own resolution, chosen by cross-validation
     nu_strict: bool = True          # ... the cutoffs of each half from two folds of its own particles (gold standard)
+    particle_scale: bool = False    # a contrast scale per particle (cryoSPARC's per-particle scale), fitted every
+                                    # iteration, used in the search and the reconstruction
+    wiener: float = 0.0             # > 0: half maps regularised by the FSC (Wiener / MAP, RELION's tau2 term with this
+                                    # fudge factor, 1 = RELION's default); 0: a fixed small regulariser
     pad: int = 0                    # padding of the 3D spectra: 0 automatic (2 if it fits the GPU, else 1), 1 or 2
     align_symmetry: bool = True     # sym differs from the start job's: first rotate the map and the poses so the
                                     # group's axes (n-fold on z, 2-fold on x) lie on the map's (symalign.py); the
@@ -644,7 +648,8 @@ def run_refine3d(project: Project, job, log=print) -> dict:
                                                          global_res=s.global_res_a, box=b,
                                                          half=None if half is None else torch.as_tensor(half),
                                                          solvent_mask=sm, grid_correct=s.grid_correct,
-                                                         pad=s.pad or None, nu=s.nu, nu_strict=s.nu_strict, log=log)
+                                                         pad=s.pad or None, nu=s.nu, nu_strict=s.nu_strict,
+                                                         particle_scale=s.particle_scale, wiener=s.wiener, log=log)
     seconds = time.time() - t0
     apix = box_a / b
     h1, h2 = vols[0][0].real(), vols[0][1].real()
@@ -665,6 +670,7 @@ def run_refine3d(project: Project, job, log=print) -> dict:
         rot=rot.numpy().astype(np.float32), tilt=tilt.numpy().astype(np.float32), psi=psi.numpy().astype(np.float32),
         shift_x_a=t[:, 0].cpu().numpy().astype(np.float32), shift_y_a=t[:, 1].cpu().numpy().astype(np.float32),
         fit=fit, half=ab.refine_particles.last_half.numpy().astype(np.uint8), used=used,
+        **({"scale": ab.refine_particles.last_scale.numpy().astype(np.float32)} if s.particle_scale else {}),
         **({"copy": poses["copy"].astype(np.int16)} if "copy" in poses and "celCopy" not in src.parts else {})))
     res_sol = ab.resolution_from_fsc(fsc_sol, box_a)
     tag = f"{job.name} · {n_rows:,} particles · {s.sym}"
