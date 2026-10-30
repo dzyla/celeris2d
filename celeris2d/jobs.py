@@ -380,13 +380,17 @@ def _sharpen_job_maps(project: Project, job: Job, s, classes=(0,), log=print) ->
 class Refine3DSettings:
     sym: str = "C1"                 # point-group symmetry, the user's choice (C1, Cn, Dn, T, O, I)
     n_iter: int = 10                # iterations of local orientation search
-    res_start_a: float = 0.0        # first alignment resolution (0: the reference job's resolution, at least 8 A)
+    res_start_a: float = 0.0        # first alignment resolution (0: the reference job's resolution, at least 8 A; 30 A
+                                    # without a poses job). The reference is low-passed to it
     max_res_a: float = 0.0          # finest resolution loaded (0: Nyquist)
     n_local: int = 1                # local search rounds per iteration
     min_step_deg: float = 0.5       # finest angular step (deg); the step halves once < 30% of particles move
     drop_frac: float = 0.1          # share of worst-fitting particles left out of each reconstruction
-    global_iters: int = 0           # first iterations that also search all orientations (for starts with pose errors)
-    global_res_a: float = 12.0      # resolution of that search
+    global_iters: int = 0           # first iterations that also search all orientations (for starts with pose errors;
+                                    # without a poses job at least 2, the first also searching shifts)
+    global_res_a: float = 12.0      # resolution of that search (not finer than the current one)
+    global_shift_a: float = 0.0     # without a poses job: the first search tries shifts this far from the extraction
+                                    # centre (0: a tenth of the particle diameter), on a grid of a quarter of res_start_a
     diameter_a: float = 0.0         # particle diameter for the mask (0: from the extraction)
     classes: tuple = ()             # poses from a HeteroRefine: only the particles of these 1-based classes
     mask: str = "auto"              # solvent mask during refinement: "auto" (dynamic: made from the map every iteration
@@ -412,6 +416,8 @@ class Refine3DSettings:
     local_res: bool = True          # ... including the local resolution
     mtf: str = ""                   # ... detector MTF (RELION .star) for the sharpening; empty: none
     mtf_apix: float = 0.0           # ... the pixel size (A) the MTF refers to (0: the map's)
+    subpixel: bool = False          # shifts between the 3 x 3 grid points (parabola peak per axis): the shift step stops at
+                                    # half a pixel, so otherwise a shift is only as precise as that
     save_iterations: bool = False   # keep every iteration's FSC curves (data/..._iterations.json) and each particle's
                                     # angle / shift change and fit per iteration (particle table columns d_angle_itNN,
                                     # d_shift_itNN, fit_itNN): convergence, particles that keep jumping
@@ -420,11 +426,19 @@ class Refine3DSettings:
 
 def refine3d_job(project: Project, particles, poses, reference, s: Refine3DSettings, label: str = "") -> Job:
     """particles: an Extract job (e.g. re-centred, full box); poses: the job whose per-particle orientations start
-    the refinement (InitialModel / Refine3D, matched by uid); reference: the job whose map.mrc starts it."""
-    p, q = project.job(particles), project.job(poses)
+    the refinement (InitialModel / Refine3D, matched by uid); reference: the job whose map.mrc starts it.
+    Without poses the refinement starts from the map alone (reference job or s.reference_map): every particle
+    searches all orientations and shifts against it, low-passed to res_start_a (default 30 A)."""
+    p = project.job(particles)
+    q = project.job(poses) if poses not in (None, "", 0) else None
     r = project.job(reference) if reference not in (None, "", 0) else q
-    return project.new_job("Refine3D", dict(params_of(s), particles=p.id, poses=q.id, reference=r.id),
-                           [p, q] + ([r] if r.id != q.id else []), label or f"{s.sym}_on{p.id:03d}")
+    if q is None and r is None and not s.reference_map:
+        raise ValueError("Refine3D needs a poses job, or a reference (job or reference_map) to start from the map alone")
+    ins = [p] + [j for j in (q, r) if j is not None]
+    ins = [j for i, j in enumerate(ins) if j.id not in [x.id for x in ins[:i]]]
+    return project.new_job("Refine3D", dict(params_of(s), particles=p.id, poses=None if q is None else q.id,
+                                            reference=None if r is None else r.id),
+                           ins, label or f"{s.sym}_on{p.id:03d}")
 
 
 def map_to_box(vol: np.ndarray, apix: float, b: int, apix_new: float) -> torch.Tensor:
@@ -616,32 +630,89 @@ def _reference_map(rj: Job, cls: int = 0) -> tuple[np.ndarray, float, str]:
         return np.array(f.data, np.float32), float(f.voxel_size.x), path
 
 
+def _search_from_map(clf, idx, t, vol: torch.Tensor, b: int, res0: float, s: Refine3DSettings, log=print):
+    """A start without poses: every particle searches all orientations and, around its extraction centre, shifts
+    (up to s.global_shift_a, step res0 / 4) against the map low-passed to res0. The map's scale to the particles comes
+    from a subset first: from random poses (an underestimate: the search then mostly correlates), then twice at the
+    poses the subset finds. Returns (A (n, 3, 3), t (n, 2) A, the map scaled to the particles)."""
+    from . import abinitio as ab
+    dev, box_a, diam, n = clf.dev, clf.box_a, clf.p.diameter_a, len(idx)
+    bs = min(b, int(math.ceil(2 * box_a / res0 / 2)) * 2 + 8)        # the search needs the band only
+    step = ab.global_step(res0, diam)
+    r = s.global_shift_a or 0.1 * diam
+    k = int(r // (res0 / 4))
+    g1 = torch.arange(-k, k + 1, dtype=torch.float32) * (res0 / 4)
+    sh = torch.stack(torch.meshgrid(g1, g1, indexing="xy"), -1).reshape(-1, 2)
+    sh = sh[sh.norm(dim=1) <= r + 1e-3]
+    half = torch.arange(n) % 2                                  # one reference for both: the halves are not used
+
+    def ref(scale):
+        V = ab.Volume(bs, dev)
+        V.set_real(ab._to_box((vol * scale).to(dev), bs, dev) * (bs / b) ** 3)
+        ab.lowpass(V, res0, box_a)
+        return [V, V]
+    gen = torch.Generator().manual_seed(0)
+    sub = torch.randperm(n, generator=gen)[:min(n, 2000)]
+    q = torch.randn(len(sub), 4, generator=gen)
+    q = q / q.norm(dim=1, keepdim=True)
+    w, x, y, z = q.unbind(1)                                    # uniformly random rotations
+    A_s = torch.stack([1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y),
+                       2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x),
+                       2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)], 1).reshape(-1, 3, 3)
+    t_s = t[sub]
+    scale = abs(_scale_to_data(clf, idx[sub], A_s, t_s, vol, b, max(res0, 10.0)))
+    for _ in range(2):
+        A_s, _, _, t_s = ab.global_search(clf, idx[sub], A_s, t[sub], ref(scale), half[sub], res0, step, box=bs,
+                                          log=log, shifts=sh)
+        A_s, t_s = A_s.cpu(), t_s.cpu()
+        scale = abs(_scale_to_data(clf, idx[sub], A_s, t_s, vol, b, max(res0, 10.0)))
+    t0 = time.time()
+    A, _, _, t_new = ab.global_search(clf, idx, torch.eye(3).expand(n, 3, 3), t, ref(scale), half, res0, step, box=bs,
+                                      log=log, shifts=sh)
+    t_new = t_new.cpu()
+    log(f"[3d] no poses: global search at {res0:.0f} A ({step:.1f} deg, {len(sh)} shifts up to {r:.0f} A) "
+        f"({time.time() - t0:.1f}s); shift from the extraction centre median {float((t_new - t).norm(dim=1).median()):.1f} A")
+    return A.cpu(), t_new, vol * scale
+
+
 @logged
 def run_refine3d(project: Project, job, log=print) -> dict:
     from . import abinitio as ab
     job = project.job(job)
     s = settings_of(job, Refine3DSettings)
-    pj, qj, rj = (project.job(job.params[k]) for k in ("particles", "poses", "reference"))
-    rj = map_job(project, rj)
-    # symmetry-expanded poses (a SymExpand job, or a refinement of one): one row per copy, each image loaded once
-    src, poses, t_start, half, n_dup, dist, img = _posed_particles(project, job, pj, qj, tuple(s.classes), log,
-                                                                   expand=qj.type not in CLASS_JOBS)
+    pj, qj, rj = (project.job(job.params[k]) if job.params.get(k) not in (None, "", 0) else None
+                  for k in ("particles", "poses", "reference"))
+    rj = None if rj is None else map_job(project, rj)
+    if qj is None:                  # from the map alone: no poses, every particle searches all of them
+        src = particle_source(project, pj)
+        img = np.arange(src.N)
+        poses, t_start, half, n_dup, dist = {}, np.zeros((src.N, 2), np.float32), None, 0, 0.0
+    else:
+        # symmetry-expanded poses (a SymExpand job, or a refinement of one): one row per copy, each image loaded once
+        src, poses, t_start, half, n_dup, dist, img = _posed_particles(project, job, pj, qj, tuple(s.classes), log,
+                                                                       expand=qj.type not in CLASS_JOBS)
     max_res = s.max_res_a or 2.0 * src.apix
     ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log, nyquist_margin=1.0, max_c64_gb=1.5)
     clf = ses.clf
     clf._wait_loaded(clf.N)
     dev, b, box_a = clf.dev, clf.bmax, clf.box_a
     A = ab.euler_to_matrix(torch.as_tensor(poses["rot"]), torch.as_tensor(poses["tilt"]),
-                           torch.as_tensor(poses["psi"])).float()
+                           torch.as_tensor(poses["psi"])).float() if qj is not None else torch.eye(3).repeat(len(img), 1, 1)
     t = torch.as_tensor(t_start).float()
     ref_cls = 0
-    if rj.type in CLASS_JOBS:       # the class the particles come from (the largest of them)
-        cl = poses["cls"] if "cls" in poses else np.zeros(len(t_start), int)
-        ref_cls = int(np.bincount(cl).argmax()) + 1
-    ref, ref_apix, _ = _reference_map(rj, ref_cls)
-    rsum = project.summary_of(rj)
-    r_ref = rsum.get("resolution_a", 8.0) if rj.type not in CLASS_JOBS else \
-        next((c["resolution_a"] for c in rsum.get("classes", []) if c["cls"] == ref_cls), None) or 8.0
+    if rj is not None and rj.type in CLASS_JOBS:       # the class the particles come from (the largest of them)
+        if qj is None:
+            ref_cls = int(s.classes[0]) if s.classes else 0
+        else:
+            cl = poses["cls"] if "cls" in poses else np.zeros(len(t_start), int)
+            ref_cls = int(np.bincount(cl).argmax()) + 1
+    if rj is not None:
+        ref, ref_apix, _ = _reference_map(rj, ref_cls)
+        rsum = project.summary_of(rj)
+        r_ref = rsum.get("resolution_a", 8.0) if rj.type not in CLASS_JOBS else \
+            next((c["resolution_a"] for c in rsum.get("classes", []) if c["cls"] == ref_cls), None) or 8.0
+    if qj is None:
+        r_ref = 30.0
     if s.reference_map:                              # an external map (e.g. a deposited one), low-passed to start
         import mrcfile
         with mrcfile.open(s.reference_map if os.path.isabs(s.reference_map) else project.abs(s.reference_map),
@@ -651,7 +722,8 @@ def run_refine3d(project: Project, job, log=print) -> dict:
         log(f"[3d] reference {s.reference_map} ({ref.shape[0]} px at {ref_apix:.3f} A), from {s.res_start_a or 30:g} A")
     res0 = s.res_start_a or max(8.0, float(r_ref))
     vol = map_to_box(ref, ref_apix, b, box_a / b)
-    start_sym = str(map_job(project, qj).params.get("sym") or "C1").upper()
+    frame_job = qj if qj is not None else (rj if not s.reference_map else None)
+    start_sym = str(map_job(project, frame_job).params.get("sym") or "C1").upper() if frame_job is not None else "C1"
     sym_frame = None
     if s.align_symmetry and s.sym.upper() != "C1" and s.sym.upper() != start_sym:
         from .symalign import apply_frame, sym_frame as _frame
@@ -660,20 +732,25 @@ def run_refine3d(project: Project, job, log=print) -> dict:
         sym_frame["from"] = start_sym
     idx = torch.as_tensor(img)
     n_rows = len(img)
-    vol *= _scale_to_data(clf, idx, A, t, vol, b, max(res0, 10.0))
+    global_at = tuple(range(1, s.global_iters + 1))
+    if qj is None:
+        A, t, vol = _search_from_map(clf, idx, t, vol, b, res0, s, log)
+        global_at = tuple(range(2, max(s.global_iters, 2) + 1))   # the search above was the first
+    else:
+        vol *= _scale_to_data(clf, idx, A, t, vol, b, max(res0, 10.0))
     init = vol.to(dev)                                  # the real map (a padded Volume at box 512 would be 8.6 GB)
     t0 = time.time()
     A_start = A.clone()
     sm = solvent_mask_arg(project, s.mask, b, box_a / b, [init], res0, clf.p.diameter_a, log=log)
     maps, A, t, z, fscs, res, vols = ab.refine_particles(clf, idx, A, t, init, sym=s.sym, n_iter=s.n_iter, step_min=s.min_step_deg,
                                                          res_start=res0, n_local=s.n_local, drop_frac=s.drop_frac,
-                                                         global_at=tuple(range(1, s.global_iters + 1)),
+                                                         global_at=global_at,
                                                          global_res=s.global_res_a, box=b,
                                                          half=None if half is None else torch.as_tensor(half),
                                                          solvent_mask=sm, grid_correct=s.grid_correct,
                                                          pad=s.pad or None, nu=s.nu, nu_strict=s.nu_strict,
                                                          particle_scale=s.particle_scale, wiener=s.wiener,
-                                                         iter_stats=s.save_iterations, log=log)
+                                                         iter_stats=s.save_iterations, subpixel=s.subpixel, log=log)
     seconds = time.time() - t0
     apix = box_a / b
     h1, h2 = vols[0][0].real(), vols[0][1].real()
@@ -1098,7 +1175,8 @@ def registry() -> dict[str, JobSpec]:
                 figures=("map_views.png", "fsc.png", "views.png", "reprojections.png")),
         JobSpec("Refine3D", "local 3D refinement with gold-standard halves", Refine3DSettings,
                 (Input("particles", _PARTICLES, doc="particles (e.g. re-centred, full box)"),
-                 Input("poses", _POSES_CLS, doc="starting orientations, matched by particle uid"),
+                 Input("poses", _POSES_CLS, optional=True,
+                       doc="starting orientations, matched by particle uid (none: from the reference map alone)"),
                  Input("reference", _POSES_CLS, optional=True, doc="starting map (default: the poses job's)")),
                 refine3d_job, run_refine3d, key=_res_key,
                 figures=("map_views.png", "fsc.png", "postprocess.png", "localres.png", "views.png", "progress.png",

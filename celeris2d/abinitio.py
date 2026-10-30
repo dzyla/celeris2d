@@ -708,11 +708,15 @@ def working_box(clf, n_acc: int, n_ft: int, log=print) -> int:
 
 def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs, half: torch.Tensor, res_a: float,
                   step_deg: float, sigma2: torch.Tensor | None = None, box: int | None = None, log=print,
-                  topk: int = 1):
+                  topk: int = 1, shifts: torch.Tensor | None = None):
     """Exhaustive orientation search (whole sphere x all in-plane angles, shift kept) of particles against the
     half-set references refs = [ref_half0, ref_half1], as two GEMMs per chunk of orientations:
     ll = Re<ctf conj(x) e_t, P> / sigma2 - 0.5 <ctf^2 / sigma2, |P|^2>. Returns (best A (n, 3, 3), best ll (n,),
-    ll at the current pose (n,)); with topk > 1 the best topk orientations (n, topk, 3, 3) and their ll (n, topk)."""
+    ll at the current pose (n,)); with topk > 1 the best topk orientations (n, topk, 3, 3) and their ll (n, topk).
+    shifts: (S, 2) offsets (A) added to each particle's shift, searched with every orientation (projections computed
+    once, one GEMM per offset): a fourth value, the best shifts (n, 2). Not with topk."""
+    if shifts is not None and topk > 1:
+        raise ValueError("global_search: shifts and topk > 1 together are not supported")
     dev = clf.dev
     box_a, b = clf.box_a, box or clf.bmax
     n = len(idx)
@@ -729,6 +733,12 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
     H = len(Ah)
     best_ll = torch.full((n,), -float("inf"), device=dev)
     best_h = torch.zeros(n, dtype=torch.long, device=dev)
+    S = 1 if shifts is None else len(shifts)
+    best_s = torch.zeros(n, dtype=torch.long, device=dev)
+    if shifts is not None:
+        sh = shifts.to(dev).float()
+        Es = torch.exp(-1j * ph * (sh[:, 0, None] * fx[None, :].expand_as(kr)[band][None]
+                                   + sh[:, 1, None] * fy[:, None].expand_as(kr)[band][None]))        # (S, F)
     if topk > 1:
         top_ll = torch.full((n, topk), -float("inf"), device=dev)
         top_h = torch.zeros((n, topk), dtype=torch.long, device=dev)
@@ -740,6 +750,7 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
     # their products: ~40 B per point); sized from the band alone, J20 (198k particles, box 108) asked for 4.4 GB more
     # than a 24 GB card had
     npc = int(max(256, min(n, 0.1 * free / (Fb * 12 + b * (b // 2 + 1) * 40))))
+    npc = max(64, npc // S) if S > 1 else npc       # each offset's spectra and scores
     hc = int(max(256, min(H, 0.15 * free / (npc * 20 + Fb * 24))))   # orientations per chunk (scores + projections)
     for h in (0, 1):
         sel_h = torch.nonzero(half.to(dev) == h).squeeze(1)
@@ -755,11 +766,22 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
             del x, e_t, ctf
             P = refs[h].project(A[sel], band)
             cur_ll[sel] = (X * P).real.sum(1) - 0.5 * (C2 * P.abs() ** 2).sum(1)
-            Xr, Xi = X.real.contiguous(), X.imag.contiguous()
-            del X
+            Xs = [X] if shifts is None else [X * e for e in Es]      # the spectra moved by each offset
+            Xr = [x_.real.contiguous() for x_ in Xs]
+            Xi = [x_.imag.contiguous() for x_ in Xs]
+            del X, Xs
             for c in range(0, H, hc):
                 P = refs[h].project(Ah[c:c + hc], band)                           # (Hc, F)
-                ll = Xr @ P.real.T - Xi @ P.imag.T - 0.5 * (C2 @ (P.abs() ** 2).T)   # (n_chunk, Hc)
+                Pr, Pi, pw = P.real.T.contiguous(), P.imag.T.contiguous(), 0.5 * (C2 @ (P.abs() ** 2).T)
+                if S > 1:
+                    for si in range(S):
+                        v, k = (Xr[si] @ Pr - Xi[si] @ Pi - pw).max(1)
+                        upd = v > best_ll[sel]
+                        best_ll[sel[upd]] = v[upd]
+                        best_h[sel[upd]] = k[upd] + c
+                        best_s[sel[upd]] = si
+                    continue
+                ll = Xr[0] @ Pr - Xi[0] @ Pi - pw                                  # (n_chunk, Hc)
                 if topk > 1:
                     v, k = torch.topk(torch.cat([top_ll[sel], ll], 1), topk, dim=1)
                     hh = torch.cat([top_h[sel], torch.arange(c, c + ll.shape[1], device=dev).expand(len(sel), -1)], 1)
@@ -771,6 +793,8 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
                 best_h[sel[upd]] = k[upd] + c
     if topk > 1:
         return Ah[top_h], top_ll, cur_ll
+    if shifts is not None:
+        return Ah[best_h], best_ll, cur_ll, t + sh[best_s]
     return Ah[best_h], best_ll, cur_ll
 
 
@@ -960,7 +984,8 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                      nu: bool = False, nu_strict: bool = True, particle_scale: bool = False, wiener: float = 0.0,
                      max_angle: float | None = None, max_shift: float | None = None,
                      limit_A: torch.Tensor | None = None, limit_t: torch.Tensor | None = None,
-                     shift_per_deg: float | None = None, iter_stats: bool = False, log=print):
+                     shift_per_deg: float | None = None, iter_stats: bool = False, subpixel: bool = False,
+                     log=print):
     """Local refinement of particle orientations A and shifts t (A, model shift) against CTF-modulated projections,
     gold-standard halves (half: (n,) 0/1 per particle, e.g. the split of the refinement the poses come from - a
     particle must stay in the half it was aligned or polished against; default a random split, seed 1). inits:
@@ -994,6 +1019,9 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     history's "nu"), refine_particles.last_nu_map the last cutoff map (A, mean of the halves). nu_strict (default): the cutoffs of each
     half chosen by cross-validation between two folds of that half's own particles (each reconstructed on a small
     pad-1 box sized to the resolution), so no information crosses between the halves (gold standard).
+    subpixel: shifts between the grid points: along x and y, where the best of the 3 x 3 shift hypotheses (at the best
+    orientation) is the middle one, the peak of the parabola through the three log-likelihoods (at most half a step
+    away). The grid step never goes below half a pixel, so without it a shift is only as precise as that step.
     iter_stats: also keep, per iteration, every model's FSC curve and every particle's angular change (deg, in its
     model), shift change (A) and fit: refine_particles.last_iters = dict(fsc=[[curve per model] per iteration],
     angle / shift / fit=[(n,) float16 per iteration]) - how far poses still move, which particles keep jumping.
@@ -1343,6 +1371,17 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             arm = torch.arange(M, device=dev)
             A[i:i + bt] = Ac[ar[:, None], arm[None], bj]
             t[i:i + bt] = tt + sg[bs]
+            if subpixel and Sh == 9:       # parabola through the 3 shift log-likelihoods along x and along y
+                lg = ll.reshape(nb, M, J, 3, 3)[ar[:, None], arm[None], bj]                                # (nb, M, y, x)
+                iy, ix = bs // 3, bs % 3
+                ds = float(ts[2] - ts[1])
+                for ax, ic in ((0, ix), (1, iy)):            # t[..., 0] is x (grid columns), t[..., 1] is y (rows)
+                    line = lg[ar[:, None], arm[None], iy, :] if ax == 0 else lg[ar[:, None], arm[None], :, ix]
+                    l0, l1, l2 = line[..., 0], line[..., 1], line[..., 2]
+                    curv = l0 - 2 * l1 + l2
+                    off = (0.5 * (l0 - l2) / curv.clamp(max=-1e-9)).clamp(-0.5, 0.5)
+                    ok = (ic == 1) & (curv < 0) & torch.isfinite(off)
+                    t[i:i + bt, :, ax] += torch.where(ok, off, torch.zeros_like(off)) * ds
             switched += int((bm != z[i:i + bt]).sum())
             z[i:i + bt] = bm
             bj, bs = bj[ar, bm], bs[ar, bm]

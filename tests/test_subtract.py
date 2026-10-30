@@ -323,3 +323,28 @@ def test_refine_saves_iterations(sim):
     assert a4 < a1, (a1, a4)
     from celeris2d.jobs import Refine3DSettings
     assert not Refine3DSettings().save_iterations
+
+
+def test_refine_from_map_alone(sim):
+    """Refine3D without a poses job: from the map alone, low-passed to 30 A, every particle searches all orientations
+    and shifts, then the usual local refinement. The orientations must come out as those of a refinement started at
+    the true poses (median error after the frame's common rotation; 5.0 vs 4.6 deg), the resolution as good (7.38 A
+    both)."""
+    from celeris2d import jobs
+    prj, ex, cons = sim["prj"], sim["ex"], sim["cons"]
+    truth = next(int(i) for i in prj.jobs("Refine3D").id if prj.job(int(i)).label == "truth_A")
+    j = jobs.new_job(prj, "Refine3D", dict(particles=ex.id, reference=truth),
+                              dict(n_iter=6, res_start_a=30.0, drop_frac=0.0))
+    summ = jobs.run_refine3d(prj, j, log=print)
+    t = prj.table(j, "particles").read()
+    A = ab.euler_to_matrix(*(torch.as_tensor(t[k]) for k in ("rot", "tilt", "psi")))
+    order = np.argsort(t["uid"])
+    uid = sim["uid"]
+    A_true = sim["A"][np.argsort(uid)]
+    err = _rel_err(A[order], A_true)
+    r_cons = prj.summary_of(prj.job(cons.id))["resolution_a"]
+    tc = prj.table(prj.job(cons.id), "particles").read()
+    Ac = ab.euler_to_matrix(*(torch.as_tensor(tc[k]) for k in ("rot", "tilt", "psi")))
+    err_cons = _rel_err(Ac[np.argsort(tc["uid"])], A_true)      # B moves: ~4.6 deg from the true poses too
+    assert err < err_cons + 1.0, (err, err_cons)
+    assert summ["resolution_a"] <= r_cons * 1.1, (summ["resolution_a"], r_cons)
