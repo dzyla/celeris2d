@@ -10,6 +10,14 @@ change without picking again.
     cand = blob_candidates(mic, apix, diameter_a=160, ctf=fit, optics=optics)
     keep = select(cand)                       # automatic threshold + contamination filter
     imgs = extract(mic, apix, cand.xy_a[keep], box=suggest_box(160 * 1.5, apix))
+
+Template picking: the same prepared micrograph correlated with templates - 2D class averages or projections of a
+3D map (white protein, as the engine writes them) - each at n in-plane rotations, normalised over the template's
+circular window; a position's score is the best template and rotation. Same peaks, features and thresholds as the
+blob picker, plus the index of the best template.
+
+    t, ta = templates_from_map(vol, vol_apix, n_dirs=40)          # or class averages (n, b, b) and their pixel size
+    cand = template_candidates(mic, apix, 140, t, ta, ctf=fit, optics=optics)
 """
 from __future__ import annotations
 
@@ -89,6 +97,7 @@ class Candidates:
     local_std: np.ndarray       # standard deviation in the window, relative to the micrograph median
     local_mean: np.ndarray      # mean over ~2 diameters, in micrograph standard deviations
     work: dict = field(default_factory=dict)   # the binned image and score map, for figures
+    template: np.ndarray | None = None         # template picking: index of the best template
 
 
 def _conv(img_ft, ker, shape):
@@ -114,6 +123,14 @@ def blob_candidates(mic: torch.Tensor, apix: float, diameter_a: float, ctf=None,
     mu = _conv(Fi, win, (h, w)) / nwin
     var = (_conv(torch.fft.rfft2(img * img), win, (h, w)) / nwin - mu * mu).clamp_min(1e-6)
     ncc = num / torch.sqrt(var * nwin)
+    return _candidates(img, Fi, ncc, var, rr, wa, diameter_a, min_dist_frac, keep_maps)
+
+
+def _candidates(img, Fi, ncc, var, rr, wa, diameter_a, min_dist_frac, keep_maps, extra=None) -> Candidates:
+    """Peaks of a score map (sub-pixel, min_dist_frac x diameter apart) with their features. extra: a map whose value
+    at each peak is returned as .template."""
+    dev, (h, w) = img.device, img.shape
+    r = diameter_a / 2
     big = (rr <= diameter_a).float()                                # ~2 diameters across
     mean_big = _conv(Fi, big, (h, w)) / float(big.sum())
     # minimum distance between picks (min_dist_frac x diameter, circular): local maxima over the square inscribed
@@ -141,7 +158,118 @@ def blob_candidates(mic: torch.Tensor, apix: float, diameter_a: float, ctf=None,
     med = float(sd[e:-e, e:-e].median())
     work = dict(image=img.cpu().numpy(), score=ncc.cpu().numpy(), apix=wa) if keep_maps else {}
     return Candidates(xy.cpu().numpy(), s.cpu().numpy(), (sd[y, x] / med).cpu().numpy(),
-                      mean_big[y, x].cpu().numpy(), work)
+                      mean_big[y, x].cpu().numpy(), work, None if extra is None else extra[y, x].cpu().numpy())
+
+
+def _resample(imgs: torch.Tensor, apix: float, wa: float) -> torch.Tensor:
+    """(n, b, b) Fourier-resampled from apix to about wa per pixel (even box)."""
+    b = imgs.shape[-1]
+    nb = max(8, int(round(b * apix / wa / 2)) * 2)
+    F = torch.fft.rfft2(imgs.float(), norm="forward")
+    if nb < b:
+        F = crop_half(F, nb, nb)
+    elif nb > b:
+        G = torch.zeros(len(imgs), nb, nb // 2 + 1, dtype=F.dtype, device=F.device)
+        h = b // 2
+        G[:, :h, :h + 1], G[:, -h:, :h + 1] = F[:, :h], F[:, -h:]
+        F = G
+    return torch.fft.irfft2(F, s=(nb, nb), norm="forward")
+
+
+def templates_from_map(vol, apix: float, n_dirs: int = 40, wa: float | None = None) -> tuple[np.ndarray, float]:
+    """Projections of a map (white protein) along n_dirs directions spread evenly over the sphere (a projection
+    and its opposite are mirror images, which in-plane rotation does not produce): (n_dirs, b, b), pixel size.
+    Binned to wa (if given) first: picking needs low resolution only."""
+    from .abinitio import _rotate_volumes
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    v = torch.as_tensor(np.asarray(vol), dtype=torch.float32, device=dev)
+    if wa and wa > apix * 1.2:                                       # Fourier-bin the volume
+        b = v.shape[0]
+        nb = int(round(b * apix / wa / 2)) * 2
+        F = torch.fft.fftshift(torch.fft.fftn(v))
+        c, h = b // 2, nb // 2
+        v = torch.fft.ifftn(torch.fft.ifftshift(F[c - h:c + h, c - h:c + h, c - h:c + h])).real
+        apix = apix * b / nb
+    i = np.arange(n_dirs) + 0.5
+    z = 1 - 2 * i / n_dirs
+    ph = np.pi * (1 + 5 ** 0.5) * i
+    d = np.stack([np.sqrt(1 - z * z) * np.cos(ph), np.sqrt(1 - z * z) * np.sin(ph), z], 1)
+    R = []
+    for u in d:                                                      # rotation taking the direction u to z
+        a = np.cross(u, [0, 0, 1.0])
+        sa, ca = np.linalg.norm(a), u[2]
+        if sa < 1e-8:
+            R.append(np.eye(3) if ca > 0 else np.diag([1.0, -1, -1]))
+            continue
+        k = a / sa
+        K = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
+        R.append(np.eye(3) + sa * K + (1 - ca) * K @ K)
+    R = torch.tensor(np.array(R), dtype=torch.float32, device=dev)
+    out = torch.cat([_rotate_volumes(v, R[j:j + 16]).sum(1) for j in range(0, len(R), 16)])   # sum over z
+    return out.cpu().numpy(), apix
+
+
+def _rotate2d(t: torch.Tensor, angles_deg: torch.Tensor) -> torch.Tensor:
+    """(n, b, b) -> (n * len(angles), b, b): every template at every angle (bilinear)."""
+    n, b, _ = t.shape
+    a = torch.deg2rad(angles_deg.float().to(t.device))
+    c, s = torch.cos(a), torch.sin(a)
+    th = torch.zeros(len(a), 2, 3, device=t.device)
+    th[:, 0, 0], th[:, 0, 1], th[:, 1, 0], th[:, 1, 1] = c, -s, s, c
+    g = torch.nn.functional.affine_grid(th, (len(a), 1, b, b), align_corners=False)
+    x = t[:, None].expand(n, len(a), b, b).reshape(n * len(a), 1, b, b)
+    g = g[None].expand(n, *g.shape).reshape(n * len(a), b, b, 2)
+    return torch.nn.functional.grid_sample(x, g, align_corners=False, padding_mode="zeros")[:, 0]
+
+
+def template_candidates(mic: torch.Tensor, apix: float, diameter_a: float, templates, template_apix: float,
+                        ctf=None, optics=None, dark: bool = True, min_dist_frac: float = 0.5,
+                        angle_step: float = 0.0, keep_maps: bool = False, batch: int = 96) -> Candidates:
+    """Candidates scored by the best normalised cross-correlation with any template at any in-plane angle.
+    templates: (n, b, b) white protein (2D class averages or map projections) at template_apix; angle_step 0: the
+    arc of one working pixel at the particle's edge (~6 deg)."""
+    img, wa = prepare(mic, apix, diameter_a, ctf, optics, dark, work_apix=diameter_a / 20)
+    dev, (h, w) = img.device, img.shape
+    t = _resample(torch.as_tensor(np.asarray(templates), dtype=torch.float32, device=dev), template_apix, wa)
+    tb = t.shape[-1]
+    # the micrograph's filters, so templates and image have the same spectrum shape
+    ky, kx = _grid(tb, tb, wa, dev)
+    k2 = ky * ky + kx * kx
+    filt = (1 - torch.exp(-k2 * (2 * diameter_a) ** 2)) * torch.exp(-k2 * (diameter_a / 8) ** 2)
+    t = torch.fft.irfft2(torch.fft.rfft2(t) * filt, s=(tb, tb))
+    r = diameter_a / 2
+    step = angle_step or float(np.clip(math.degrees(wa / r), 3.0, 15.0))
+    t = _rotate2d(t, torch.arange(0, 360, step))
+    # every template in the same circular window (radius 0.6 x diameter), zero mean and unit norm inside it
+    yy = (torch.arange(tb, device=dev) - tb // 2).float()[:, None] * wa
+    xx = (torch.arange(tb, device=dev) - tb // 2).float()[None, :] * wa
+    rw = 0.6 * diameter_a
+    win_t = ((yy * yy + xx * xx) <= rw * rw).float()
+    nwin = float(win_t.sum())
+    t = (t - (t * win_t).sum((1, 2), keepdim=True) / nwin) * win_t
+    t = t / t.flatten(1).norm(dim=1).clamp_min(1e-12)[:, None, None]
+    # embed in the micrograph's grid, centred
+    yy = (torch.arange(h, device=dev) - h // 2).float()[:, None] * wa
+    xx = (torch.arange(w, device=dev) - w // 2).float()[None, :] * wa
+    rr = torch.sqrt(yy * yy + xx * xx)
+    win = (rr <= rw).float()
+    Fi = torch.fft.rfft2(img)
+    mu = _conv(Fi, win, (h, w)) / nwin
+    var = (_conv(torch.fft.rfft2(img * img), win, (h, w)) / nwin - mu * mu).clamp_min(1e-6)
+    y0, x0 = h // 2 - tb // 2, w // 2 - tb // 2
+    best = torch.full((h, w), -float("inf"), device=dev)
+    arg = torch.zeros((h, w), dtype=torch.long, device=dev)
+    for i in range(0, len(t), batch):
+        K = torch.zeros(min(batch, len(t) - i), h, w, device=dev)
+        K[:, y0:y0 + tb, x0:x0 + tb] = t[i:i + batch]
+        c = torch.fft.irfft2(Fi[None] * torch.fft.rfft2(torch.fft.ifftshift(K, dim=(-2, -1))).conj(), s=(h, w))
+        m, j = c.max(0)
+        upd = m > best
+        best = torch.where(upd, m, best)
+        arg = torch.where(upd, j + i, arg)
+    ncc = best / torch.sqrt(var * nwin)
+    n_rot = len(torch.arange(0, 360, step))
+    return _candidates(img, Fi, ncc, var, rr, wa, diameter_a, min_dist_frac, keep_maps, extra=arg // n_rot)
 
 
 def dedup(xy: np.ndarray, score: np.ndarray, dist: float) -> np.ndarray:

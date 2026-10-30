@@ -65,7 +65,8 @@ Layers, bottom to top:
    `plots3d.py` (its figures). It only reads a finished 2D `Result` — the 2D engine does not know about it.
    `preprocess.py`: movies -> micrographs on the GPU (gain orientation check, whole-frame + patch motion
    correction, dose weighting, per-micrograph CTF fit with background/envelope by least squares), figures in
-   `plots_preprocess.py`. `picking.py`: blob picker (NCC with a soft disk on a binned, phase-flipped micrograph;
+   `plots_preprocess.py`. `picking.py`: blob or template picker (NCC with a soft disk, or with 2D class averages / map projections at
+   in-plane rotations - `PickSettings.templates`, on a binned, phase-flipped micrograph;
    candidates keep their scores so thresholds change without re-picking), box size from CTF delocalisation,
    batched GPU extraction. `project.py` + `pipeline.py` (+ `jobs.py`: Class2D / Select / InitialModel / Refine3D / HeteroRefine and the job registry, `polish.py`: Polish,
    `sharpen.py`: Sharpen, `ctfrefine.py`: per-particle defocus (CtfRefine, a particle job that points at the

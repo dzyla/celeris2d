@@ -70,6 +70,12 @@ class PickSettings:
     max_std: float = 2.0                # contamination filters (picking.select)
     max_mean: float = 3.0
     figures: str | int = "outliers"     # all | outliers (+ the first micrograph) | none | N (first N live + outliers)
+    templates: int = 0                  # template picking instead of the blob: a Class2D / Select job (its class
+                                        # averages) or a Refine3D / InitialModel / HeteroRefine / Sharpen job (projections
+                                        # of its map); diameter_a still sets the binning, window and spacing
+    template_classes: tuple = ()        # Class2D: only these 1-based classes; HeteroRefine: the class whose map (1)
+    n_projections: int = 40             # map templates: directions over the sphere
+    angle_step: float = 0.0             # in-plane step (deg); 0: one working pixel at the particle's edge (~6 deg)
 
 
 @dataclass
@@ -103,8 +109,54 @@ def motion_job(project: Project, movies: Job, s: MotionSettings, label: str = ""
 
 
 def pick_job(project: Project, micrographs: Job, s: PickSettings, label: str = "") -> Job:
-    return project.new_job("Pick", dict(asdict(s), micrographs=micrographs.id), [micrographs],
-                           label or f"blob{s.diameter_a:g}" + ("" if s.threshold is None else f"_th{s.threshold:g}"))
+    ins = [micrographs] + ([project.job(s.templates)] if s.templates else [])
+    kind = f"tmpl{int(s.templates):03d}_" if s.templates else "blob"
+    return project.new_job("Pick", dict(asdict(s), micrographs=micrographs.id), ins,
+                           label or f"{kind}{s.diameter_a:g}" + ("" if s.threshold is None else f"_th{s.threshold:g}"))
+
+
+_tmpl_cache: dict = {}
+
+
+def pick_templates(project: Project, s: PickSettings) -> tuple[np.ndarray, float]:
+    """Templates of a Pick job (white protein): class averages of a Class2D / Select job, or projections of a map."""
+    import mrcfile
+    key = (int(s.templates), tuple(s.template_classes), s.n_projections, s.diameter_a)
+    if key in _tmpl_cache:
+        return _tmpl_cache[key]
+    j = project.job(s.templates)
+
+    def read(path):
+        with mrcfile.open(path, permissive=True) as f:
+            return np.array(f.data, np.float32), float(f.voxel_size.x)
+    if j.type in ("Class2D", "Select"):
+        path = j.find("classes.mrcs") if j.type == "Class2D" else j.find("selected_classes.mrcs")
+        if path is None:
+            raise ValueError(f"{j.name} has no class averages")
+        imgs, apix = read(path)
+        if j.type == "Class2D" and s.template_classes:
+            imgs = imgs[np.asarray(s.template_classes, int) - 1]
+        out = (imgs, apix)
+    else:
+        cls = int(s.template_classes[0]) if s.template_classes else 1
+        names = ([f"class{cls:02d}_map.mrc", f"class{cls:02d}_map_nomask.mrc"] if j.type == "HeteroRefine"
+                 else ["map.mrc", "map_nomask.mrc", "map_sharp.mrc"])
+        path = next((j.find(n) for n in names if j.find(n)), None)
+        if path is None:
+            raise ValueError(f"{j.name} has no map for templates")
+        vol, apix = read(path)
+        out = pk.templates_from_map(vol, apix, s.n_projections, wa=s.diameter_a / 20)
+    _tmpl_cache.clear()
+    _tmpl_cache[key] = out
+    return out
+
+
+def pick_candidates(project: Project, s: PickSettings, img, apix, ctf, optics, keep_maps=False) -> pk.Candidates:
+    if s.templates:
+        t, ta = pick_templates(project, s)
+        return pk.template_candidates(img, apix, s.diameter_a, t, ta, ctf, optics, s.dark, s.min_dist_frac,
+                                      s.angle_step, keep_maps=keep_maps)
+    return pk.blob_candidates(img, apix, s.diameter_a, ctf, optics, s.dark, s.min_dist_frac, keep_maps=keep_maps)
 
 
 def extract_job(project: Project, picks: Job, s: ExtractSettings, label: str = "") -> Job:
@@ -332,12 +384,13 @@ def process_movie_pick(project: Project, job: Job, movie_id: int, log=print,
     mic_job = project.job(job.params["micrographs"])
     img, apix, ctf = _load_mic(project, mic_job, movie_id)
     live = _live_figure(job, s.figures)
-    c = pk.blob_candidates(img, apix, s.diameter_a, ctf, optics_of(project, mic_job), s.dark, s.min_dist_frac,
-                           keep_maps=live)
+    c = pick_candidates(project, s, img, apix, ctf, optics_of(project, mic_job), keep_maps=live)
     th = pk.auto_threshold(c.score) if s.threshold is None else s.threshold
     keep = np.zeros(len(c.score), bool)
     keep[pk.select(c, th, s.max_std, s.max_mean)] = True
     cols = dict(xy_a=c.xy_a, score=c.score, local_std=c.local_std, local_mean=c.local_mean)
+    if c.template is not None:
+        cols["template"] = c.template
     _mem_picks.clear()
     _mem_picks[(job.id, movie_id)] = dict(cols, keep=keep)
     project.add_picks(job, movie_id, cols, keep, th)
@@ -759,8 +812,7 @@ def draw_figure(project: Project, job, movie_id: int) -> str:
         s = PickSettings(**{k: v for k, v in job.params.items() if k in PickSettings.__dataclass_fields__})
         mic_job = project.job(job.params["micrographs"])
         img, apix, ctf = _load_mic(project, mic_job, movie_id)
-        c = pk.blob_candidates(img, apix, s.diameter_a, ctf, optics_of(project, mic_job), s.dark, s.min_dist_frac,
-                               keep_maps=True)
+        c = pick_candidates(project, s, img, apix, ctf, optics_of(project, mic_job), keep_maps=True)
         z = project.picks(job, movie_id)
         # the stored candidates are the same picking; their kept mask (another threshold after rethreshold)
         th = float(z["threshold"])
