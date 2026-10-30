@@ -448,7 +448,7 @@ def _fsc_figure(path, box_a, curves, title):
 
 # ------------------------------------------------------------------------------------------------- rerun
 def rerun(project: Project, ref, log=print):
-    """Run a job again, RELION-style: a particle job (Class2D, InitialModel, Refine3D, Polish) becomes a new job with
+    """Run a job again, RELION-style: a particle job (Class2D, InitialModel, Refine3D, Polish, Sharpen) becomes a new job with
     the same parameters and inputs (the old one stays, for comparison); a movie job (MotionCtf, Pick, Extract)
     carries on with the movies it does not have yet (e.g. new ones of a live Import). Returns (job, run) where
     run() does the work (call it on a worker thread)."""
@@ -473,6 +473,10 @@ def rerun(project: Project, ref, log=print):
     if old.type == "Polish":
         j = polish_job(project, q["refine"], pick(PolishSettings))
         return j, lambda: run_polish(project, j, log=log)
+    if old.type == "Sharpen":
+        from .sharpen import SharpenSettings, run_sharpen, sharpen_job
+        j = sharpen_job(project, q["refine"], pick(SharpenSettings))
+        return j, lambda: run_sharpen(project, j, log=log)
     if old.type in ("MotionCtf", "Pick", "Extract"):
         project.set_status(old, "running")
         return old, lambda: pl.run(project, [old], log=log)

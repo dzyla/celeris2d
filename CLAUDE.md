@@ -67,7 +67,7 @@ Layers, bottom to top:
    correction, dose weighting, per-micrograph CTF fit with background/envelope by least squares), figures in
    `plots_preprocess.py`. `picking.py`: blob picker (NCC with a soft disk on a binned, phase-flipped micrograph;
    candidates keep their scores so thresholds change without re-picking), box size from CTF delocalisation,
-   batched GPU extraction. `project.py` + `pipeline.py` (+ `jobs.py`: Class2D / Select / InitialModel / Refine3D, `polish.py`: Polish): the
+   batched GPU extraction. `project.py` + `pipeline.py` (+ `jobs.py`: Class2D / Select / InitialModel / Refine3D, `polish.py`: Polish, `sharpen.py`: Sharpen): the
    movies -> particles -> 3D project store and its jobs
    (layout and rules in docs/project-design.md: `jobs/NNN_<type>_<label>/` small results, `data/NNN/` heavy and
    purgeable, catalog `project.db`, particle uid/key, selections as uid lists); `pipeline.run` overlaps decoding

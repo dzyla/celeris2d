@@ -335,6 +335,23 @@ def polish(refine_job: str, label: str = "") -> str:
 
 
 @server.tool()
+def sharpen(refine_job: str, b_factor: float = 0.0, resolution_a: float = 0.0, mask: str = "", label: str = "") -> list:
+    """A Sharpen job (RELION PostProcess) on a Refine3D job's half maps: corrected masked FSC (phase randomisation),
+    automatic Guinier B-factor (b_factor 0; RELION sign, negative sharpens), FSC weighting and low-pass at the
+    resolution (resolution_a 0: from the corrected FSC). mask: a .mrc path (default the refinement's solvent mask).
+    Returns the summary (resolutions, B-factor, fit quality, mask checks, warnings) and the diagnostics figure."""
+    from .sharpen import SharpenSettings, run_sharpen, sharpen_job
+    prj = _p()
+    j = sharpen_job(prj, refine_job, SharpenSettings(b_factor=b_factor, resolution_a=resolution_a, mask=mask), label)
+    with _lock:
+        summ = run_sharpen(prj, j, log=lambda *a: None)
+    path = os.path.join(j.path, "postprocess.png")
+    with open(path, "rb") as fh:
+        return [_js(dict(job=j.name, **{k: v for k, v in summ.items() if k != "fsc_corrected"})),
+                Image(data=fh.read(), format="png")]
+
+
+@server.tool()
 def particle_size_survey(micrographs_job: str, n_micrographs: int = 3,
                          diameters_a: list[float] | None = None) -> list:
     """Particle size of an unknown sample from the first micrographs of a MotionCtf job: one figure with the

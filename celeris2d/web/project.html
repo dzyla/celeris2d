@@ -84,6 +84,7 @@ function key(j) {
     case 'Select': return `${f(s.particles)} kept` + (s.rejected != null ? ` · ${f(s.rejected)} rej` : '');
     case 'Class2D': return `${f(s.particles)} ptcls · K${s.classes || ''}`;
     case 'InitialModel': case 'Refine3D': return s.resolution_a ? `${f(s.resolution_a, 2)} Å ${s.sym || ''}` : '';
+    case 'Sharpen': return s.resolution_a ? `${f(s.resolution_a, 2)} Å · B ${f(s.b_factor)}` + (s.warnings && s.warnings.length ? ' · ⚠' : '') : '';
     default: return '';
   }
 }

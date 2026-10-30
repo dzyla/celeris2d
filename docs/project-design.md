@@ -104,6 +104,15 @@ engine's model convention (the particle's centre is at +shift from the box centr
 - **Polish** (on a Refine3D job): per-particle tracks and per-frame weights from the movies (method in
   `polish.py`'s docstring); a particle job like an extraction, same uids, centred at the refined centre, and the
   table keeps each particle's half (its track was fitted against that half map).
+- **Sharpen** (on a Refine3D job; `celeris2d/sharpen.py`, RELION PostProcess): corrected masked FSC (phases
+  randomised beyond the shell where the unmasked FSC drops below 0.8), automatic Guinier B-factor (10 A to the
+  resolution), FSC weighting, low-pass at the resolution. `sharpened.mrc`, `sharpened_masked.mrc`,
+  `postprocess.png` (four FSC curves, Guinier plot, central slices with the mask outline) and warnings: the mask
+  correlating randomised maps (too tight), density beyond the mask's soft edge, a Guinier fit on few shells or
+  r^2 < 0.8, single-shell drops of the unmasked FSC. T20S: 3.05 A, B -102 A^2 (r^2 0.93) polished; 3.10 A,
+  B -106 A^2 unpolished; no warnings, 1-2 s. The one-shell dip of the corrected curve sits at the first randomised
+  shell (the mask leaks correlation from the unrandomised shells into it; RELION's curve has the same) - not a
+  reconstruction artifact; the unmasked curve has none.
 
 **Gold-standard halves are never mixed.** A particle keeps the half of the refinement its poses come from
 (Refine3D reads the poses job's `half` column; RELION's rlnRandomSubset), so a polished or re-refined particle is
