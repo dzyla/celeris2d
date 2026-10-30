@@ -247,16 +247,21 @@ class Volume:
             return torch.zeros(shape, dtype=torch.complex64, device=self.dev)
         return torch.cat(out)
 
+    # ---- reconstruction accumulators: the x >= 0 half of the grid only (RELION's layout). An image point at q with
+    # q_x < 0 goes in as its Friedel mate (-q, conj); the x = 0 plane then gets the mates of its own points once
+    # (_finish), and solve() writes the full grid with the x < 0 half as the conjugate mirror. Half the memory of
+    # full-grid accumulators and half the splatting (each point once, not with its mate).
     def _acc(self):
         if self.num is None:
-            G = self.G
-            self.num = torch.zeros((G * G * G, 2), device=self.dev)
-            self.den = torch.zeros(G * G * G, device=self.dev)
+            G, H = self.G, self.G // 2
+            self.num = torch.zeros((G * G * H, 2), device=self.dev)
+            self.den = torch.zeros(G * G * H, device=self.dev)
+            self._open = False                  # points inserted since the x = 0 plane was completed
 
     def insert(self, x: torch.Tensor, w: torch.Tensor, A: torch.Tensor, kmax: float, ops: torch.Tensor | None = None):
         """Accumulate spectra x (n, b, bh) (already CTF-multiplied: x*ctf) with weights w (n, b, bh) (e.g. ctf^2)
-        at orientations A, trilinear, plus their Friedel mates; frequencies beyond kmax (cycles/box) are skipped.
-        ops: symmetry operators S (each image is also inserted at A @ S). Chunked to ~4M points per pass."""
+        at orientations A, trilinear (with their Friedel mates, implicitly); frequencies beyond kmax (cycles/box) are
+        skipped. ops: symmetry operators S (each image is also inserted at A @ S). Chunked to ~4M points per pass."""
         self._acc()
         if ops is not None and len(ops) > 1:
             S = len(ops)
@@ -267,81 +272,125 @@ class Volume:
         chunk = max(1, 4_000_000 // max(P, 1))
         for i in range(0, len(A), chunk):
             self._insert(x[i:i + chunk], w[i:i + chunk], A[i:i + chunk], keep)
+        self._open = True
 
     def _insert(self, x, w, A, keep):
-        G = self.G
-        q = self._coords(A, keep)                           # (n, P, 3)
+        G, H = self.G, self.G // 2
+        q = self._coords(A, keep).reshape(-1, 3)            # (n P, 3)
         v = (x * self.checker)[:, keep].reshape(-1)
         ww = w[:, keep].float().reshape(-1)
-        q = q.reshape(-1, 3)
-        for sgn in (1.0, -1.0):
-            p = sgn * q + G // 2
-            p0 = torch.floor(p)
-            f = p - p0
-            p0 = p0.long()
-            vr = torch.view_as_real(v if sgn > 0 else v.conj().resolve_conj())
-            for dz in (0, 1):
-                for dy in (0, 1):
-                    for dx in (0, 1):
-                        ix, iy, iz = p0[:, 0] + dx, p0[:, 1] + dy, p0[:, 2] + dz
-                        wt = ((f[:, 0] if dx else 1 - f[:, 0]) * (f[:, 1] if dy else 1 - f[:, 1])
-                              * (f[:, 2] if dz else 1 - f[:, 2]))
-                        ok = (ix >= 0) & (ix < G) & (iy >= 0) & (iy < G) & (iz >= 0) & (iz < G)
-                        idx = ((iz * G + iy) * G + ix)[ok]
-                        wt = wt[ok]
-                        self.num.index_add_(0, idx, vr[ok] * wt[:, None])
-                        self.den.index_add_(0, idx, ww[ok] * wt)
+        neg = q[:, 0] < 0                                   # into the x >= 0 half as the Friedel mate
+        q = torch.where(neg[:, None], -q, q)
+        vr = torch.view_as_real(torch.where(neg, v.conj(), v).resolve_conj())
+        p = q + torch.tensor([0.0, G // 2, G // 2], device=q.device)
+        p0 = torch.floor(p)
+        f = p - p0
+        p0 = p0.long()
+        for dz in (0, 1):
+            for dy in (0, 1):
+                for dx in (0, 1):
+                    ix, iy, iz = p0[:, 0] + dx, p0[:, 1] + dy, p0[:, 2] + dz
+                    wt = ((f[:, 0] if dx else 1 - f[:, 0]) * (f[:, 1] if dy else 1 - f[:, 1])
+                          * (f[:, 2] if dz else 1 - f[:, 2]))
+                    ok = (ix < H) & (iy >= 0) & (iy < G) & (iz >= 0) & (iz < G)
+                    idx = ((iz * G + iy) * H + ix)[ok]
+                    wt = wt[ok]
+                    self.num.index_add_(0, idx, vr[ok] * wt[:, None])
+                    self.den.index_add_(0, idx, ww[ok] * wt)
+
+    @staticmethod
+    def _mirror_yz(P: torch.Tensor) -> torch.Tensor:
+        """P[(G - z) % G, (G - y) % G] for the leading (z, y) axes: the frequency -k of the centred index."""
+        return torch.roll(torch.flip(P, (0, 1)), shifts=(1, 1), dims=(0, 1))
+
+    def _finish(self):
+        """Complete the x = 0 plane: a point there also stands for its mate at (0, -y, -z) (conjugate)."""
+        if self.num is None or not self._open:
+            return
+        G, H = self.G, self.G // 2
+        num, den = self.num.view(G, G, H, 2), self.den.view(G, G, H)
+        n0, d0 = num[:, :, 0].clone(), den[:, :, 0].clone()
+        m0 = self._mirror_yz(n0)
+        num[:, :, 0, 0] = n0[..., 0] + m0[..., 0]
+        num[:, :, 0, 1] = n0[..., 1] - m0[..., 1]
+        den[:, :, 0] = d0 + self._mirror_yz(d0)
+        self._open = False
 
     def symmetrize(self, ops: torch.Tensor):
         """Symmetrise the accumulators once (RELION's BackProjector::symmetrise): num and den at grid point p become
-        the sum over operators S of their trilinear samples at S p - the same as inserting every image at A @ S
-        (whose frequencies land at S^T A^T k), for one resampling of the grid instead of |S| insertions per image."""
+        the sum over operators S of their trilinear samples at S p (a point with negative x read as the conjugate of
+        its mate) - the same as inserting every image at A @ S (whose frequencies land at S^T A^T k), for one
+        resampling of the grid instead of |S| insertions per image."""
         if self.num is None or ops is None or len(ops) < 2:
             return
-        G, dev = self.G, self.dev
-        acc = torch.cat([self.num.view(G, G, G, 2).permute(3, 0, 1, 2), self.den.view(1, G, G, G)])  # (3, G, G, G)
+        self._finish()
+        G, H, dev = self.G, self.G // 2, self.dev
+        acc = torch.cat([self.num.view(G, G, H, 2).permute(3, 0, 1, 2), self.den.view(1, G, G, H)])  # (3, G, G, H)
         self.num = self.den = None
-        num = torch.empty((G, G, G, 2), device=dev)
-        den = torch.empty((G, G, G), device=dev)
+        num = torch.empty((G, G, H, 2), device=dev)
+        den = torch.empty((G, G, H), device=dev)
         ops = ops.to(dev).float()
         r = torch.arange(G, device=dev, dtype=torch.float32) - G // 2
-        cz = max(1, int(8e6 // (G * G)))
+        rx = torch.arange(H, device=dev, dtype=torch.float32)
+        cz = max(1, int(8e6 // (G * H)))
+        sc = torch.tensor([2.0 / H, 2.0 / G, 2.0 / G], device=dev)
+        off = torch.tensor([0.0, G // 2, G // 2], device=dev)
         for z0 in range(0, G, cz):
             zz = r[z0:z0 + cz]
-            q = torch.stack(torch.broadcast_tensors(r[None, None, :], r[None, :, None], zz[:, None, None]), -1)  # x, y, z
+            q = torch.stack(torch.broadcast_tensors(rx[None, None, :], r[None, :, None], zz[:, None, None]), -1)
             out = acc[:, z0:z0 + cz].clone()
             for S in ops:
                 if torch.allclose(S, torch.eye(3, device=dev)):
                     continue
-                g = ((q @ S.T + G // 2 + 0.5) / G * 2 - 1)[None]
-                out += F.grid_sample(acc[None], g, mode="bilinear", padding_mode="zeros", align_corners=False)[0]
+                qs = q @ S.T
+                neg = qs[..., 0] < 0
+                qs = torch.where(neg[..., None], -qs, qs)
+                g = ((qs + off + 0.5) * sc - 1)[None]
+                smp = F.grid_sample(acc[None], g, mode="bilinear", padding_mode="zeros", align_corners=False)[0]
+                smp[1] = torch.where(neg, -smp[1], smp[1])                   # the mate: conjugate
+                out += smp
             num[z0:z0 + cz] = out[:2].permute(1, 2, 3, 0)
             den[z0:z0 + cz] = out[2]
         del acc
         self.num, self.den = num.view(-1, 2), den.view(-1)
+        self._open = False
 
     def clear(self):
         self._acc()
         self.num.zero_()
         self.den.zero_()
+        self._open = False
 
     def free_acc(self):
         self.num = self.den = None
 
+    def acc_shells(self) -> torch.Tensor:
+        """Shell index (cycles per unpadded box) of the accumulators' half grid (G, G, G//2), x from 0."""
+        return self.shell_index()[:, :, self.G // 2:]
+
     def solve(self, reg: torch.Tensor | float):
-        """ft = num / (den + reg); reg: scalar or per-shell (in cycles/box b) tensor. In slabs of the first axis straight
-        into the new spectrum, the old one released first: done at once it held ~5 volume-sized temporaries (out of
-        memory at box 256, pad 2)."""
-        G = self.G
-        den = self.den.view(G, G, G)
-        num = self.num.view(G, G, G, 2)
+        """ft = num / (den + reg) on the half grid, the x < 0 half its conjugate mirror; reg: scalar or per-shell (in
+        cycles/box b) tensor. Written into the new spectrum in slabs of x, the old one released first."""
+        self._finish()
+        G, H = self.G, self.G // 2
+        den = self.den.view(G, G, H)
+        num = self.num.view(G, G, H, 2)
         self.ft = None
-        out = torch.empty((2, G, G, G), device=self.dev)
-        sh = self.shell_index() if torch.is_tensor(reg) else None
-        cz = max(1, int(64e6 // (G * G)))
-        for z in range(0, G, cz):
-            d = den[z:z + cz] + (reg[sh[z:z + cz].clamp(max=len(reg) - 1)] if sh is not None else reg)
-            out[:, z:z + cz] = (num[z:z + cz] / d[..., None]).permute(3, 0, 1, 2)
+        out = torch.zeros((2, G, G, G), device=self.dev)
+        sh = self.acc_shells() if torch.is_tensor(reg) else None
+        cx = max(1, int(32e6 // (G * G)))
+        for x0 in range(0, H, cx):
+            x1 = min(H, x0 + cx)
+            d = den[:, :, x0:x1] + (reg[sh[:, :, x0:x1].clamp(max=len(reg) - 1)] if sh is not None else reg)
+            v = (num[:, :, x0:x1] / d[..., None]).permute(3, 0, 1, 2)            # (2, G, G, cx): x = x0 .. x1-1
+            out[:, :, :, H + x0:H + x1] = v
+            # x < 0: ft(-x, -y, -z) = conj ft(x, y, z), for x >= 1 (index H - x)
+            lo = max(x0, 1)
+            if lo < x1:
+                m = self._mirror_yz(v[:, :, :, lo - x0:].permute(1, 2, 3, 0)).permute(3, 0, 1, 2)
+                m[1] = -m[1]
+                out[:, :, :, H - x1 + 1:H - lo + 1] = m.flip(3)
+            del d, v
         self.ft = out
         self.pre = False
 
@@ -461,9 +510,15 @@ def _band(b: int, dev, box_a: float, lo_a: float, hi_a: float) -> torch.Tensor:
 
 def _regularise_solve(vol: Volume, frac: float = 0.05):
     """num / (den + frac * mean den of the shell): damps sparsely sampled Fourier voxels."""
-    sh = vol.shell_index().reshape(-1)
+    vol._finish()
+    sh = vol.acc_shells().reshape(-1)
     n = int(sh.max()) + 1
-    m = torch.bincount(sh, weights=vol.den, minlength=n) / torch.bincount(sh, minlength=n).clamp_min(1)
+    # the half grid: a voxel with x > 0 also stands for its mirror (counted twice, as on the full grid)
+    H = vol.G // 2
+    wx = torch.full((H,), 2.0, device=vol.dev)
+    wx[0] = 1.0
+    wv = wx.repeat(vol.G * vol.G)
+    m = torch.bincount(sh, weights=vol.den * wv, minlength=n) / torch.bincount(sh, weights=wv, minlength=n).clamp_min(1)
     vol.solve(frac * m + 1e-6 * m.max())
 
 
@@ -591,11 +646,11 @@ def classes_to_volume(cls_ft: torch.Tensor, pops: torch.Tensor, box_a: float, di
 
 # --------------------------------------------------------------------------- stage 2: particles
 def auto_pad(b: int, n_vol: float, dev) -> int:
-    """Padding of 3D spectra: 2 if n_vol reconstructions (~64 (2b)^3 bytes each with accumulators, references and
-    batch arrays: measured 8.5 GB peak for beta-gal at box 256) fit in 90 % of the free memory (gpu_free already keeps
-    a reserve), else 1 (gridding-corrected; box 512 in 16 GB). Pad 1 costs accuracy away from the centre: beta-gal box
-    256 unmasked FSC 3.70 -> 3.93 A (masked unchanged) - with 60 % of free it fell back to pad 1 on a 16 GB card."""
-    return 2 if n_vol * 64 * (2 * b) ** 3 < 0.9 * _free(dev) else 1
+    """Padding of 3D spectra: 2 if n_vol reconstructions (~56 (2b)^3 bytes each with half-grid accumulators,
+    references and batch arrays: measured 7.4 GB peak for beta-gal at box 256) fit in 90 % of the free memory
+    (gpu_free already keeps a reserve), else 1 (gridding-corrected; box 512 in 16 GB). Pad 1 costs accuracy away from
+    the centre: beta-gal box 256 unmasked FSC 3.70 -> 3.93 A (masked unchanged)."""
+    return 2 if n_vol * 56 * (2 * b) ** 3 < 0.9 * _free(dev) else 1
 
 
 def _to_box(init, b: int, dev) -> torch.Tensor:
