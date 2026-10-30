@@ -300,6 +300,7 @@ class Refine3DSettings:
     res_start_a: float = 0.0        # first alignment resolution (0: the reference job's resolution, at least 8 A)
     max_res_a: float = 0.0          # finest resolution loaded (0: Nyquist)
     n_local: int = 1                # local search rounds per iteration
+    min_step_deg: float = 0.5       # finest angular step (deg); the step halves once < 30% of particles move
     drop_frac: float = 0.1          # share of worst-fitting particles left out of each reconstruction
     global_iters: int = 0           # first iterations that also search all orientations (for starts with pose errors)
     global_res_a: float = 12.0      # resolution of that search
@@ -454,7 +455,7 @@ def run_refine3d(project: Project, job, log=print) -> dict:
     init.set_real(vol.to(dev))
     t0 = time.time()
     A_start = A.clone()
-    maps, A, t, z, fscs, res, vols = ab.refine_particles(clf, idx, A, t, init, sym=s.sym, n_iter=s.n_iter,
+    maps, A, t, z, fscs, res, vols = ab.refine_particles(clf, idx, A, t, init, sym=s.sym, n_iter=s.n_iter, step_min=s.min_step_deg,
                                                          res_start=res0, n_local=s.n_local, drop_frac=s.drop_frac,
                                                          global_at=tuple(range(1, s.global_iters + 1)),
                                                          global_res=s.global_res_a, box=b,
