@@ -25,6 +25,21 @@ import torch.nn.functional as F
 
 from .engine import TWO_PI, ctf_2d, freqs, ft_resize, gpu_free, rot_grid, upsample2, release_cache
 
+# A job may set LIVE = fn(stage, it, n_iter, maps, res, apix): called with the current maps (real space, one per
+# model, on the GPU) after every SGD round and refinement iteration - the dashboard's live view (jobs.live_maps). It
+# must be quick; failures are ignored.
+LIVE = None
+
+
+def _live(stage, it, n_iter, vols, res, apix):
+    if LIVE is None:
+        return
+    try:
+        maps = [(v[0].real() + v[1].real()).mul_(0.5) if isinstance(v, (list, tuple)) else v.real() for v in vols]
+        LIVE(stage, it, n_iter, maps, res, apix)
+    except Exception:                                # noqa: BLE001 - a live view never stops a job
+        pass
+
 
 # --------------------------------------------------------------------------- geometry
 def euler_to_matrix(rot, tilt, psi) -> torch.Tensor:
@@ -927,6 +942,7 @@ def particle_sgd(clf, idx: torch.Tensor, t: torch.Tensor, init: Volume, sym: str
         _real_space_constraints(Vb, mask, positive=f < 0.5, center=True)
         V.ft = (1 - eta) * V.ft + eta * Vb.ft
         lowpass(V, res, box_a) if it == 0 else None
+        _live("sgd", it + 1, n_iter, [V], [res], box_a / bs)
     # every particle's orientation in the final map
     A, _, _ = global_search(clf, idx, torch.eye(3).expand(n, 3, 3), t, [V, V], zeros, res_end,
                             global_step(res_end, diam), box=bs)
@@ -1220,6 +1236,8 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                 history[-1]["seconds"] = round(time.time() - t0, 1)
                 if iters is not None:      # the FSC of the poses found in that iteration
                     iters["fsc"].append([None if f is None else f.cpu().numpy().astype(np.float32) for f in fscs])
+            _live("refine", it, n_iter, [vols[m] for m in range(M) if alive[m]], [res[m] for m in range(M) if alive[m]],
+                  box_a / b)
         if it == n_iter:
             break
         A_prev, t_prev = A.clone(), t.clone()      # how far this iteration moves each pose (log, history)

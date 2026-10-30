@@ -1237,6 +1237,21 @@ def create(workdir, project_dir=None):
             raise HTTPException(404, str(e))
         return Response(data, media_type="image/png", headers={"Cache-Control": "max-age=600"})
 
+    @app.get("/api/project/live3d")
+    def project_live3d(job: str):
+        """A running 3D job's current maps (live.py): stage, iteration, resolution, history and the map files."""
+        j = _prj().job(job)
+        p = os.path.join(j.path, "live3d.json")
+        if j.status != "running" or not os.path.isfile(p):
+            return {}
+        try:
+            with open(p) as fh:
+                d = json.load(fh)
+        except (OSError, ValueError):
+            return {}
+        d["maps"] = [_prj().rel(os.path.join(j.path, f"live3d_m{k + 1}.mrc")) for k in range(int(d.get("models", 1)))]
+        return d
+
     @app.get("/api/project/live")
     def project_live(job: str):
         """A running job's live snapshot (live.json: a Class2D job's classes as they form), or {} when it has none."""

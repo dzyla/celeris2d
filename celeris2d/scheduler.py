@@ -131,8 +131,8 @@ def run_job(project: Project, job, log=print, auto_select: bool = True):
     from .jobs import registry
     j = project.job(job)
     chain = movie_chain(project, j) if j.type in MOVIE_JOBS else [j]
-    for c in chain:
-        project.set_status(c, "running")
+    for c in chain:                               # an error from an earlier attempt no longer applies
+        project.set_status(c, "running", {k: v for k, v in project.summary_of(c).items() if k != "error"})
     try:
         if j.type in MOVIE_JOBS:
             pl.run(project, chain, log=log)
@@ -140,7 +140,9 @@ def run_job(project: Project, job, log=print, auto_select: bool = True):
             spec = registry().get(j.type)
             if spec is None:
                 raise ValueError(f"{j.type} jobs cannot run from the queue")
-            spec.run(project, j, log=log)
+            from .live import live_maps
+            with live_maps(project, j):           # 3D jobs: their maps as they change, for the dashboard
+                spec.run(project, j, log=log)
     except BaseException as e:                    # noqa: BLE001 - recorded on the job, re-raised for the caller
         for c in chain:
             if project.job(c.id).status == "running":

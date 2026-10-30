@@ -787,6 +787,11 @@ def _run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thr
     n_rejected = 0
     if cj is not None and mc is None:             # micrographs exist already: rejected ones are not even read
         movie_ids = [i for i in movie_ids if curate.accepted(project, cj, i)]
+    if mc is None:                                   # Pick / Extract alone: only movies that have a micrograph (the
+        mj = project.ancestor(jobs[0], "MotionCtf")  # MotionCtf job skips the ones it cannot read)
+        if mj is not None:
+            have = set(project.micrographs(mj)["movie_id"].astype(int))
+            movie_ids = [i for i in movie_ids if int(i) in have]
     todo = [i for i in movie_ids if not all(project.done(j, i) for j in jobs)]
     paths = project.movies().set_index("id")["path"]
     q: queue.Queue = queue.Queue(maxsize=2)

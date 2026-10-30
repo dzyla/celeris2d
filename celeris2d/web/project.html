@@ -161,6 +161,12 @@
   .chip { background: var(--well); border: 1px solid var(--line); border-radius: 14px; padding: 3px 10px; font-size: 12.5px; cursor: pointer; }
   .chip:hover { border-color: var(--data); }
   .live, .mp { padding: 14px 16px; }
+  .l3d { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 340px); gap: 4px 14px; margin-bottom: 12px; }
+  .l3row { grid-column: 1; display: flex; gap: 6px; align-items: center; }
+  .l3row figure { margin: 0; flex: 1; min-width: 0; } .l3row img { width: 100%; display: block; border-radius: 4px; background: #0a0a0a; }
+  .l3row figcaption { font-size: 11px; color: var(--ink3); text-align: center; } .l3lab { width: 70px; font-size: 12px; }
+  .l3h { grid-column: 2; grid-row: 1 / span 6; background: var(--surface); border-radius: 8px; min-height: 200px; }
+  @media (max-width: 1100px) { .l3d { grid-template-columns: 1fr; } .l3h { grid-column: 1; grid-row: auto; } }
   .mpkpi { display: flex; flex-wrap: wrap; gap: 8px 30px; margin: 4px 0 14px; }
   .mpkpi .v { font-size: 20px; font-weight: 600; } .mpkpi .c { font-size: 12px; color: var(--ink3); }
   .mpview { display: grid; grid-template-columns: auto auto minmax(220px, 1fr); gap: 14px; align-items: start; justify-content: start; }
@@ -232,6 +238,7 @@ const THEME = () => ({surface: css('--surface'), well: css('--well'), line: css(
 const MAPJOBS = ['Refine3D', 'LocalRefine', 'InitialModel', 'Sharpen', 'Subtract', 'ModeMaps', 'MaskCreate', 'Polish', 'CtfRefine'];
 const CLASSJOBS = ['Class2D', 'HeteroRefine', 'Class3D', 'Select'];
 const MOVIEJOBS = ['MotionCtf', 'Pick', 'Extract'];
+const LIVE3D = ['InitialModel', 'Refine3D', 'HeteroRefine', 'Class3D', 'LocalRefine'];
 // per-micrograph statistics of a MotionCtf -> Pick -> Extract chain, shown together: [key, label, unit, digits]
 const MICSTATS = [['defocus_a', 'Defocus', 'Å', 0], ['astigmatism_a', 'Astigmatism', 'Å', 0], ['ctf_fit_a', 'CTF fit resolution', 'Å', 2],
   ['ctf_score', 'CTF fit score', '', 3], ['drift_a', 'Total drift', 'Å', 1], ['local_rms_a', 'Local motion (rms)', 'Å', 2], ['tilt_deg', 'Ice tilt', '°', 1],
@@ -399,10 +406,36 @@ function stageLive(st, j) {
   const t0 = (j.params || {}).run_started, skew = Date.now() / 1000 - (j.now || Date.now() / 1000);
   st.innerHTML = `<div class="live"><div class="lhead"><span class="dot running pulse"></span><b>Running</b> <span id="lel" class="muted"></span>
       <span id="llast" class="muted lastline"></span></div>
+      ${LIVE3D.includes(j.type) ? `<div id="l3d"><div class="muted" style="padding:14px 4px">The map appears here once the job has made one.</div></div>` : ''}
       ${j.type === 'Class2D' ? `<div id="lgal"><div class="muted" style="padding:18px 4px">The classes appear here after the first iteration.</div></div>` : ''}
       <div class="lbody"><pre class="log ltail" id="ltail">waiting for the first lines of the log…</pre>
       <figure class="lfig" id="lfig"><div class="muted" style="padding:30px;text-align:center">The job's figures appear here as it writes them.</div></figure></div></div>`;
-  let offset = 0, text = '', lastFig = '', n = 0, liveAt = 0;
+  let offset = 0, text = '', lastFig = '', n = 0, liveAt = 0, at3d = 0;
+  const live3d = async () => {                       // a 3D job's current maps (live.py), as they change
+    const d = await api('/api/project/live3d?job=' + encodeURIComponent(name));
+    if (!d.maps || d.updated === at3d || current !== name || !$('#l3d')) return;
+    at3d = d.updated;
+    const stage = {sgd: 'Particle SGD', refine: 'Refinement', classes: 'From the class averages'}[d.stage] || d.stage;
+    const res = (d.res || []).filter(r => r != null);
+    const views = await Promise.all(d.maps.map(m => api('/api/project/mapviews?path=' + encodeURIComponent(m)).catch(() => null)));
+    if (current !== name || !$('#l3d')) return;
+    $('#l3d').innerHTML = `<div class="gal-tools"><div class="sum">${esc(stage)} <b>${d.it}</b> of ${d.n_iter}${res.length ? ' · ' + res.map(r => r.toFixed(1) + ' Å').join(', ') : ''} · shown at ${d.apix.toFixed(2)} Å/px</div>
+        <button class="quiet" id="l3dv">Show the current map in 3D</button></div>
+      <div class="l3d">${views.map((v, k) => v ? `<div class="l3row">${d.maps.length > 1 ? `<div class="muted l3lab">model ${k + 1}${d.res[k] != null ? '<br>' + d.res[k].toFixed(1) + ' Å' : ''}</div>` : ''}
+        ${v.views.slice(0, d.maps.length > 1 ? 3 : 6).map(x => `<figure><img src="${x.src}" alt="${esc(x.label)}"><figcaption>${esc(x.label)}</figcaption></figure>`).join('')}</div>` : '').join('')}
+        <div id="l3h" class="l3h"></div></div>`;
+    $('#l3dv').onclick = () => openViewer($('#stage'), j, d.maps.map(path => ({path})), null);
+    const P = await CelerisPlots.plotly(), T = THEME(), h = d.history || [];
+    if (!$('#l3h') || !h.length) return;
+    const nm = Math.max(...h.map(x => (x.res || []).length), 1), cols = [css('--data'), css('--you'), css('--good'), css('--serious'), T.ink2];
+    const tr = Array.from({length: nm}, (_, m) => ({type: 'scatter', mode: 'lines+markers', name: nm > 1 ? 'model ' + (m + 1) : 'resolution',
+      x: h.map((_, i) => i + 1), y: h.map(x => (x.res || [])[m]), text: h.map(x => x.stage + ' ' + x.it),
+      line: {color: cols[m % cols.length], width: 1.6}, marker: {size: 5}, hovertemplate: '%{text}: %{y:.2f} Å<extra></extra>'}));
+    P.react($('#l3h'), tr, {height: 200, margin: {l: 44, r: 10, t: 24, b: 30}, paper_bgcolor: T.surface, plot_bgcolor: T.surface,
+      font: {family: T.font, size: 11, color: T.ink2}, showlegend: nm > 1, title: {text: '<b>Resolution</b> per step', x: 0.01, xanchor: 'left', font: {size: 12, color: T.ink}},
+      xaxis: {gridcolor: T.line, zeroline: false, title: {text: 'step', font: {size: 10}}}, yaxis: {gridcolor: T.line, zeroline: false, autorange: 'reversed', title: {text: 'Å', font: {size: 10}}}},
+      {displaylogo: false, responsive: true});
+  };
   const name = j.name;
   const liveClasses = async () => {                 // a Class2D job's live.json: the classes as they form
     const d = await api('/api/project/live?job=' + encodeURIComponent(name));
@@ -419,6 +452,7 @@ function stageLive(st, j) {
     if (t0) { const s = Math.max(0, Date.now() / 1000 - skew - t0); $('#lel').textContent = `for ${s >= 3600 ? Math.floor(s / 3600) + ' h ' : ''}${Math.floor(s % 3600 / 60)} min ${Math.floor(s % 60)} s`; }
     try {
       if (j.type === 'Class2D') await liveClasses();
+      if (LIVE3D.includes(j.type)) await live3d();
       const d = await api(`/api/project/log?job=${encodeURIComponent(name)}&offset=${offset}`);
       if (d.text) {
         text = (text + d.text).split('\n').slice(-400).join('\n'); offset = d.offset;
