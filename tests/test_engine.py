@@ -150,3 +150,23 @@ def test_dashboard_api(tmp_path, stack):
     st = c.get("/api/status").json()
     assert st["loaded"] is False and st["busy"] is False
     assert c.post("/api/stop", json={}).status_code == 409          # nothing running
+
+
+def test_nonfinite_particles_blanked(tmp_path):
+    """A few NaN / inf particle images (cut from a broken micrograph) must not turn every class average into NaN:
+    they are set to zero on load and counted (clf.nonfinite); the classes stay finite."""
+    import mrcfile
+    from celeris2d.engine import Classifier2D, Params
+    from celeris2d.sources import open_source
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((600, 48, 48)).astype(np.float32)
+    x[:10] = np.inf
+    x[10:20, 5, 5] = np.nan
+    f = str(tmp_path / "p.mrcs")
+    with mrcfile.new(f) as m:
+        m.set_data(x)
+        m.voxel_size = 4.0
+    clf = Classifier2D(open_source(f), Params(diameter_a=120, max_res_a=12, n_iter=3, n_full_iter=1), log=lambda *a: None)
+    clf.run(n_classes=4, seed=0)
+    assert sum(len(i) for i in clf.nonfinite) == 20
+    assert np.isfinite(clf.class_images()).all()

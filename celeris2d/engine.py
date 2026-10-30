@@ -424,6 +424,7 @@ class Classifier2D:
         self.flip = False
         self._loaded = []                 # list of host index arrays, in load order
         self._n_loaded = 0
+        self.nonfinite = []               # host indices of particles whose images had NaN / inf (blanked)
         self._load_lock = threading.Lock()
         self._load_err = None
         self._load_t0 = time.time()
@@ -453,6 +454,12 @@ class Classifier2D:
                     rows_t = torch.as_tensor(rows, device=self.data.device)
                     for i in range(0, len(rows), 2048):
                         x = torch.as_tensor(imgs[i:i + 2048], device=dev, dtype=torch.float32)
+                        bad = ~torch.isfinite(x).flatten(1).all(1)
+                        if bool(bad.any()):  # one NaN image turns every class average into NaN: blank it, count it
+                            x[bad] = 0.0
+                            self.nonfinite.append(torch.as_tensor(rows[i:i + 2048])[bad.cpu()])
+                            self.log(f"[load] warning: {int(bad.sum())} particle images with NaN / inf values, "
+                                     f"set to zero (the micrographs they were cut from are broken)")
                         xb = x[:, bg]
                         if self.p.normalize:
                             x = (x - xb.mean(1)[:, None, None]) / xb.std(1).clamp_min(1e-6)[:, None, None]

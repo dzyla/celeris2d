@@ -201,6 +201,11 @@ def run_class2d(project: Project, job, log=print) -> dict:
                 table=[dict(cls=k + 1, particles=int(r.pops[k]), conf=round(float(r.conf[k]), 3),
                             res_a=round(float(r.res_a[k]), 1) if np.isfinite(r.res_a[k]) else None)
                        for k in np.argsort(-r.pops)])
+    bad = sum(len(x) for x in ses.clf.nonfinite)
+    if bad:                                          # blanked on load: say so (they sit in some class as empty images)
+        summ["nonfinite_particles"] = int(bad)
+        summ["warnings"] = [f"{bad} particle images had NaN / inf values and were set to zero: the micrographs they "
+                            f"were cut from are broken (re-run motion correction and extraction)"]
     project.set_status(job, "finished", summ)
     ses.clf = None
     release_cache()
