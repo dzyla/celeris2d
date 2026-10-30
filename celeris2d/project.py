@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 
 JOB_TYPES = ("Import", "MotionCtf", "Curate", "Pick", "Extract", "Select", "Class2D", "InitialModel", "Refine3D", "HeteroRefine",
              "Polish", "CtfRefine", "Sharpen", "MaskCreate", "MapScore", "Class3D", "Subtract", "LocalRefine", "SymExpand",
-             "Variability3D", "VariabilityDisplay")
+             "Modes3D", "ModeMaps")
 PER_MOVIE = dict(MotionCtf="micrographs", Pick="picks", Extract="chunks", Polish="chunks", Subtract="chunks")
 HEAVY = dict(MotionCtf=(".mrc",), Extract=(".mrcs",), Polish=(".mrcs",), Subtract=(".mrcs",))   # purgeable files of a job's data folder
 REBUILDABLE = ("MotionCtf", "Extract")         # purged files can be made again from the recorded parameters
@@ -66,9 +66,8 @@ PARTICLE_JOBS = ("Extract", "Polish", "CtfRefine", "Subtract")   # jobs that hol
                                                       # + stacks; a CtfRefine job's are those of the job it refined; a
                                                       # Subtract job's table also holds poses, and a symmetry-expanded one
                                                       # one row per (uid, copy))
-CLASS_JOBS = ("HeteroRefine", "Class3D", "VariabilityDisplay")    # 3D jobs with several maps: classNN_map.mrc ...,
-                                                                # table "particles" with cls (VariabilityDisplay:
-                                                                # clusters / bins of a Variability3D job)
+CLASS_JOBS = ("HeteroRefine", "Class3D", "ModeMaps")    # 3D jobs with several maps: classNN_map.mrc ..., table
+                                                        # "particles" with cls (ModeMaps: clusters / bins along modes)
 
 
 def movie_fingerprint(path: str, chunk: int = 1 << 20) -> str:
@@ -222,8 +221,9 @@ class Job:
         return os.path.join(self.path, self.prefix + "run.log")
 
 
-_SUBDIR = {".mrc": "maps", ".mrcs": "maps", ".bild": "maps", ".png": "figures", ".json": "data", ".star": "data", ".xml": "data",
-           ".csv": "data", ".cs": "data", ".csg": "data", ".npz": "data", ".txt": "data", ".log": ""}
+_SUBDIR = {".mrc": "maps", ".mrcs": "maps", ".bild": "maps", ".png": "figures", ".gif": "figures", ".json": "data",
+           ".star": "data", ".xml": "data", ".csv": "data", ".cs": "data", ".csg": "data", ".npz": "data", ".txt": "data",
+           ".log": ""}
 
 
 class run_log:
@@ -465,12 +465,12 @@ class Project:
 
     def aligned_particles(self, ref) -> Job:
         """The particle job (Extract / Polish) whose box centres an alignment job's shifts are relative to: a
-        Refine3D / HeteroRefine / Class3D / Variability3D / VariabilityDisplay job's particles, or the extraction a
+        Refine3D / HeteroRefine / Class3D / Modes3D / ModeMaps job's particles, or the extraction a
         Class2D (or the Class2D of an InitialModel) was run on."""
         job = self.job(ref)
         if job.type == "Subtract":                  # its poses are relative to its own (re-centred) boxes
             return job
-        if job.type in ("Refine3D", "LocalRefine", "SymExpand", "Variability3D", *CLASS_JOBS):
+        if job.type in ("Refine3D", "LocalRefine", "SymExpand", "Modes3D", *CLASS_JOBS):
             src = self.job(job.params["particles"])
             return src if src.type in PARTICLE_JOBS else self.ancestor(src, PARTICLE_JOBS)
         if job.type == "InitialModel":

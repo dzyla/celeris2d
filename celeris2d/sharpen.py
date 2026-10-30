@@ -40,7 +40,7 @@ class SharpenSettings:
                                     # else a MaskCreate job (number) or a mask .mrc (path, absolute or relative to the project)
     edge_shells: int = 2            # cosine edge of the low-pass (Fourier shells)
     fsc_weight: bool = True         # weight each shell by sqrt(2 FSC / (1 + FSC)) (RELION)
-    cls: int = 0                    # a HeteroRefine / Class3D / VariabilityDisplay job: the class (1-based) to sharpen
+    cls: int = 0                    # a HeteroRefine / Class3D / ModeMaps job: the class (1-based) to sharpen
     local_res: bool = True          # local resolution (localres.py): localres.mrc + localres_filtered.mrc + figure
     local_window_a: float = 0.0     # its window (0: ~7x the resolution)
 

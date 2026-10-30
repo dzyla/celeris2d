@@ -14,7 +14,7 @@ an agent branch in progress; ordered by what a typical project needs first.
 | homogeneous / NU refinement | Refine3D / Homo + NU | have (Refine3D, nu=True, dynamic mask, symmetry frame) |
 | heterogeneous refinement | Class3D with alignment / Hetero Refine | have (HeteroRefine) |
 | 3D classification without alignment (focused) | Class3D --skip_align / 3D Classification | have (Class3D: start from the main directions of variability, focus mask with on-the-fly subtraction, symmetry expansion) |
-| **3D variability / flexibility** | multi-body / 3DVA, 3D Flex | **have** Variability3D + VariabilityDisplay (3DVA: components, series, intermediates, clusters); 3D Flex and multi-body missing |
+| **conformational variability / flexibility** | multi-body / 3DVA, 3D Flex | **have** Modes3D + ModeMaps (modes at fixed poses, half-set reproducibility; series, bins, clusters); 3D Flex and multi-body missing |
 | signal subtraction, symmetry expansion, local refinement | Subtract, relion_particle_symmetry_expand / Particle Subtraction, Symmetry Expansion, Local Refinement | have (SymExpand: expanded poses, no images; Subtract with re-centring / re-boxing, per copy; LocalRefine: focus mask, angle / shift limits about the mask centre, on expanded or subtracted particles) |
 | per-particle CTF, optics | CtfRefine (defocus, astigmatism, beam tilt, trefoil, 4th order, anisotropic mag) / Global + Local CTF | have per-particle defocus, global optics fit (validated synthetic; differs from RELION on beta-gal); per-particle astigmatism partial |
 | Bayesian polishing / reference-based motion | yes | have (parametric frame weights; cryoSPARC fits free per-frequency weights) |

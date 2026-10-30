@@ -903,7 +903,7 @@ def create(workdir, project_dir=None):
         for dp, dn, fn in os.walk(j.path):
             dn[:] = sorted(d for d in dn if d not in ("particles", "picks", "rejected", "session", "staging", "movies"))
             for f in sorted(fn):
-                if f.endswith((".png", ".mrc", ".mrcs", ".star", ".cs", ".csg", ".json", ".xml", ".csv", ".md")) \
+                if f.endswith((".png", ".gif", ".mrc", ".mrcs", ".star", ".cs", ".csg", ".json", ".xml", ".csv", ".md")) \
                         and f not in ("job.json", "summary.json"):
                     full = os.path.join(dp, f)
                     files.append(dict(path=prj.rel(full), size=os.path.getsize(full)))
@@ -937,7 +937,8 @@ def create(workdir, project_dir=None):
             raise HTTPException(404, path)
         with open(full, "rb") as fh:
             data = fh.read()
-        mt = "image/png" if full.endswith(".png") else "application/octet-stream"
+        mt = "image/png" if full.endswith(".png") else "image/gif" if full.endswith(".gif") else \
+            "application/octet-stream"
         return Response(data, media_type=mt, headers={"Cache-Control": "no-cache"})
 
     @app.get("/api/project/jobtypes")

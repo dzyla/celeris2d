@@ -1,4 +1,4 @@
-"""3D variability analysis (variability.py) on simulated particles with a known answer (needs a CUDA GPU; ~15 s).
+"""Modes of variation (modes.py) on simulated particles with a known answer (needs a CUDA GPU; ~15 s).
 
 A blob particle with a domain of three blobs is projected at random orientations with CTF, random shifts and noise
 (SNR ~0.4 per pixel, as in test_abinitio). (a) Continuous: the domain is translated by u x 24 A, u uniform in
@@ -10,7 +10,8 @@ Measured (RTX 5090, 12 iterations): (a) |r(z_1, u)| 0.98, |r(z_2, u^2)| 0.93 (th
 harmonic of a non-linear translation, not noise), halves |cc| 0.95 / 0.86 / 0.39; (b) 100 % of particles in the right
 cluster; no motion: halves |cc| <= 0.04 (the noise floor sd is ~4 % of |mean|). ~10 s for the file.
 
-    pytest -q tests/test_variability.py
+    pytest -q tests/test_modes.py
+    CELERIS2D_FIG_DIR=/some/dir pytest -q tests/test_modes.py     # keep the figures and GIFs to look at
 """
 import os
 from types import SimpleNamespace
@@ -20,7 +21,7 @@ import pytest
 import torch
 
 from celeris2d import abinitio as ab
-from celeris2d import variability as va
+from celeris2d import modes as md
 from celeris2d.engine import Optics, ctf_2d, freqs, ft_resize
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
@@ -79,15 +80,22 @@ def _simulate(u: torch.Tensor, seed: int = 4):
 
 
 def _solve(clf, A, t, **kw):
-    return va.solve(clf, torch.arange(clf.N), A, t, n_comp=3, filter_res_a=12.0, n_iter=12, log=lambda *a: None, **kw)
+    return md.solve(clf, torch.arange(clf.N), A, t, n_comp=3, filter_res_a=12.0, n_iter=12, log=lambda *a: None, **kw)
 
 
-def _halves(clf, A, t):
-    """Independent solves on the two halves of the particles, compared."""
+def _halves(clf, A, t, mask=None):
+    """Independent solves on the two halves of the particles: their modes."""
     h0, h1 = torch.arange(0, clf.N, 2), torch.arange(1, clf.N, 2)
-    r0 = va.solve(clf, h0, A[h0], t[h0], n_comp=3, filter_res_a=12.0, n_iter=12, log=lambda *a: None)
-    r1 = va.solve(clf, h1, A[h1], t[h1], n_comp=3, filter_res_a=12.0, n_iter=12, log=lambda *a: None, mask=r0["mask"])
-    return va.compare_bases(r0["basis"], r1["basis"])
+    r0 = md.solve(clf, h0, A[h0], t[h0], n_comp=3, filter_res_a=12.0, n_iter=12, log=lambda *a: None, mask=mask)
+    r1 = md.solve(clf, h1, A[h1], t[h1], n_comp=3, filter_res_a=12.0, n_iter=12, log=lambda *a: None,
+                  mask=r0["mask"])
+    return r0["basis"], r1["basis"]
+
+
+def _out(tmp_path, sub):
+    d = os.path.join(os.environ.get("CELERIS2D_FIG_DIR") or str(tmp_path), sub)
+    os.makedirs(d, exist_ok=True)
+    return lambda name: os.path.join(d, name)
 
 
 def test_continuous_motion(tmp_path):
@@ -104,41 +112,52 @@ def test_continuous_motion(tmp_path):
     print(f"continuous: |r(z2, u^2)| = {r2:.3f}, sd of the posterior means {z.std(0).round(3)}")
     assert r2 > 0.7, r2
     assert z[:, 0].std() < 1.25, z.std(0)       # an EM fixed point has var(E[z]) <= 1 (0.83 at 30 iterations)
-    h = _halves(clf, A, t)
-    print(f"continuous: halves |cc| {h['cc']}, subspace overlap {h['subspace_overlap']}")
-    assert h["cc"][0] > 0.8, h
-    # outputs: series frames + ChimeraX script, figures
-    mean, basis = res["mean"].cpu().numpy(), res["basis"].cpu().numpy()
-    out = lambda name: str(tmp_path / name)
-    s = va.write_series(out, mean, basis, res["sd"].numpy(), res["mask"].cpu().numpy(), res["apix"], "series_",
-                        n_frames=5, components=[1])
-    assert len(s[0]["frames"]) == 5 and os.path.isfile(s[0]["cxc"])
-    va.variance_figure(out("variance.png"), (res["sd"] / res["mean_norm"]).tolist(), z.std(0).tolist(), None,
-                       res["history"], "test")
-    va.latent_figure(out("latent.png"), z, "test")
-    va.components_figure(out("components.png"), mean, basis, res["sd"].numpy(), "test")
-    assert all(os.path.isfile(out(f)) for f in ("variance.png", "latent.png", "components.png"))
+    rep = md.half_reproducibility(res["basis"], *_halves(clf, A, t, res["mask"]), res["box_a"])
+    print(f"continuous: halves |cc| {rep['cc']}, agree to {rep['res_a']} A, subspace overlap {rep['subspace_overlap']}")
+    assert rep["cc"][0] > 0.8, rep
+    # outputs: series frames + ChimeraX scripts, figures, GIFs
+    mean, basis, sd = res["mean"].cpu().numpy(), res["basis"].cpu().numpy(), res["sd"].numpy()
+    mask = res["mask"].cpu().numpy()
+    sd_rel = (res["sd"] / res["mean_norm"]).tolist()
+    shown = md.display_res(rep["cc"], rep["res_a"], 12.0)
+    out = _out(tmp_path, "continuous")
+    o = md.mode_outputs(out, mean, basis, sd, mask, res["apix"], sd_rel, rep["cc"], shown, 12.0,
+                        "synthetic: a domain moving with u", n_frames=5)
+    assert len(o["series"]) == 3 and len(o["series"][0]["frames"]) == 5 and os.path.isfile(o["series"][0]["cxc"])
+    assert os.path.isfile(out("mode1.gif")) and os.path.getsize(out("mode1.gif")) < 1.5e6
+    md.variance_figure(out("variance.png"), sd_rel, rep["cc"], res["history"], "synthetic: a domain moving with u")
+    md.latent_figure(out("latent.png"), z, "synthetic: a domain moving with u")
+    assert all(os.path.isfile(out(f)) for f in ("variance.png", "latent.png", "what_moves.png", "frames.png",
+                                                "projections.png"))
 
 
-def test_two_states():
+def test_two_states(tmp_path):
     state = (torch.rand(N, generator=torch.Generator().manual_seed(2)) < 0.4).long()
     clf, A, t = _simulate(state.float() * 2 - 1, seed=5)
     res = _solve(clf, A, t)
     z = res["z"].numpy()
-    g = va.gmm(z[:, :2], 2, seed=0)
+    g = md.gmm(z[:, :2], 2, seed=0)
     acc = max((g["labels"] == state.numpy()).mean(), (g["labels"] != state.numpy()).mean())
     print(f"two states: |r(z1, state)| = {abs(np.corrcoef(z[:, 0], state.numpy())[0, 1]):.3f}, "
           f"clusters agree with the states for {acc * 100:.1f}% of particles")
     assert acc > 0.9, acc
     # the gold-standard reconstruction of each cluster
     half = (np.arange(N) % 2)
-    rec = va.reconstruct_groups(clf, torch.arange(N), A, t, g["labels"], 2, half, log=lambda *a: None)
+    rec = md.reconstruct_groups(clf, torch.arange(N), A, t, g["labels"], 2, half, log=lambda *a: None)
     assert all(r is not None and r["resolution_a"] < 20 for r in rec), [r and r["resolution_a"] for r in rec]
+    out = _out(tmp_path, "two_states")
+    names = ["cluster 1", "cluster 2"]
+    cen = np.array([z[g["labels"] == k].mean(0) for k in range(2)])
+    md.latent_figure(out("latent.png"), z, "synthetic: two states", labels=g["labels"], centres=cen, names=names)
+    md.groups_figure(out("map_views.png"), [r["map"].cpu().numpy() for r in rec], names,
+                     [int((g["labels"] == k).sum()) for k in range(2)], [r["resolution_a"] for r in rec],
+                     "synthetic: two states", res["mask"].cpu().numpy())
+    assert os.path.isfile(out("map_views.png"))
 
 
 def test_noise_only():
     """No motion: whatever the components hold is fitted noise, and it does not reproduce between halves."""
     clf, A, t = _simulate(torch.zeros(N), seed=6)
-    h = _halves(clf, A, t)
+    h = md.compare_bases(*_halves(clf, A, t))
     print(f"no motion: halves |cc| {h['cc']}, subspace overlap {h['subspace_overlap']}")
     assert max(h["cc"]) < 0.3, h

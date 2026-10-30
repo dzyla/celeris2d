@@ -140,8 +140,9 @@ async function showJob(name, scroll = true) {
   const hide = new Set(['history', 'figures', 'warnings']);
   const summ = Object.fromEntries(Object.entries(j.summary || {}).filter(([k, v]) => !hide.has(k) && (!Array.isArray(v) || v.length <= 8)));
   const warns = (j.summary || {}).warnings || [];
-  const figs = j.files.filter(f => f.path.endsWith('.png') && !isVariant(f.path));
-  const other = j.files.filter(f => !f.path.endsWith('.png'));
+  const isFig = p => /\.(png|gif)$/.test(p);
+  const figs = j.files.filter(f => isFig(f.path) && !isVariant(f.path));
+  const other = j.files.filter(f => !isFig(f.path));
   const canRerun = !['Import', 'Select'].includes(j.type);
   const chips = (arr) => arr.length ? `<div class="chips">${arr.map(n => `<span class="chip" data-n="${esc(n)}">${esc(n)}</span>`).join('')}</div>` : '<span class="muted">none</span>';
   $('#detail').innerHTML = `

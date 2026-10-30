@@ -988,7 +988,7 @@ def refinement_report(job, tag: str, sym: str, box_a: float, apix: float, A_star
 # ---------------------------------------------------------------------------------------------- registry
 _PARTICLES = ("Extract", "Polish", "CtfRefine", "Subtract", "Select", "SymExpand")  # (SymExpand: its particles once)
 _POSES = ("InitialModel", "Refine3D", "HeteroRefine", "Class3D", "LocalRefine", "Subtract", "SymExpand")
-_POSES_CLS = _POSES + ("VariabilityDisplay",)     # also clusters / bins of a 3D variability job (classes=)
+_POSES_CLS = _POSES + ("ModeMaps",)     # also clusters / bins along the modes of a Modes3D job (classes=)
 
 
 def _res_key(s: dict) -> str:
@@ -1027,7 +1027,7 @@ def registry() -> dict[str, JobSpec]:
     from .subtract import (LocalRefineSettings, SubtractSettings, local_refine_job, run_local_refine, run_subtract,
                            subtract_job)
     from .symexpand import POSE_JOBS, SymExpandSettings, run_symexpand, symexpand_job
-    from . import variability as va
+    from . import modes as md
     specs = [
         JobSpec("Curate", "micrographs kept for picking: limits on CTF fit, defocus, astigmatism and motion",
                 CurateSettings, (Input("micrographs", ("MotionCtf",), doc="the motion-corrected, CTF-fitted micrographs"),),
@@ -1111,7 +1111,7 @@ def registry() -> dict[str, JobSpec]:
                 figures=("symexpand.png",)),
         JobSpec("Sharpen", "post-processing: corrected masked FSC, B-factor, local resolution", SharpenSettings,
                 (Input("refine", ("Refine3D", "LocalRefine", *CLASS_JOBS),
-                       doc="the refinement (a HeteroRefine / Class3D / VariabilityDisplay: set cls)"),),
+                       doc="the refinement (a HeteroRefine / Class3D / ModeMaps: set cls)"),),
                 sharpen_job, run_sharpen,
                 key=lambda s: (f"{_n(s.get('resolution_a'), 2)} Å · B {_n(s.get('b_factor'))}" + warn_mark(s))
                 if s.get("resolution_a") else "",
@@ -1124,20 +1124,21 @@ def registry() -> dict[str, JobSpec]:
                 key=lambda s: f"{_n(s.get('fit', 0) * 100, 1)} % fit · {len(s.get('proposed_classes') or [])} classes"
                 if s.get("particles") else "",
                 figures=("mapscore.png",)),
-        JobSpec("Variability3D", "3D variability analysis at fixed poses (3DVA): principal components of the density, "
-                "per-particle coordinates, a volume series per component", va.Variability3DSettings,
+        JobSpec("Modes3D", "modes of variation at fixed poses: the main ways the density changes between particles, "
+                "each particle's coordinate along them, a volume series per mode", md.Modes3DSettings,
                 (Input("particles", ("Extract", "Polish", "CtfRefine", "Select"),   # not Subtract: rows per (uid, copy)
                        doc="particles"),
                  Input("poses", ("Refine3D", "HeteroRefine"), doc="the consensus refinement (poses, shifts, halves)"),
                  Input("mask", ("MaskCreate",), optional=True,
-                       doc="region the components may use (default: the refinement's solvent mask)")),
-                va.variability3d_job, va.run_variability3d, key=va.key,
-                figures=("variance.png", "components.png", "latent.png")),
-        JobSpec("VariabilityDisplay", "3D variability outputs: series, reconstructions along a component, or clusters "
-                "in latent space (classes for Select / Refine3D)", va.VariabilityDisplaySettings,
-                (Input("variability", ("Variability3D",), doc="the 3D variability job"),),
-                va.variability_display_job, va.run_variability_display, key=va.display_key,
-                figures=("map_views.png", "latent.png", "fsc.png", "components.png")),
+                       doc="region the modes may use (default: the refinement's solvent mask)")),
+                md.modes3d_job, md.run_modes3d, key=md.key,
+                figures=("what_moves.png", "projections.png", "frames.png", "variance.png", "latent.png")),
+        JobSpec("ModeMaps", "maps along the modes of a Modes3D job: a series per mode, reconstructions in bins along a "
+                "mode, or of clusters of the particles' coordinates (classes for Select / Refine3D)",
+                md.ModeMapsSettings,
+                (Input("modes3d", ("Modes3D",), doc="the Modes3D job"),),
+                md.mode_maps_job, md.run_mode_maps, key=md.maps_key,
+                figures=("map_views.png", "latent.png", "fsc.png", "what_moves.png", "projections.png", "frames.png")),
     ]
     return {sp.type: sp for sp in specs}
 

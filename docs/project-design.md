@@ -150,6 +150,20 @@ engine's model convention (the particle's centre is at +shift from the box centr
   convergence per iteration with the posterior histogram, FSC. Simulated 30/70 mixture (3000 particles, known poses):
   0.98 of particles right at noise 3 (the true maps allow 0.98), 0.85 at noise 5 (true maps 0.90; random subsets
   0.59).
+- **Modes3D** (`celeris2d/modes.py`; particles, a Refine3D / HeteroRefine's poses, optional MaskCreate mask):
+  probabilistic PCA of the density at fixed poses and CTF (EM in Fourier space, batched GEMMs; method after Punjani &
+  Fleet 2021), the mean and K modes masked and low-passed to the filter resolution. Each gold-standard half is solved
+  on its own; per mode the matched halves' |cc| (>= 0.5: "reproducible") and the resolution to which they agree, to
+  which the figures low-pass it. Outputs: `mean.mrc`, `mode_NN.mrc` (unit norm; sd in the summary), series frames +
+  `series_modeK.cxc` (ChimeraX), table `particles` = uid, mode_1..K, scale; figures `what_moves.png` (-/+2 sd,
+  difference, where), `projections.png` (differences along z, y, x on one scale, share of power on the particle),
+  `frames.png`, `variance.png`, `latent.png` and a GIF per mode (`modeK.gif`, `modeK_noise.gif` when it does not
+  reproduce). Synthetic moving domain |r| 0.98; dz_2025_10 (38k particles, 8 A): sd ~15 % of |mean| per mode is noise.
+- **ModeMaps** (on a Modes3D job): `kind` = series (from the saved maps), bins (equal-size bins along one mode) or
+  clusters (Gaussian mixture on the coordinates); bins / clusters are reconstructed with gold-standard halves and
+  written as classes (`classNN_*`, table `particles` with cls, prob_k), so Select, Refine3D `classes=`, Sharpen and
+  MaskCreate `cls=` take them (`project.CLASS_JOBS`). `map_views.png`: all groups at one contour level and each minus
+  the mean.
 - **Polish** (on a Refine3D job): per-particle tracks and per-frame weights from the movies (method in
   `polish.py`'s docstring); a particle job like an extraction, same uids, centred at the refined centre, and the
   table keeps each particle's half (its track was fitted against that half map).

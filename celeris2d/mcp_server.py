@@ -342,9 +342,10 @@ def classify_job(particles_job: str, n_classes: int = 50, max_res_a: float = 0.0
 
 @server.tool()
 def select_classes(class2d_job: str, classes: list[int], label: str = "", note: str = "") -> str:
-    """A Select job with the particles of these classes (1-based, as in the gallery) of a Class2D, HeteroRefine or Class3D job; the other
-    particles are kept as its rejected set, with kept / rejected class stacks and a selection figure. The user
-    decides which classes are good: a selection proposed by an agent must say so in its label or note."""
+    """A Select job with the particles of these classes (1-based, as in the gallery) of a Class2D, HeteroRefine, Class3D
+    or ModeMaps (bins / clusters along modes) job; the other particles are kept as its rejected set, with kept /
+    rejected class stacks and a selection figure. The user decides which classes are good: a selection proposed by an
+    agent must say so in its label or note."""
     from . import jobs
     prj = _p()
     sel = jobs.select_classes(prj, class2d_job, classes, label, note)
@@ -368,9 +369,9 @@ def refine3d(particles_job: str, poses_job: str, reference_job: str = "", sym: s
              global_iters: int = 0, classes: list[int] | None = None, nu: bool = False, sharpen: bool = True,
              label: str = "") -> str:
     """A Refine3D job in the background: particles of an Extract / Polish / Select job (e.g. re-centred at full box),
-    starting orientations from an InitialModel, Refine3D, HeteroRefine or Class3D job (matched by uid), starting map
-    from reference_job (default the poses job; for a HeteroRefine / Class3D, the map of the particles' class). classes:
-    with a HeteroRefine / Class3D poses job, only the particles of these 1-based classes (the user's choice). global_iters: first
+    starting orientations from an InitialModel, Refine3D, HeteroRefine, Class3D or ModeMaps job (matched by uid),
+    starting map from reference_job (default the poses job; for a HeteroRefine / Class3D / ModeMaps, the map of the
+    particles' class). classes: with such a poses job, only the particles of these 1-based classes (the user's choice). global_iters: first
     iterations that also search all orientations. nu: non-uniform regularisation (NU refinement). sharpen: when it
     finishes, a Sharpen job on its half maps (sharpened map, B-factor, corrected FSC, local resolution). Writes FSC
     (png + json/star/xml), angular distribution, progress per iteration and per-particle diagnostics."""
@@ -418,8 +419,8 @@ def polish(refine_job: str, label: str = "") -> str:
 @server.tool()
 def sharpen(refine_job: str, b_factor: float = 0.0, resolution_a: float = 0.0, mask: str = "auto", cls: int = 0,
             local_res: bool = True, label: str = "") -> list:
-    """A Sharpen job (RELION PostProcess) on a Refine3D job's half maps (or class cls of a HeteroRefine / Class3D): corrected
-    masked FSC (phase randomisation), automatic Guinier B-factor (b_factor 0; RELION sign, negative sharpens), FSC
+    """A Sharpen job (RELION PostProcess) on a Refine3D job's half maps (or class cls of a HeteroRefine / Class3D /
+    ModeMaps): corrected masked FSC (phase randomisation), automatic Guinier B-factor (b_factor 0; RELION sign, negative sharpens), FSC
     weighting and low-pass at the resolution (resolution_a 0: from the corrected FSC). mask: "auto" (made from the
     half maps: threshold above their noise, round soft edge), "refine" (the refinement's) or a .mrc path. local_res: local resolution map, a map filtered to it, and its figure.
     Returns the summary (resolutions, B-factor, fit quality, mask checks, local resolution, warnings) and figures."""
