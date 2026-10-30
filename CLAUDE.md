@@ -44,7 +44,7 @@ Layers, bottom to top:
      wait for the rest (`_wait_loaded`).
    - `run(active=idx, n_classes=K, seed=s)` re-classifies any subset of the loaded particles with no
      I/O. `_set_active` resets run state and resolves "auto" params (`n_iter`, `n_full_iter`,
-     `hard_pose`, `class_prior` depend on the active particle count; ≥100k → hard pose + uniform prior).
+     `hard_pose`, `class_prior` depend on the active particle count; ≥20k → hard pose, ≥100k also uniform prior).
      Everything above the engine (deep2D, ISAC, seeds, optimizer, Session) relies on this reuse.
    - Per-particle state (`cls, psi, offsets, maxprob, loglik, cpost`) lives on the host, indexed by
      global particle index; the master device (`devs[0]`) holds classes and does reconstruction.

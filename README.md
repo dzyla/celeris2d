@@ -70,7 +70,7 @@ cryoSPARC pose/shift by rebuilding J43's class averages (correlation 0.82 vs ≤
   stored once as fp16 spectra (GPU if they fit, else pinned RAM) and streamed in random file order —
   classification starts after the first ~20k. GPUs pull batches from a shared queue.
 * **Big data**: cryoSPARC-style online EM (500 particles / class / iteration) then full passes;
-  ≥ 100k particles use hard pose + uniform class prior automatically.
+  ≥ 20k particles use hard pose (best pose per class), ≥ 100k also a uniform class prior, automatically.
 * **Memory**: the whole dataset is kept as Fourier-cropped spectra (working box set by `--max-res`; fp16
   complex = 4 bytes per pixel of half the box², e.g. 64 px → 8 kB, 146 px → 43 kB per particle). It lives on the
   first GPU if it fits, otherwise in pinned host RAM (batches are copied to every GPU over PCIe, a few seconds per

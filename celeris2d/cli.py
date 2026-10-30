@@ -303,7 +303,7 @@ def main(argv=None):
     ap.add_argument("--good-max-res", type=float, default=None, help="deep2D: fixed resolution cut in A (default: auto)")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--hard-pose", dest="hard_pose", action="store_const", const=True,
-                   help="best pose per class only (cryoSPARC 'force max'); default auto: on for >= 100k particles")
+                   help="best pose per class only (cryoSPARC 'force max'); default auto: on for >= 20k particles")
     g.add_argument("--soft-pose", dest="hard_pose", action="store_const", const=False,
                    help="marginalise over all poses (RELION-like)")
     g = ap.add_mutually_exclusive_group()

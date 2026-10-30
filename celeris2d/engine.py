@@ -297,7 +297,10 @@ class Params:
     hard_pose: bool | None = None   # best pose per class, soft over classes (cryoSPARC 'force max'); None = auto
     class_prior: bool | None = None # class populations as prior (False = uniform); None = auto
     # auto: >= 100k particles -> hard pose + uniform prior (resists noise attractors on big low-SNR sets);
-    # smaller sets -> soft marginalisation + class prior (RELION-like; keeps confidence informative)
+    # smaller sets -> soft marginalisation + class prior (RELION-like; keeps confidence informative).
+    # Hard pose alone from 20k: 2.1-2.7x faster at quality within seed noise (3 seeds, K50, one RTX PRO 4000:
+    # dz01 28k 88 -> 37 s, empties / agreement unchanged; J75 30k subset F1 0.264+-0.012 -> 0.264+-0.009,
+    # 46 -> 21 s); below 20k kept soft (RELION tutorial 6.8k: F1 0.845+-0.001 -> 0.841+-0.002, 43 -> 16 s)
 
 
 class Classifier2D:
@@ -369,7 +372,7 @@ class Classifier2D:
             p.n_iter = 25 if self.Na <= 100_000 else 40
         big = self.Na >= 100_000
         if self._auto_hard:
-            p.hard_pose = big
+            p.hard_pose = self.Na >= 20_000
         if self._auto_prior:
             p.class_prior = not big
         self.offsets[self.active] = 0

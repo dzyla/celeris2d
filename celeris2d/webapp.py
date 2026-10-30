@@ -151,7 +151,7 @@ SETTINGS = {
                    help="The last iteration aligns out to the reconstruction limit with the classes locked. Sharper "
                         "classes on high-SNR data; scrambles poses on low-SNR or heavily binned data, hence off by default."),
     "local_refine": dict(group="run_align", label="Coarse-to-fine search", unit="", type="bool",
-                         help="With hard pose (>= 100k particles): search all classes at twice the angular step, then "
+                         help="With hard pose (auto from 20k particles): search all classes at twice the angular step, then "
                               "refine each particle's two best classes at a quarter of that step and half-step shifts. "
                               "About 2x faster runs with finer angles; same or better separation in tests."),
     "max_offset_a": dict(group="run_align", label="Maximum particle offset", unit="Å", type="number", auto="-1",
