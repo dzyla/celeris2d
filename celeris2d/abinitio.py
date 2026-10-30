@@ -985,7 +985,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                      max_angle: float | None = None, max_shift: float | None = None,
                      limit_A: torch.Tensor | None = None, limit_t: torch.Tensor | None = None,
                      shift_per_deg: float | None = None, iter_stats: bool = False, subpixel: bool = False,
-                     log=print):
+                     nu_weighted: bool = False, log=print):
     """Local refinement of particle orientations A and shifts t (A, model shift) against CTF-modulated projections,
     gold-standard halves (half: (n,) 0/1 per particle, e.g. the split of the refinement the poses come from - a
     particle must stay in the half it was aligned or polished against; default a random split, seed 1). inits:
@@ -1019,6 +1019,8 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     history's "nu"), refine_particles.last_nu_map the last cutoff map (A, mean of the halves). nu_strict (default): the cutoffs of each
     half chosen by cross-validation between two folds of that half's own particles (each reconstructed on a small
     pad-1 box sized to the resolution), so no information crosses between the halves (gold standard).
+    nu_weighted: the non-uniform filter's candidates are the global FSC weighting stretched per region (nufilter
+    shape=), not hard low-passes.
     subpixel: shifts between the grid points: along x and y, where the best of the 3 x 3 shift hypotheses (at the best
     orientation) is the middle one, the peak of the parabola through the three log-likelihoods (at most half a step
     away). The grid step never goes below half a pixel, so without it a shift is only as precise as that step.
@@ -1235,13 +1237,16 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             hr_ = [vols[0][0].real(), vols[0][1].real()]
             refs.append([])
             infos = [{}, {}]
+            nu_shape = torch.sqrt((2 * fscs[0] / (1 + fscs[0])).clamp(0, 1).nan_to_num(0)) if nu_weighted else None
             for h in (0, 1):
                 if sub_maps is not None:             # gold standard: cutoffs from this half's own two folds
                     from .nufilter import adaptive_filter_cv
                     f_ = adaptive_filter_cv(hr_[h], sub_maps[h][0], sub_maps[h][1], box_a / b,
-                                            box_a / sub_maps[h][0].shape[0], res[0], mask=cur_masks[0], info=infos[h])
+                                            box_a / sub_maps[h][0].shape[0], res[0], mask=cur_masks[0], info=infos[h],
+                                            shape=nu_shape)
                 else:
-                    f_ = adaptive_filter(hr_[h], hr_[1 - h], box_a / b, res[0], mask=cur_masks[0], info=infos[h])
+                    f_ = adaptive_filter(hr_[h], hr_[1 - h], box_a / b, res[0], mask=cur_masks[0], info=infos[h],
+                                         shape=nu_shape)
                 r = Volume(b, dev, pad=pad, grid_correct=gc)
                 r.set_real(f_ * (mask if cur_masks[0] is None else cur_masks[0]))
                 del f_

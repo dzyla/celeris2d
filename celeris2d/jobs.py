@@ -402,6 +402,8 @@ class Refine3DSettings:
     nu: bool = False                # non-uniform regularisation (cryoSPARC NU-refine's idea): each region of the
                                     # references low-passed at its own resolution, chosen by cross-validation
     nu_strict: bool = True          # ... the cutoffs of each half from two folds of its own particles (gold standard)
+    nu_weighted: bool = False       # ... each region's filter the global FSC weighting stretched (not a hard cut-off,
+                                    # which keeps only shells with SNR > 1: local FSC ~0.5, not 0.143)
     particle_scale: bool = False    # a contrast scale per particle (cryoSPARC's per-particle scale), fitted every
                                     # iteration, used in the search and the reconstruction
     wiener: float = 0.0             # > 0: half maps regularised by the FSC (Wiener / MAP, RELION's tau2 term with this
@@ -750,7 +752,8 @@ def run_refine3d(project: Project, job, log=print) -> dict:
                                                          solvent_mask=sm, grid_correct=s.grid_correct,
                                                          pad=s.pad or None, nu=s.nu, nu_strict=s.nu_strict,
                                                          particle_scale=s.particle_scale, wiener=s.wiener,
-                                                         iter_stats=s.save_iterations, subpixel=s.subpixel, log=log)
+                                                         iter_stats=s.save_iterations, subpixel=s.subpixel,
+                                                         nu_weighted=s.nu_weighted, log=log)
     seconds = time.time() - t0
     apix = box_a / b
     h1, h2 = vols[0][0].real(), vols[0][1].real()
