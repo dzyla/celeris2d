@@ -317,7 +317,8 @@ class Project:
         label = _slug(label)
         params = dict(params or {}, run_pid=os.getpid(), run_host=socket.gethostname())     # is_running
         with self._db() as c:
-            n = (c.execute("SELECT MAX(id) FROM jobs").fetchone()[0] or 0) + 1
+            c.execute("BEGIN IMMEDIATE")        # the write lock before reading the counter: jobs created by several
+            n = (c.execute("SELECT MAX(id) FROM jobs").fetchone()[0] or 0) + 1      # processes at once get distinct ids
             name = f"{n:03d}_{type.lower()}" + (f"_{label}" if label else "")
             c.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?)",
                       (n, type, name, label, json.dumps(params, default=str), json.dumps(inputs), "running",
