@@ -175,7 +175,9 @@ engine's model convention (the particle's centre is at +shift from the box centr
   Refine3D D2 5.54 A; mask: the z > 0 half of the map, one RTX PRO 4000): subtracting the other half and re-boxing
   256 -> 176 px 24 s; local C2 refinement of the half 5.53 A, the consensus in the same mask 5.53 A (103 s); the same
   without subtraction 6.03 A (217 s); D2 expansion (153,836 images, 84 s) + local C1 refinement 5.05 A (335 s).
-- **Sharpen** (on a Refine3D job or a HeteroRefine class; `celeris2d/sharpen.py`, RELION PostProcess): corrected masked FSC (phases
+- **Sharpen** (on a Refine3D job or a HeteroRefine class; `celeris2d/sharpen.py`, RELION PostProcess; every Refine3D,
+  NU or not, starts one with default settings when it finishes - `Refine3DSettings.sharpen`, on by default - and
+  copies its resolution, B-factor and map into its own summary): corrected masked FSC (phases
   randomised beyond the shell where the unmasked FSC drops below 0.8, the correction applied from 2 shells further,
   as RELION does), automatic Guinier B-factor (10 A to the resolution), FSC weighting, low-pass at the resolution.
   Mask (`mask="auto"`, default; `masks.py`): the half maps' average and half difference low-passed to 15 A, the

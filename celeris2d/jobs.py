@@ -363,6 +363,9 @@ class Refine3DSettings:
     align_symmetry: bool = True     # sym differs from the start job's: first rotate the map and the poses so the
                                     # group's axes (n-fold on z, 2-fold on x) lie on the map's (symalign.py); the
                                     # symmetry itself is the user's choice, the scores say how well it holds
+    sharpen: bool = True            # when it finishes, a Sharpen job on its half maps (automatic mask, corrected
+                                    # masked FSC, Guinier B-factor, sharpened map, local resolution) - rerun that job
+                                    # for another B-factor or mask
     gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
 
@@ -639,6 +642,24 @@ def run_refine3d(project: Project, job, log=print) -> dict:
     project.set_status(job, "finished", summ)
     ses.clf = None
     release_cache()
+    if s.sharpen:
+        summ = _sharpen_after(project, job, summ, log)
+    return summ
+
+
+def _sharpen_after(project: Project, job: Job, summ: dict, log) -> dict:
+    """Refine3D sharpen=True: a Sharpen job (default settings) on the finished refinement; its numbers go into the
+    refinement's summary. A failure there leaves the refinement finished (warning)."""
+    from .sharpen import SharpenSettings, run_sharpen, sharpen_job
+    try:
+        sj = sharpen_job(project, job, SharpenSettings())
+        r = run_sharpen(project, sj, log=log)
+        summ = dict(summ, sharpened=dict(job=sj.name, resolution_a=r.get("resolution_a"), b_factor=r.get("b_factor"),
+                                         map=r.get("map")))
+    except Exception as e:      # the refinement itself is done; sharpening can be run again as its own job
+        log(f"[refine] warning: sharpening failed ({type(e).__name__}: {e}); run a Sharpen job on {job.name}")
+        summ = dict(summ, warnings=list(summ.get("warnings") or []) + [f"sharpening failed: {e}"])
+    project.set_status(job, "finished", summ)
     return summ
 
 

@@ -365,18 +365,20 @@ def initial_model(class2d_job: str, sym: str = "C1", classes: list[int] | None =
 
 @server.tool()
 def refine3d(particles_job: str, poses_job: str, reference_job: str = "", sym: str = "C1", n_iter: int = 10,
-             global_iters: int = 0, classes: list[int] | None = None, label: str = "") -> str:
+             global_iters: int = 0, classes: list[int] | None = None, nu: bool = False, sharpen: bool = True,
+             label: str = "") -> str:
     """A Refine3D job in the background: particles of an Extract / Polish / Select job (e.g. re-centred at full box),
     starting orientations from an InitialModel, Refine3D, HeteroRefine or Class3D job (matched by uid), starting map
     from reference_job (default the poses job; for a HeteroRefine / Class3D, the map of the particles' class). classes:
     with a HeteroRefine / Class3D poses job, only the particles of these 1-based classes (the user's choice). global_iters: first
-    iterations that also search all orientations. Writes FSC (png + json/star/xml), angular distribution, progress
-    per iteration and per-particle diagnostics."""
+    iterations that also search all orientations. nu: non-uniform regularisation (NU refinement). sharpen: when it
+    finishes, a Sharpen job on its half maps (sharpened map, B-factor, corrected FSC, local resolution). Writes FSC
+    (png + json/star/xml), angular distribution, progress per iteration and per-particle diagnostics."""
     from . import jobs
     prj = _p()
     r = jobs.refine3d_job(prj, particles_job, poses_job, reference_job or poses_job,
                           jobs.Refine3DSettings(sym=sym, n_iter=n_iter, global_iters=global_iters,
-                                                classes=tuple(classes or ())), label)
+                                                classes=tuple(classes or ()), nu=nu, sharpen=sharpen), label)
     _background_job(r, lambda: jobs.run_refine3d(prj, r, log=lambda *a: None))
     return _js(dict(job=r.name))
 

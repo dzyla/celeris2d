@@ -294,3 +294,15 @@ def test_symmetry_expansion_copies(sim):
         jobs._posed_particles(prj, sj, sj, sim["cons"])
     src, poses, t_start, half, n_dup, _ = jobs._posed_particles(prj, sj, sj, sj)
     assert src.N == 2 * N and n_dup == 0 and np.allclose(t_start, np.stack([poses["shift_x_a"], poses["shift_y_a"]], 1), atol=1e-3)
+
+
+def test_refine_writes_sharpened_map(sim):
+    """Refine3D sharpen=True (default): a Sharpen job on the finished refinement, its numbers in the refinement's
+    summary, the sharpened map on disk."""
+    prj, cons = sim["prj"], sim["cons"]
+    sh = prj.jobs("Sharpen")
+    sj = [prj.job(int(i)) for i in sh.id if prj.job(int(i)).params.get("refine") == cons.id]
+    assert len(sj) == 1 and sj[0].status == "finished"
+    summ = prj.summary_of(prj.job(cons.id))
+    assert summ["sharpened"]["job"] == sj[0].name and summ["sharpened"]["resolution_a"] > 0
+    assert sj[0].find("sharpened.mrc")
