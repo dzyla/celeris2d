@@ -80,7 +80,9 @@ Layers, bottom to top:
    `subtract.py`: Subtract (signal subtraction, re-centring on the mask, symmetry expansion: a particle job whose rows
    are (uid, copy)) and LocalRefine (focused refinement with angle / shift limits about the mask centre), `symexpand.py`:
    SymExpand (symmetry expansion of poses, no images: rows (uid, copy); LocalRefine / Refine3D / Class3D / Subtract
-   take it and load every image once, `jobs._posed_particles(expand=True)` gives each row's image index)): the
+   take it and load every image once, `jobs._posed_particles(expand=True)` gives each row's image index),
+   `variability.py`: Variability3D (3DVA: probabilistic PCA at fixed poses) and VariabilityDisplay (series,
+   intermediates, latent-space clusters as classes, one of `project.CLASS_JOBS`)): the
    movies -> particles -> 3D project store and its jobs
    (layout and rules in docs/project-design.md: `jobs/NNN_<type>_<label>/` small results, `data/NNN/` heavy and
    purgeable, catalog `project.db`, particle uid/key, selections as uid lists); `pipeline.run` overlaps decoding

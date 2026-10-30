@@ -242,7 +242,7 @@ from .project import CLASS_JOBS  # noqa: E402
 
 @dataclass
 class MaskCreateSettings:
-    cls: int = 0                    # a HeteroRefine / Class3D: the class (1-based) whose map is masked
+    cls: int = 0                    # a HeteroRefine / Class3D / VariabilityDisplay: the class (1-based) whose map is masked
     lowpass_a: float = 0.0          # low-pass before thresholding (A); 0: 1.5 x the map's resolution, within 8-15 A
     threshold: float = 0.0          # threshold on the low-passed map (map units); 0: automatic, sigma_level x the noise
     sigma_level: float = 5.0        # automatic threshold: noise standard deviations (from the half-map difference)

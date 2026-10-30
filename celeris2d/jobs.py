@@ -988,6 +988,7 @@ def refinement_report(job, tag: str, sym: str, box_a: float, apix: float, A_star
 # ---------------------------------------------------------------------------------------------- registry
 _PARTICLES = ("Extract", "Polish", "CtfRefine", "Subtract", "Select", "SymExpand")  # (SymExpand: its particles once)
 _POSES = ("InitialModel", "Refine3D", "HeteroRefine", "Class3D", "LocalRefine", "Subtract", "SymExpand")
+_POSES_CLS = _POSES + ("VariabilityDisplay",)     # also clusters / bins of a 3D variability job (classes=)
 
 
 def _res_key(s: dict) -> str:
@@ -1026,6 +1027,7 @@ def registry() -> dict[str, JobSpec]:
     from .subtract import (LocalRefineSettings, SubtractSettings, local_refine_job, run_local_refine, run_subtract,
                            subtract_job)
     from .symexpand import POSE_JOBS, SymExpandSettings, run_symexpand, symexpand_job
+    from . import variability as va
     specs = [
         JobSpec("Curate", "micrographs kept for picking: limits on CTF fit, defocus, astigmatism and motion",
                 CurateSettings, (Input("micrographs", ("MotionCtf",), doc="the motion-corrected, CTF-fitted micrographs"),),
@@ -1042,14 +1044,14 @@ def registry() -> dict[str, JobSpec]:
                 figures=("map_views.png", "fsc.png", "views.png", "reprojections.png")),
         JobSpec("Refine3D", "local 3D refinement with gold-standard halves", Refine3DSettings,
                 (Input("particles", _PARTICLES, doc="particles (e.g. re-centred, full box)"),
-                 Input("poses", _POSES, doc="starting orientations, matched by particle uid"),
-                 Input("reference", _POSES, optional=True, doc="starting map (default: the poses job's)")),
+                 Input("poses", _POSES_CLS, doc="starting orientations, matched by particle uid"),
+                 Input("reference", _POSES_CLS, optional=True, doc="starting map (default: the poses job's)")),
                 refine3d_job, run_refine3d, key=_res_key,
                 figures=("map_views.png", "fsc.png", "views.png", "progress.png", "particles.png", "nu.png")),
         JobSpec("HeteroRefine", "heterogeneous refinement: K maps, particles sorted among them (hard or soft)",
                 HeteroRefineSettings,
                 (Input("particles", _PARTICLES, doc="particles"),
-                 Input("poses", tuple(x for x in _POSES if x != "SymExpand"),
+                 Input("poses", tuple(x for x in _POSES_CLS if x != "SymExpand"),
                        doc="starting orientations, matched by particle uid")),
                 hetero_refine_job, run_hetero_refine, key=_hetero_key,
                 figures=("map_views.png", "views_classes.png", "fsc.png", "progress.png")),
@@ -1072,7 +1074,7 @@ def registry() -> dict[str, JobSpec]:
                 figures=("ctfrefine.png",)),
         JobSpec("MaskCreate", "a mask from a map: automatic, or with a chosen threshold, regions and segments",
                 MaskCreateSettings,
-                (Input("map", ("Refine3D", "HeteroRefine", "Class3D", "InitialModel", "Sharpen", "LocalRefine"),
+                (Input("map", ("Refine3D", *CLASS_JOBS, "InitialModel", "Sharpen", "LocalRefine"),
                        doc="the job whose map is masked (its half maps set the automatic threshold)"),),
                 mask_job, run_mask,
                 key=lambda s: (f"{_n((s.get('volume_a3') or 0) / 1e6, 2)} M Å³" + warn_mark(s)) if s.get("volume_a3") else "",
@@ -1108,7 +1110,8 @@ def registry() -> dict[str, JobSpec]:
                 if s.get("rows") else "",
                 figures=("symexpand.png",)),
         JobSpec("Sharpen", "post-processing: corrected masked FSC, B-factor, local resolution", SharpenSettings,
-                (Input("refine", ("Refine3D", "LocalRefine", *CLASS_JOBS), doc="the refinement (a HeteroRefine / Class3D: set cls)"),),
+                (Input("refine", ("Refine3D", "LocalRefine", *CLASS_JOBS),
+                       doc="the refinement (a HeteroRefine / Class3D / VariabilityDisplay: set cls)"),),
                 sharpen_job, run_sharpen,
                 key=lambda s: (f"{_n(s.get('resolution_a'), 2)} Å · B {_n(s.get('b_factor'))}" + warn_mark(s))
                 if s.get("resolution_a") else "",
@@ -1121,6 +1124,20 @@ def registry() -> dict[str, JobSpec]:
                 key=lambda s: f"{_n(s.get('fit', 0) * 100, 1)} % fit · {len(s.get('proposed_classes') or [])} classes"
                 if s.get("particles") else "",
                 figures=("mapscore.png",)),
+        JobSpec("Variability3D", "3D variability analysis at fixed poses (3DVA): principal components of the density, "
+                "per-particle coordinates, a volume series per component", va.Variability3DSettings,
+                (Input("particles", ("Extract", "Polish", "CtfRefine", "Select"),   # not Subtract: rows per (uid, copy)
+                       doc="particles"),
+                 Input("poses", ("Refine3D", "HeteroRefine"), doc="the consensus refinement (poses, shifts, halves)"),
+                 Input("mask", ("MaskCreate",), optional=True,
+                       doc="region the components may use (default: the refinement's solvent mask)")),
+                va.variability3d_job, va.run_variability3d, key=va.key,
+                figures=("variance.png", "components.png", "latent.png")),
+        JobSpec("VariabilityDisplay", "3D variability outputs: series, reconstructions along a component, or clusters "
+                "in latent space (classes for Select / Refine3D)", va.VariabilityDisplaySettings,
+                (Input("variability", ("Variability3D",), doc="the 3D variability job"),),
+                va.variability_display_job, va.run_variability_display, key=va.display_key,
+                figures=("map_views.png", "latent.png", "fsc.png", "components.png")),
     ]
     return {sp.type: sp for sp in specs}
 
