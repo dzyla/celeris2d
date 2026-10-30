@@ -42,3 +42,24 @@ Shells are 0.25 A apart here (338 A box). Verdict:
 
 Scripts: `csbench.py` (cryoSPARC chain through cryosparc-tools, project P2), `dz_bench.py` / `dz_bench_modes.py`
 (Celeris2D), `bench_fsc.py` (the FSC table); cryoSPARC project in /scratch/cryosparc_bench on zyla-lab.
+
+## Where the NU gap is (same day)
+
+All numbers corrected masked FSC 0.143 with cryoSPARC's NU mask unless stated; one shell is ~0.25 A and run-to-run
+noise of our NU refinement is about one shell (unmasked 5.73-6.03 A over near-identical runs).
+
+- **Not masking**: same mask for both (table above), and cryoSPARC is also better unmasked.
+- **Not reconstruction or particle weighting**: our back-projector at cryoSPARC NU's poses gives 4.83 A (all
+  particles), 4.76 A on our 34,569 used particles, 4.76 A on the 30,606 where the two pose sets agree within 5 deg; at
+  our poses 5.36 / 5.36 / 5.28 A. cryoSPARC's per-particle scale is not needed to get there.
+- **Pose precision, not wrong poses**: median angular difference 0.93 deg; 80 % within 5 deg; the ~15 % beyond 10 deg are
+  our worst fits (the 10 % we leave out differ by a median 39 deg), but the gap is the same on the agreeing particles.
+- **Settings that did not help** (own mask; 077 defaults 5.04 A): drop_frac 0 5.28, nu_strict False 5.04 (5.20 with
+  cryoSPARC's mask), both 5.20, global_iters 2 / 3 / 2 at 8 A 5.04 (the one global search moved 5 % to another view),
+  min_step 0.25 deg 5.04, n_local 2 5.28, grid_correct 5.04.
+- **Start vs procedure**: our NU refinement started from cryoSPARC NU's poses and map holds 4.83 A (FSC 0.5 5.83 -> 5.93
+  A); started from cryoSPARC's ab initio (poses and map) it ends at 5.12 A, as from our own ab initio. So the refinement
+  procedure converges to a worse optimum from an ab initio start - local search only after one coarse start; cryoSPARC
+  searches all orientations every iteration as the resolution rises. Next: coarse-to-fine global search over the
+  first iterations (narrowing to local), and a second global search for badly fitting particles before they are left
+  out; then per-particle weighting.
