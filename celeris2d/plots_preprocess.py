@@ -1,4 +1,4 @@
-"""Control figures of movie preprocessing (PNG, dark theme of plots3d / the dashboard).
+"""Control figures of movie preprocessing (PNG, common style of plotstyle.py: dark and light variants).
 
 movie_figure: one micrograph - frame drift, local motion model vs patch measurements, the micrograph, the power
 spectrum (data | fitted model), the equal-phase CTF profile, the ring-by-ring fit significance, the even/odd-frame
@@ -13,7 +13,7 @@ import numpy as np
 
 import torch
 
-from .plots3d import DENSITY, GRAY, INK, INK2, INK3, LINE, SERIES, _style, plt
+from .plotstyle import GRAY, STATUS, T, plt, themed
 
 
 def _res_axis(ax, k):
@@ -29,24 +29,24 @@ def _res_axis(ax, k):
 
 def _note(ax, text, top=True):
     ax.text(0.98, 0.96 if top else 0.04, text, transform=ax.transAxes, ha="right", va="top" if top else "bottom",
-            color=INK2, fontsize=8.5)
+            color=T.ink2, fontsize=8.5)
 
 
+@themed
 def movie_figure(path: str, mic, fit, title: str = "", frc_eo=None):
     """mic: preprocess.Micrograph, fit: preprocess.CTFFit (of the plain sum), frc_eo: (k, frc) of the even/odd
     sums or None."""
-    _style()
     fig, axs = plt.subplots(2, 4, figsize=(19, 9.2))
     (a_tr, a_loc, a_img, a_ps), (a_1d, a_cc, a_eo, a_dw) = axs
     sh = mic.shifts
     n = len(sh)
 
     # global drift: the shift applied to each frame, frame order as colour
-    a_tr.plot(sh[:, 0], sh[:, 1], color=LINE, lw=1.5, zorder=1)
-    sc = a_tr.scatter(sh[:, 0], sh[:, 1], c=np.arange(1, n + 1), cmap=DENSITY, vmin=-0.4 * n, vmax=n, s=22,
+    a_tr.plot(sh[:, 0], sh[:, 1], color=T.line, lw=1.5, zorder=1)
+    sc = a_tr.scatter(sh[:, 0], sh[:, 1], c=np.arange(1, n + 1), cmap=T.density, vmin=-0.4 * n, vmax=n, s=22,
                       zorder=2, edgecolors="none")                 # ramp starts above the surface: frame 1 visible
-    a_tr.annotate("frame 1", sh[0], xytext=(6, 4), textcoords="offset points", color=INK2, fontsize=8)
-    a_tr.annotate(f"frame {n}", sh[-1], xytext=(6, -10), textcoords="offset points", color=INK2, fontsize=8)
+    a_tr.annotate("frame 1", sh[0], xytext=(6, 4), textcoords="offset points", color=T.ink2, fontsize=8)
+    a_tr.annotate(f"frame {n}", sh[-1], xytext=(6, -10), textcoords="offset points", color=T.ink2, fontsize=8)
     a_tr.set_aspect("equal", "datalim")
     a_tr.set_xlabel("x shift (Å)")
     a_tr.set_ylabel("y shift (Å)")
@@ -54,7 +54,7 @@ def movie_figure(path: str, mic, fit, title: str = "", frc_eo=None):
     a_tr.set_title("Whole-frame motion")
     _note(a_tr, f"path {path_a:.1f} Å\nfirst→last {np.linalg.norm(sh[-1] - sh[0]):.1f} Å")
     cb = fig.colorbar(sc, ax=a_tr, fraction=0.04, pad=0.02)
-    cb.set_label("frame", color=INK2)
+    cb.set_label("frame", color=T.ink2)
     cb.ax.set_ylim(1, n)
 
     # local motion: residual trajectories at the patch centres (measured dots, model lines), magnified
@@ -65,12 +65,12 @@ def movie_figure(path: str, mic, fit, title: str = "", frc_eo=None):
         mod = loc.get("model")
         for p in range(len(cen)):
             cx, cy = cen[p]
-            a_loc.scatter(cx + meas[p, :, 0] * mag, cy + meas[p, :, 1] * mag, s=4, color=SERIES[0], alpha=0.55,
+            a_loc.scatter(cx + meas[p, :, 0] * mag, cy + meas[p, :, 1] * mag, s=4, color=T.series[0], alpha=0.55,
                           edgecolors="none", label="measured (patch)" if p == 0 else None)
             if mod is not None:
-                a_loc.plot(cx + mod[p, :, 0] * mag, cy + mod[p, :, 1] * mag, color=SERIES[1], lw=1.6,
+                a_loc.plot(cx + mod[p, :, 0] * mag, cy + mod[p, :, 1] * mag, color=T.series[1], lw=1.6,
                            label="model" if p == 0 else None)
-            a_loc.plot([cx], [cy], marker="+", color=INK3, ms=6)
+            a_loc.plot([cx], [cy], marker="+", color=T.ink3, ms=6)
         a_loc.set_xlim(-1.15, 1.15)
         a_loc.set_ylim(1.15, -1.15)
         a_loc.set_aspect("equal")
@@ -78,12 +78,12 @@ def movie_figure(path: str, mic, fit, title: str = "", frc_eo=None):
         a_loc.set_yticks([])
         a_loc.legend(loc="lower left", bbox_to_anchor=(0, -0.02), fontsize=8, frameon=False, ncol=2)
         bar = 2.0 if np.abs(meas).max() > 2 else 1.0                  # scale bar in A of shift
-        a_loc.plot([0.55, 0.55 + bar * mag], [1.09, 1.09], color=INK, lw=2)
-        a_loc.text(0.55 + bar * mag + 0.03, 1.09, f"{bar:g} Å shift", color=INK2, fontsize=8, va="center")
+        a_loc.plot([0.55, 0.55 + bar * mag], [1.09, 1.09], color=T.ink, lw=2)
+        a_loc.text(0.55 + bar * mag + 0.03, 1.09, f"{bar:g} Å shift", color=T.ink2, fontsize=8, va="center")
         a_loc.set_title(f"Local motion (after whole-frame); model rms {loc['rms_a']:.2f} Å")
     else:
         a_loc.axis("off")
-        a_loc.text(0.5, 0.5, "whole-frame motion only", ha="center", va="center", color=INK3,
+        a_loc.text(0.5, 0.5, "whole-frame motion only", ha="center", va="center", color=T.ink3,
                    transform=a_loc.transAxes)
 
     # micrograph, binned to ~10 A pixels for display
@@ -107,7 +107,7 @@ def movie_figure(path: str, mic, fit, title: str = "", frc_eo=None):
     a_ps.imshow(full, cmap=GRAY, vmin=-v, vmax=v, extent=[-0.5 / pr["apix"], 0.5 / pr["apix"]] * 2)
     th = np.linspace(0, 2 * math.pi, 200)
     r = 1 / fit.fit_res_a
-    a_ps.plot(r * np.cos(th), r * np.sin(th), color=SERIES[1], lw=1, ls="--")
+    a_ps.plot(r * np.cos(th), r * np.sin(th), color=T.series[1], lw=1, ls="--")
     a_ps.set_xticks([])
     a_ps.set_yticks([])
     a_ps.set_title("Power spectrum: data | fit")
@@ -115,9 +115,9 @@ def movie_figure(path: str, mic, fit, title: str = "", frc_eo=None):
 
     # equal-phase 1D profile
     k1, dd, mm = pr["k1d"], pr["data1d"], pr["model1d"]
-    a_1d.plot(k1, dd, color=SERIES[0], lw=1.2, label="spectrum − background")
-    a_1d.plot(k1, mm, color=SERIES[1], lw=1.6, label="envelope × CTF²")
-    a_1d.axvline(1 / fit.fit_res_a, color=INK3, lw=1, ls="--")
+    a_1d.plot(k1, dd, color=T.series[0], lw=1.2, label="spectrum − background")
+    a_1d.plot(k1, mm, color=T.series[1], lw=1.6, label="envelope × CTF²")
+    a_1d.axvline(1 / fit.fit_res_a, color=T.ink3, lw=1, ls="--")
     _res_axis(a_1d, k1)
     a_1d.set_ylabel("normalised amplitude")
     a_1d.set_title("CTF fit (equal-phase average)")
@@ -127,22 +127,22 @@ def movie_figure(path: str, mic, fit, title: str = "", frc_eo=None):
 
     # ring-by-ring correlation with the significance threshold
     kc, cc, nn = pr["k"], pr["cc"], pr["n"]
-    a_cc.plot(kc, cc, color=SERIES[0], lw=1.6, marker="o", ms=3, label="correlation per ring pair")
-    a_cc.plot(kc, pr["z"] / np.sqrt(nn), color=INK3, lw=1, ls=":", label=f"significance ({pr['z']:g}/√pixels)")
-    a_cc.axvline(1 / fit.fit_res_a, color=INK3, lw=1, ls="--")
-    a_cc.axhline(0, color=LINE, lw=1)
+    a_cc.plot(kc, cc, color=T.series[0], lw=1.6, marker="o", ms=3, label="correlation per ring pair")
+    a_cc.plot(kc, pr["z"] / np.sqrt(nn), color=T.ink3, lw=1, ls=":", label=f"significance ({pr['z']:g}/√pixels)")
+    a_cc.axvline(1 / fit.fit_res_a, color=T.ink3, lw=1, ls="--")
+    a_cc.axhline(0, color=T.line, lw=1)
     _res_axis(a_cc, kc)
     a_cc.set_ylabel("correlation")
     a_cc.set_title("Thon-ring fit significance")
     a_cc.legend(loc="upper right", fontsize=8, frameon=False)
-    a_cc.text(0.02, 0.04, f"fit resolution {fit.fit_res_a:.2f} Å", transform=a_cc.transAxes, color=INK, fontsize=8.5)
+    a_cc.text(0.02, 0.04, f"fit resolution {fit.fit_res_a:.2f} Å", transform=a_cc.transAxes, color=T.ink, fontsize=8.5)
 
     # even / odd frame sums
     if frc_eo is not None:
         k, f = frc_eo
         sel = k >= 1 / 60
-        a_eo.plot(k[sel], f[sel], color=SERIES[0], lw=1.6)
-        a_eo.axhline(0, color=LINE, lw=1)
+        a_eo.plot(k[sel], f[sel], color=T.series[0], lw=1.6)
+        a_eo.axhline(0, color=T.line, lw=1)
         _res_axis(a_eo, k[sel])
         a_eo.set_ylabel("FRC")
         a_eo.set_title("Even vs odd frames (alignment check)")
@@ -156,8 +156,8 @@ def movie_figure(path: str, mic, fit, title: str = "", frc_eo=None):
     if dpf:
         for j, r in enumerate((20.0, 6.0, 3.0)):
             w = dose_weights(n, dpf, torch.tensor([1 / r]))[:, 0].numpy()
-            a_dw.plot(np.arange(1, n + 1), w, color=SERIES[j], lw=1.6, label=f"{r:g} Å")
-        a_dw.axhline(1, color=LINE, lw=1)
+            a_dw.plot(np.arange(1, n + 1), w, color=T.series[j], lw=1.6, label=f"{r:g} Å")
+        a_dw.axhline(1, color=T.line, lw=1)
         a_dw.set_xlabel("frame")
         a_dw.set_ylabel("weight (Σw² = frames)")
         a_dw.set_title("Dose weights")
@@ -167,15 +167,15 @@ def movie_figure(path: str, mic, fit, title: str = "", frc_eo=None):
         a_dw.axis("off")
 
     if title:
-        fig.suptitle(title, x=0.01, ha="left", color=INK, fontsize=12, fontweight="bold")
+        fig.suptitle(title, x=0.01, ha="left", color=T.ink, fontsize=12, fontweight="bold")
     fig.tight_layout()
     fig.savefig(path, dpi=110)
     plt.close(fig)
 
 
+@themed
 def summary_figure(path: str, rows: list[dict], ref_name: str = "cryoSPARC"):
     """rows: preprocess_eval.py JSON lines. Ours vs the reference per micrograph."""
-    _style()
     fig, axs = plt.subplots(1, 4, figsize=(19, 4.8))
     a_df, a_as, a_fr, a_mo = axs
     rp = [r for r in rows if "cryosparc_particles" in r]
@@ -184,8 +184,8 @@ def summary_figure(path: str, rows: list[dict], ref_name: str = "cryoSPARC"):
         x, y = np.asarray(x, float), np.asarray(y, float)
         lo, hi = min(x.min(), y.min()), max(x.max(), y.max())
         pad = 0.05 * (hi - lo + 1e-9)
-        ax.plot([lo - pad, hi + pad], [lo - pad, hi + pad], color=LINE, lw=1)
-        ax.scatter(x, y, s=30, color=SERIES[0], edgecolors=SERIES[0], linewidths=0)
+        ax.plot([lo - pad, hi + pad], [lo - pad, hi + pad], color=T.line, lw=1)
+        ax.scatter(x, y, s=30, color=T.series[0], edgecolors=T.series[0], linewidths=0)
         ax.set_xlabel(xl)
         ax.set_ylabel(yl)
         ax.set_title(title)
@@ -206,7 +206,7 @@ def summary_figure(path: str, rows: list[dict], ref_name: str = "cryoSPARC"):
             f"{ref_name} micrograph (Å)", "ours (Å)", "CTF fit resolution (same fitter)", lambda v: f"{v:.2f} Å")
     pl = np.array([r["path_len_a"] for r in rows])
     order = np.argsort(pl)
-    a_mo.barh(np.arange(len(pl)), pl[order], color=SERIES[0], height=0.75)
+    a_mo.barh(np.arange(len(pl)), pl[order], color=T.series[0], height=0.75)
     a_mo.set_yticks(np.arange(len(pl)))
     a_mo.set_yticklabels([rows[i]["movie"][-15:] for i in order], fontsize=7)
     a_mo.set_xlabel("whole-frame motion path (Å)")
@@ -218,9 +218,9 @@ def summary_figure(path: str, rows: list[dict], ref_name: str = "cryoSPARC"):
     plt.close(fig)
 
 
+@themed
 def fsc_figure(path: str, curves: dict, apix: float, box: int, title: str = "Half-map FSC"):
     """curves: name -> FSC per shell (shell i at i / (box * apix) 1/A); the 0.143 crossing is noted per curve."""
-    _style()
     fig, ax = plt.subplots(figsize=(8, 4.8))
     lines = []
     for j, (name, f) in enumerate(curves.items()):
@@ -228,10 +228,10 @@ def fsc_figure(path: str, curves: dict, apix: float, box: int, title: str = "Hal
         k = np.arange(len(f)) / (box * apix)
         below = np.flatnonzero((f < 0.143) & (k > 0))
         res = 1 / k[below[0]] if len(below) else 1 / k[-1]
-        ax.plot(k[1:], f[1:], color=SERIES[j % 3], lw=1.8, label=f"{name}: {res:.2f} Å")
+        ax.plot(k[1:], f[1:], color=T.series[j % 3], lw=1.8, label=f"{name}: {res:.2f} Å")
         lines.append(res)
-    ax.axhline(0.143, color=INK3, lw=1, ls=":")
-    ax.axhline(0, color=LINE, lw=1)
+    ax.axhline(0.143, color=T.ink3, lw=1, ls=":")
+    ax.axhline(0, color=T.line, lw=1)
     _res_axis(ax, np.arange(1, len(f)) / (box * apix))
     ax.set_ylabel("FSC")
     ax.set_title(title)
@@ -241,11 +241,11 @@ def fsc_figure(path: str, curves: dict, apix: float, box: int, title: str = "Hal
     plt.close(fig)
 
 
+@themed
 def picks_figure(path: str, cand, keep: np.ndarray, diameter_a: float, threshold: float, title: str = "",
                  ref_xy_a: np.ndarray | None = None):
     """Picks on the binned, phase-flipped micrograph used for picking (circles: kept picks; optional reference
     positions as dots), the score map, and the candidate score distribution with the threshold."""
-    _style()
     w = cand.work
     fig, (a_img, a_sc, a_h) = plt.subplots(1, 3, figsize=(19, 6.4), gridspec_kw=dict(width_ratios=[1, 1, 0.8]))
     img, wa = w["image"], w["apix"]
@@ -255,9 +255,9 @@ def picks_figure(path: str, cand, keep: np.ndarray, diameter_a: float, threshold
     r = diameter_a / 2 / wa
     xy = cand.xy_a[keep] / wa
     for x, y in xy:
-        a_img.plot(x + r * np.cos(th), y + r * np.sin(th), color=SERIES[0], lw=0.8)
+        a_img.plot(x + r * np.cos(th), y + r * np.sin(th), color=T.series[0], lw=0.8)
     if ref_xy_a is not None:
-        a_img.scatter(ref_xy_a[:, 0] / wa, ref_xy_a[:, 1] / wa, s=6, color=SERIES[1], edgecolors="none",
+        a_img.scatter(ref_xy_a[:, 0] / wa, ref_xy_a[:, 1] / wa, s=6, color=T.series[1], edgecolors="none",
                       label="reference particles")
         a_img.legend(loc="lower left", bbox_to_anchor=(0, -0.09), fontsize=8, frameon=False)
     a_img.set_xticks([])
@@ -266,24 +266,25 @@ def picks_figure(path: str, cand, keep: np.ndarray, diameter_a: float, threshold
     a_img.set_xlabel(f"binned to {wa:.1f} Å/px, phase-flipped; circles: {diameter_a:g} Å")
     sm = w["score"]
     v = np.percentile(np.abs(sm), 99.5)
-    a_sc.imshow(sm, cmap=DENSITY, vmin=0, vmax=v)
+    a_sc.imshow(sm, cmap=T.density, vmin=0, vmax=v)
     a_sc.set_xticks([])
     a_sc.set_yticks([])
     a_sc.set_title("Blob score (normalised cross-correlation)")
     h, e = np.histogram(cand.score, bins=40)
-    a_h.bar(0.5 * (e[1:] + e[:-1]), h, width=0.9 * (e[1] - e[0]), color=SERIES[0])
-    a_h.axvline(threshold, color=SERIES[1], lw=1.6)
-    a_h.text(threshold, max(h) * 0.97, f"  threshold {threshold:.3f}", color=INK, fontsize=8.5, va="top")
+    a_h.bar(0.5 * (e[1:] + e[:-1]), h, width=0.9 * (e[1] - e[0]), color=T.series[0])
+    a_h.axvline(threshold, color=T.series[1], lw=1.6)
+    a_h.text(threshold, max(h) * 0.97, f"  threshold {threshold:.3f}", color=T.ink, fontsize=8.5, va="top")
     a_h.set_xlabel("score")
     a_h.set_ylabel("candidates")
     a_h.set_title("Score distribution")
     if title:
-        fig.suptitle(title, x=0.01, ha="left", color=INK, fontsize=12, fontweight="bold")
+        fig.suptitle(title, x=0.01, ha="left", color=T.ink, fontsize=12, fontweight="bold")
     fig.tight_layout()
     fig.savefig(path, dpi=100)
     plt.close(fig)
 
 
+@themed
 def size_survey(path: str, project, mic_job, movie_ids, diameters_a=(80, 120, 160, 220, 300), n_gallery: int = 24,
                 title: str = ""):
     """Particle size from the first micrographs, for an unknown sample, as one figure an agent or a person can read:
@@ -365,10 +366,10 @@ def size_survey(path: str, project, mic_job, movie_ids, diameters_a=(80, 120, 16
         ax.set_title(f"average of {len(ims)}", fontsize=8)
         ax = fig.add_subplot(gs[1 + j, -1])
         ax.plot(rb, prof, color=colors[j])
-        ax.axhline(bgv, color="0.6", lw=0.8)
+        ax.axhline(bgv, color=T.ink3, lw=0.8)
         ax.axvline(d / 2, color=colors[j], ls="--", lw=0.8)
         if edge == edge:
-            ax.axvline(edge / 2, color="#c8372d", lw=0.8)
+            ax.axvline(edge / 2, color=STATUS["critical"], lw=0.8)
         ax.set_xlabel("radius (A)", fontsize=8)
         ax.tick_params(labelsize=7)
         ax.set_title(f"d={d:.0f} A: {np.mean(per_mic):.0f} picks/mic, edge ~{edge:.0f} A", fontsize=8)
@@ -382,3 +383,33 @@ def size_survey(path: str, project, mic_job, movie_ids, diameters_a=(80, 120, 16
     plt.close(fig)
     torch.cuda.empty_cache()
     return out
+
+
+@themed
+def overview_figure(path: str, panels: list[tuple[str, str, np.ndarray]], title: str, sub: str = ""):
+    """Job-wide overview: one panel per quantity (title, unit, value per micrograph in processing order), each a dot
+    per micrograph with its median line and the 5-95% range in a note."""
+    from .plotstyle import grid_y, note, title as title_block, top
+    n = len(panels)
+    cols = min(3, n)
+    rows = int(math.ceil(n / cols))
+    fig, axs = plt.subplots(rows, cols, figsize=(4.4 * cols, 2.9 * rows + 0.8), squeeze=False)
+    fig.subplots_adjust(left=0.06, right=0.98, top=top(fig, 0.75), bottom=0.1, wspace=0.28, hspace=0.55)
+    for a in axs.ravel()[n:]:
+        a.axis("off")
+    for a, (name, unit, v) in zip(axs.ravel(), panels):
+        v = np.asarray(v, float)
+        x = np.arange(len(v))
+        ok = np.isfinite(v)
+        a.plot(x[ok], v[ok], "o", ms=3 if len(v) < 500 else 1.5, color=T.series[0], alpha=0.8, mew=0)
+        if ok.any():
+            med = float(np.median(v[ok]))
+            a.axhline(med, color=T.ink2, lw=1, ls="--")
+            lo, hi = np.percentile(v[ok], [5, 95])
+            fmt = (lambda q: f"{q:,.0f}") if max(abs(lo), abs(hi)) >= 1000 else (lambda q: f"{q:.3g}")
+            note(a, f"median {fmt(med)} {unit}\n5–95% {fmt(lo)}–{fmt(hi)}", "upper right")
+        a.set(title=name, xlabel="micrograph (processing order)", ylabel=unit)
+        grid_y(a)
+    title_block(fig, title, sub)
+    fig.savefig(path)
+    plt.close(fig)

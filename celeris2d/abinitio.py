@@ -763,7 +763,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                      batch: int = 256, n_local: int = 1, step_scale: float | None = None, global_at: tuple = (),
                      global_res: float = 12.0, drop_frac: float = 0.0, rebalance: float = 0.0,
                      box: int | None = None, relax_ops: torch.Tensor | None = None, relax_iters: int = 0,
-                     half: torch.Tensor | None = None, log=print):
+                     half: torch.Tensor | None = None, soft: bool = False, log=print):
     """Local refinement of particle orientations A and shifts t (A, model shift) against CTF-modulated projections,
     gold-standard halves (half: (n,) 0/1 per particle, e.g. the split of the refinement the poses come from - a
     particle must stay in the half it was aligned or polished against; default a random split, seed 1). inits:
@@ -779,6 +779,10 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     of the reconstructions; scores are recomputed every iteration, so particles can come back.
     rebalance: > 0 caps over-represented viewing directions at rebalance x the median direction in the
     reconstructions (preferred orientation).
+    soft (several models): every particle goes into every model weighted by its posterior probability over the
+    models (each at its own pose there), RELION-style; the temperature starts where the typical particle is ~60/40
+    and falls to 1 (the true posterior) over the first half of the iterations. Off: each particle in its best model
+    only. refine_particles.last_post holds the final posteriors (n, M).
     Returns (maps (M, b, b, b), A (n, 3, 3), t (n, 2) in the chosen model, z, fsc (M, shells), resolutions (M,),
     half Volumes [[h0, h1] per model])."""
     dev = clf.dev
@@ -813,8 +817,12 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     dfz = clf.ctf_p[idx, :2].mean(1)      # defocus, to compare fits within defocus groups
     dgrp = torch.bucketize(dfz, torch.quantile(dfz, torch.linspace(0, 1, 9)[1:-1])).to(dev)
     sigma2 = None
+    post = F.one_hot(z, M).float()       # posterior over models (one-hot unless soft)
+    T0 = None
     step = step_start or max(1.0, math.degrees(res_start / diam))
     t0 = time.time()
+    history = []                          # per iteration: alignment limit, step, share moved, resolution after it
+    kmax_used = [float(b)] * M            # highest shell inserted in the last reconstruction
 
     def backproject():
         for vm in vols:
@@ -826,16 +834,22 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             ctf = ctf_2d(clf.ctf_p[j].to(dev), clf.optics, fy, fx, box_a)
             zz = z[i:i + bp]
             sl = ar_n[i:i + bp]
-            tt, AA = t[sl, zz], A[sl, zz]
-            xs = x * torch.exp(1j * ph * (fx[None, None, :] * tt[:, 0, None, None] + fy[None, :, None] * tt[:, 1, None, None]))
             hh = half[i:i + bp].to(dev)
             wp = wpart[i:i + bp]
+            pp = post[i:i + bp]
+            if not soft:
+                tt, AA = t[sl, zz], A[sl, zz]
+                xs = x * torch.exp(1j * ph * (fx[None, None, :] * tt[:, 0, None, None] + fy[None, :, None] * tt[:, 1, None, None]))
             for m in range(M):
                 kmax = min(b / 2 - 1, 1.3 * box_a / res[m] + 6)   # beyond the current resolution, so FSC can grow
+                kmax_used[m] = kmax
+                if soft:     # every particle at its pose in this model, weighted by its posterior
+                    tt, AA = t[sl, m], A[sl, m]
+                    xs = x * torch.exp(1j * ph * (fx[None, None, :] * tt[:, 0, None, None] + fy[None, :, None] * tt[:, 1, None, None]))
                 for h in (0, 1):
-                    sel = (hh == h) & (zz == m) & (wp > 0)
+                    sel = (hh == h) & (wp > 0) & ((pp[:, m] > 1e-3) if soft else (zz == m))
                     if sel.any():
-                        w3 = wp[sel][:, None, None]
+                        w3 = (wp[sel] * (pp[sel, m] if soft else 1.0))[:, None, None]
                         vols[m][h].insert((xs * ctf)[sel] * w3, (ctf * ctf)[sel] * w3, AA[sel], kmax=kmax, ops=ops)
 
     for it in range(n_iter + 1):
@@ -850,7 +864,13 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                 for v in vols[m]:
                     _regularise_solve(v, 0.02)
                 fscs[m] = masked_fsc(vols[m][0], vols[m][1], mask)
+                # shells beyond the reconstruction limit hold only what the mask leaks from lower shells (correlated
+                # between the halves): not signal
+                fscs[m][int(kmax_used[m]) + 1:] = 0
                 res[m] = max(resolution_from_fsc(fscs[m], box_a), 2.2 * box_a / b)
+            if history:
+                history[-1]["res"] = [round(r, 3) if alive[m] else None for m, r in enumerate(res)]
+                history[-1]["seconds"] = round(time.time() - t0, 1)
         if it == n_iter:
             break
         live = [m for m in range(M) if alive[m]]
@@ -968,6 +988,17 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             r2 = (x - mdl).abs() ** 2
             res_pow.index_add_(0, shb, r2.sum(0))
             res_cnt.index_add_(0, shb, torch.full_like(shb, nb, dtype=torch.float32))
+        if M > 1:
+            lm = llm_all.clone()
+            lm[:, [m for m in range(M) if not alive[m]]] = -float("inf")
+            if soft:
+                if T0 is None:   # the typical particle starts near 60/40
+                    top2 = lm.topk(2, dim=1).values
+                    T0 = max(1.0, float((top2[:, 0] - top2[:, 1]).nan_to_num(0).median()) / 0.4)
+                f_ = min(1.0, it / max(1.0, n_iter / 2))
+                post = torch.softmax(lm / T0 ** (1 - f_), dim=1)
+            else:
+                post = F.one_hot(z, M).float()
         sigma2 = torch.where(res_cnt > 0, res_pow / res_cnt.clamp_min(1), sigma2)
         sigma2[res_cnt == 0] = sigma2[res_cnt > 0][-1] if (res_cnt > 0).any() else 1.0
         pops = torch.bincount(z, minlength=M).tolist()
@@ -979,10 +1010,16 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                     others = torch.tensor([q for q in range(M) if alive[q]], device=dev)
                     sel = z == m
                     z[sel] = others[llm_all[sel][:, others].argmax(1)]
+                post[:, m] = 0
+                post = post / post.sum(1, keepdim=True).clamp_min(1e-12)
         pops = torch.bincount(z, minlength=M).tolist()
         log(f"[3d] particles it {it + 1}/{n_iter}: align {al_res:.1f} A, step {step:.2f} deg, "
             f"{changed / n * 100:.0f}% moved" + (f", {switched / n * 100:.1f}% switched model, per model {pops}" if M > 1 else "")
+            + (f", mean max posterior {float(post.max(1).values.mean()):.3f}" if soft and M > 1 else "")
             + f" ({time.time() - t0:.1f}s)")
+        history.append(dict(it=it + 1, align_res=round(al_res, 3), step=round(step, 3), moved=round(changed / n, 4),
+                            switched=round(switched / n, 4), pops=pops,
+                            **({"max_posterior": round(float(post.max(1).values.mean()), 4)} if M > 1 else {})))
         if step_scale is None and changed / n < 0.3:
             step = max(0.5, step / 2)
         wpart = torch.ones(n, device=dev)
@@ -1012,6 +1049,9 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     refine_particles.last_weights = wpart.cpu()   # read by run(): which particles the final maps used
     refine_particles.last_score = score.cpu()
     refine_particles.last_half = half.cpu()          # gold-standard half set of every particle (0 / 1)
+    refine_particles.last_history = history
+    refine_particles.last_post = post.cpu()
+    refine_particles.last_ll = llm_all.cpu() if n_iter > 0 else None   # per model, best pose, last pass
     return torch.stack(maps), A[ar_n, z], t[ar_n, z], z, torch.stack(fscs), res, vols
 
 
@@ -1418,7 +1458,17 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
             write_star_poses(os.path.join(outdir, "particles_dropped.star"), src, idx.numpy()[~u],
                              A[torch.as_tensor(~u, device=A.device)], t[torch.as_tensor(~u, device=t.device)])
         log(f"[3d] particles.star: {int(u.sum())} particles with 3D poses (RELION convention, this map's frame)")
-    reproj_cc = _figures(outdir, clf, result, keep, Ak, [maps[m] for m in order], curves, rot, tilt, box_a, b, tag)
+    from . import diagnostics
+    vstats = diagnostics.angular_stats(A, relaxed_from or prm.sym)
+    diagnostics.write_views(os.path.join(outdir, "views.json"), rot.numpy(), tilt.numpy(), vstats)
+    fsc_data = dict(corrected=fsc_solvent.cpu().numpy(), unmasked=fsc_unmasked.cpu().numpy(),
+                    sphere_masked=fs[order[0]].cpu().numpy())
+    for r_, m in enumerate(order if M > 1 else []):
+        fsc_data[f"class{r_ + 1}_sphere_masked"] = fs[m].cpu().numpy()
+    diagnostics.write_fsc(os.path.join(outdir, "fsc"), fsc_data, box_a,
+                          resolution_a=round(resolution_from_fsc(fsc_solvent, box_a), 3), title=tag)
+    reproj_cc = _figures(outdir, clf, result, keep, Ak, [maps[m] for m in order], curves, rot, tilt, box_a, b, tag,
+                         vstats)
     if M > 1:
         _save_mrc(os.path.join(outdir, "consensus.mrc"), consensus_map, apix)
     from dataclasses import asdict
@@ -1428,6 +1478,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
                    resolution_solvent_mask_a=round(resolution_from_fsc(fsc_solvent, box_a), 2),
                    particles_used=int(used.sum()), particles_dropped=int((~used).sum()),
                    relaxed_from=relaxed_from, seconds_sgd=round(timing["sgd"], 1), view_coverage=cov,
+                   scf=vstats["scf"], warnings=vstats["warnings"],
                    fsc=[round(float(x), 4) for x in fs[order[0]].cpu()], box_a=round(box_a, 2),
                    fsc_unmasked=[round(float(x), 4) for x in fsc_unmasked.cpu()],
                    fsc_solvent=[round(float(x), 4) for x in fsc_solvent.cpu()],
@@ -1444,7 +1495,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
     return summary
 
 
-def _figures(outdir, clf, result, keep, Ak, maps, fsc_curves, rot, tilt, box_a, b, title):
+def _figures(outdir, clf, result, keep, Ak, maps, fsc_curves, rot, tilt, box_a, b, title, view_stats=None):
     """Reprojections of the (first) map at the class orientations, then the PNG figures (plots3d)."""
     from . import plots3d
     dev = clf.dev
@@ -1464,7 +1515,7 @@ def _figures(outdir, clf, result, keep, Ak, maps, fsc_curves, rot, tilt, box_a, 
                              maps=[m.cpu().numpy() for m in maps],
                              map_labels=["map"] if len(maps) == 1 else [f"3D class {i + 1}" for i in range(len(maps))],
                              fsc_curves=fsc_curves, box_a=box_a, apix=box_a / b, rot=rot.numpy(), tilt=tilt.numpy(),
-                             title=title)
+                             title=title, view_stats=view_stats)
 
 
 # --------------------------------------------------------------------------- volume rotation (map comparison)

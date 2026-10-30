@@ -288,7 +288,7 @@ def classify_job(particles_job: str, n_classes: int = 50, max_res_a: float = 0.0
 
 @server.tool()
 def select_classes(class2d_job: str, classes: list[int], label: str = "", note: str = "") -> str:
-    """A Select job with the particles of these classes (1-based, as in the gallery) of a Class2D job; the other
+    """A Select job with the particles of these classes (1-based, as in the gallery) of a Class2D or HeteroRefine job; the other
     particles are kept as its rejected set, with kept / rejected class stacks and a selection figure. The user
     decides which classes are good: a selection proposed by an agent must say so in its label or note."""
     from . import jobs
@@ -311,16 +311,39 @@ def initial_model(class2d_job: str, sym: str = "C1", classes: list[int] | None =
 
 @server.tool()
 def refine3d(particles_job: str, poses_job: str, reference_job: str = "", sym: str = "C1", n_iter: int = 10,
-             global_iters: int = 0, label: str = "") -> str:
-    """A Refine3D job in the background: particles of an Extract / Polish job (e.g. re-centred at full box),
-    starting orientations from an InitialModel or Refine3D job (matched by uid), starting map from reference_job
-    (default the poses job). global_iters: first iterations that also search all orientations."""
+             global_iters: int = 0, classes: list[int] | None = None, label: str = "") -> str:
+    """A Refine3D job in the background: particles of an Extract / Polish / Select job (e.g. re-centred at full box),
+    starting orientations from an InitialModel, Refine3D or HeteroRefine job (matched by uid), starting map from
+    reference_job (default the poses job; for a HeteroRefine, the map of the particles' class). classes: with a
+    HeteroRefine poses job, only the particles of these 1-based classes (the user's choice). global_iters: first
+    iterations that also search all orientations. Writes FSC (png + json/star/xml), angular distribution, progress
+    per iteration and per-particle diagnostics."""
     from . import jobs
     prj = _p()
     r = jobs.refine3d_job(prj, particles_job, poses_job, reference_job or poses_job,
-                          jobs.Refine3DSettings(sym=sym, n_iter=n_iter, global_iters=global_iters), label)
+                          jobs.Refine3DSettings(sym=sym, n_iter=n_iter, global_iters=global_iters,
+                                                classes=tuple(classes or ())), label)
     _background_job(r, lambda: jobs.run_refine3d(prj, r, log=lambda *a: None))
     return _js(dict(job=r.name))
+
+
+@server.tool()
+def hetero_refine(particles_job: str, poses_job: str, references: list[str], sym: str = "C1", n_iter: int = 12,
+                  res_start_a: float = 20.0, global_search: bool = True, label: str = "") -> str:
+    """A HeteroRefine job (heterogeneous refinement / 3D classification with alignment) in the background: the
+    particles are split among the reference maps, each class refined with its own poses, half maps and FSC.
+    references: one per class, job numbers ("12") or "job:class" ("25:2" = model 2 of an InitialModel, "30:3" =
+    class 3 of a HeteroRefine); the same map can be given several times (a junk decoy is any poor map).
+    global_search: every class first searches all orientations (references in different frames). The user chooses
+    the classes to keep: select_classes on the job, or refine3d with classes=[...]."""
+    from . import jobs
+    prj = _p()
+    h = jobs.hetero_refine_job(prj, particles_job, poses_job,
+                               jobs.HeteroRefineSettings(references=tuple(str(r) for r in references), sym=sym,
+                                                         n_iter=n_iter, res_start_a=res_start_a,
+                                                         global_search=global_search), label)
+    _background_job(h, lambda: jobs.run_hetero_refine(prj, h, log=lambda *a: None))
+    return _js(dict(job=h.name))
 
 
 @server.tool()
@@ -335,20 +358,26 @@ def polish(refine_job: str, label: str = "") -> str:
 
 
 @server.tool()
-def sharpen(refine_job: str, b_factor: float = 0.0, resolution_a: float = 0.0, mask: str = "", label: str = "") -> list:
-    """A Sharpen job (RELION PostProcess) on a Refine3D job's half maps: corrected masked FSC (phase randomisation),
-    automatic Guinier B-factor (b_factor 0; RELION sign, negative sharpens), FSC weighting and low-pass at the
-    resolution (resolution_a 0: from the corrected FSC). mask: a .mrc path (default the refinement's solvent mask).
-    Returns the summary (resolutions, B-factor, fit quality, mask checks, warnings) and the diagnostics figure."""
+def sharpen(refine_job: str, b_factor: float = 0.0, resolution_a: float = 0.0, mask: str = "", cls: int = 0,
+            local_res: bool = True, label: str = "") -> list:
+    """A Sharpen job (RELION PostProcess) on a Refine3D job's half maps (or class cls of a HeteroRefine): corrected
+    masked FSC (phase randomisation), automatic Guinier B-factor (b_factor 0; RELION sign, negative sharpens), FSC
+    weighting and low-pass at the resolution (resolution_a 0: from the corrected FSC). mask: a .mrc path (default
+    the refinement's solvent mask). local_res: local resolution map, a map filtered to it, and its figure.
+    Returns the summary (resolutions, B-factor, fit quality, mask checks, local resolution, warnings) and figures."""
     from .sharpen import SharpenSettings, run_sharpen, sharpen_job
     prj = _p()
-    j = sharpen_job(prj, refine_job, SharpenSettings(b_factor=b_factor, resolution_a=resolution_a, mask=mask), label)
+    j = sharpen_job(prj, refine_job, SharpenSettings(b_factor=b_factor, resolution_a=resolution_a, mask=mask, cls=cls,
+                                                     local_res=local_res), label)
     with _lock:
         summ = run_sharpen(prj, j, log=lambda *a: None)
-    path = os.path.join(j.path, "postprocess.png")
-    with open(path, "rb") as fh:
-        return [_js(dict(job=j.name, **{k: v for k, v in summ.items() if k != "fsc_corrected"})),
-                Image(data=fh.read(), format="png")]
+    out = [_js(dict(job=j.name, **{k: v for k, v in summ.items() if k != "fsc_corrected"}))]
+    for fn in ("postprocess.png", "localres.png"):
+        path = os.path.join(j.path, fn)
+        if os.path.exists(path):
+            with open(path, "rb") as fh:
+                out.append(Image(data=fh.read(), format="png"))
+    return out
 
 
 @server.tool()

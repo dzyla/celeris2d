@@ -26,6 +26,7 @@ import os
 from dataclasses import asdict, dataclass
 
 import numpy as np
+import pandas as pd
 import torch
 
 from . import picking as pk
@@ -409,8 +410,48 @@ def finish(project: Project, job: Job, status: str = "finished") -> dict:
                 summ[f"export_{fmt}"] = project.rel(export(project, job, fmt))
     else:
         summ = {}
+    if status == "finished" and job.type in ("MotionCtf", "Pick", "Extract"):
+        try:
+            overview(project, job)
+        except Exception as e:                        # a figure never fails a job
+            print(f"[{job.name}] overview figure: {e!r}")
     project.set_status(job, status, summ)
     return summ
+
+
+def overview(project: Project, job) -> str:
+    """Every micrograph of a MotionCtf / Pick / Extract job at a glance: overview.png (per-micrograph values in
+    processing order) and the numbers as micrographs.csv. Redrawn whenever the job finishes (also after new movies)."""
+    from .plots_preprocess import overview_figure
+    job = project.job(job)
+    if job.type == "MotionCtf":
+        mi = project.micrographs(job)
+        meta = [json.loads(m) if m else {} for m in mi["meta"]]
+        df = pd.DataFrame(dict(stem=mi["stem"], defocus_a=(mi["defocus_u"] + mi["defocus_v"]) / 2,
+                               astigmatism_a=(mi["defocus_u"] - mi["defocus_v"]).abs(), ctf_fit_a=mi["ctf_fit_res"],
+                               drift_a=[m.get("motion_path_a", np.nan) for m in meta],
+                               local_rms_a=[m.get("local_rms_a", np.nan) for m in meta],
+                               ctf_score=[m.get("ctf_score", np.nan) for m in meta]))
+        panels = [("Defocus", "Å", df.defocus_a), ("Astigmatism", "Å", df.astigmatism_a),
+                  ("CTF fit resolution", "Å", df.ctf_fit_a), ("Total drift", "Å", df.drift_a),
+                  ("Local motion (rms)", "Å", df.local_rms_a), ("CTF fit score", "", df.ctf_score)]
+    elif job.type == "Pick":
+        t = project.pick_table(job)
+        df = pd.DataFrame(dict(stem=t["stem"], candidates=t["n_candidates"], picks=t["n_kept"], threshold=t["threshold"]))
+        panels = [("Picks per micrograph", "picks", df.picks), ("Candidates per micrograph", "candidates",
+                                                                  df.candidates), ("Score threshold", "", df.threshold)]
+    else:
+        with project._db() as c:
+            ch = pd.read_sql("SELECT c.movie_id, c.n, v.stem FROM chunks c JOIN movies v ON v.id = c.movie_id "
+                             "WHERE c.job_id=? ORDER BY c.movie_id", c, params=(job.id,))
+        df = pd.DataFrame(dict(stem=ch["stem"], particles=ch["n"]))
+        panels = [("Particles per micrograph", "particles", df.particles)]
+    if not len(df):
+        return ""
+    df.to_csv(os.path.join(job.path, "micrographs.csv"), index=False, float_format="%.4g")
+    path = os.path.join(job.path, "overview.png")
+    overview_figure(path, panels, f"{job.type}: all micrographs", f"{job.name} · {len(df):,} micrographs")
+    return path
 
 
 def _decode_shm(path: str):

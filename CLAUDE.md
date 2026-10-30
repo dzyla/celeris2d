@@ -67,7 +67,8 @@ Layers, bottom to top:
    correction, dose weighting, per-micrograph CTF fit with background/envelope by least squares), figures in
    `plots_preprocess.py`. `picking.py`: blob picker (NCC with a soft disk on a binned, phase-flipped micrograph;
    candidates keep their scores so thresholds change without re-picking), box size from CTF delocalisation,
-   batched GPU extraction. `project.py` + `pipeline.py` (+ `jobs.py`: Class2D / Select / InitialModel / Refine3D, `polish.py`: Polish, `sharpen.py`: Sharpen): the
+   batched GPU extraction. `project.py` + `pipeline.py` (+ `jobs.py`: Class2D / Select / InitialModel / Refine3D / HeteroRefine and the job registry, `polish.py`: Polish,
+   `sharpen.py`: Sharpen, `localres.py`: local resolution, `diagnostics.py`: FSC files, angular statistics): the
    movies -> particles -> 3D project store and its jobs
    (layout and rules in docs/project-design.md: `jobs/NNN_<type>_<label>/` small results, `data/NNN/` heavy and
    purgeable, catalog `project.db`, particle uid/key, selections as uid lists); `pipeline.run` overlaps decoding
@@ -100,5 +101,8 @@ Layers, bottom to top:
 - Parameters exposed in the web UI are listed in `webapp.LOAD_KEYS` / `RUN_KEYS`; CLI flags map to
   `Params` fields in `cli.main`. A new `Params` field must be wired into each front end that should
   expose it.
+- **Figures**: every figure function is decorated with `plotstyle.themed` and takes its colours from
+  `plotstyle.T` (dark default `x.png`, light `x.light.png`); no colour literals in figure code. A new particle job
+  type is an entry in `jobs.registry()` (settings dataclass, inputs, make, run).
 - `Params` comments record what was tried and why defaults are what they are (e.g. `march_margin=0`,
   `online_decay=0`, `sigma_init_factor=1`, `polish` off). Read them before changing a default.

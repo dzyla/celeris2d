@@ -299,8 +299,13 @@ def _snapshot(clf, idx):
 
 
 def _plot_rounds(path, h, N):
-    from .plots import BLUE, ORANGE, _mpl
-    plt = _mpl()
+    from .plotstyle import themed
+    themed(_draw_rounds)(path, h, N)
+
+
+def _draw_rounds(path, h, N):
+    from .plotstyle import T, plt, title, top
+    BLUE, ORANGE = T.series[0], T.series[1]
     fig, ax = plt.subplots(1, 2, figsize=(10, 3.4))
     ax[0].plot(h["round"], h["good"], color=BLUE, lw=2, marker="o", ms=4)
     for r, g in zip(h["round"], h["good"]):
@@ -313,6 +318,8 @@ def _plot_rounds(path, h, N):
     from matplotlib.ticker import MaxNLocator
     for a in ax:
         a.xaxis.set_major_locator(MaxNLocator(integer=True))
-    fig.tight_layout()
-    fig.savefig(path, dpi=130)
+        a.yaxis.grid(True, color=T.grid, lw=0.8)
+    fig.subplots_adjust(left=0.08, right=0.98, top=top(fig, 0.6), bottom=0.15, wspace=0.25)
+    title(fig, "Deep 2D sorting", f"{N:,} particles")
+    fig.savefig(path, dpi=120)
     plt.close(fig)

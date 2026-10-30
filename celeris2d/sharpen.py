@@ -16,6 +16,7 @@ the diagnostics needed to trust it.
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import asdict, dataclass
@@ -23,6 +24,7 @@ from dataclasses import asdict, dataclass
 import numpy as np
 import torch
 
+from .plotstyle import GRAY, STATUS, T, grid_y, image_axes, plt, themed, title, top, warnings_text
 from .project import Job, Project
 
 
@@ -34,13 +36,20 @@ class SharpenSettings:
     mask: str = ""                  # mask .mrc (path, absolute or relative to the project); "": the refinement's
     edge_shells: int = 2            # cosine edge of the low-pass (Fourier shells)
     fsc_weight: bool = True
+    cls: int = 0                    # a HeteroRefine job: the class (1-based) to sharpen
+    local_res: bool = True          # local resolution (localres.py): localres.mrc + localres_filtered.mrc + figure
+    local_window_a: float = 0.0     # its window (0: ~7x the resolution)
 
 
 def sharpen_job(project: Project, refine, s: SharpenSettings, label: str = "") -> Job:
+    """Sharpen the half maps of a Refine3D job (or of class s.cls of a HeteroRefine job)."""
     r = project.job(refine)
-    if r.type != "Refine3D":
-        raise ValueError(f"{r.name} is not a Refine3D job")
-    return project.new_job("Sharpen", dict(asdict(s), refine=r.id), [r], label or f"on{r.id:03d}")
+    if r.type not in ("Refine3D", "HeteroRefine"):
+        raise ValueError(f"{r.name} is not a Refine3D or HeteroRefine job")
+    if r.type == "HeteroRefine" and not s.cls:
+        raise ValueError(f"{r.name}: choose the class to sharpen (cls)")
+    return project.new_job("Sharpen", dict(asdict(s), refine=r.id), [r],
+                           label or (f"on{r.id:03d}" + (f"c{s.cls}" if s.cls else "")))
 
 
 def _read(path):
@@ -162,21 +171,39 @@ def postprocess(h1: np.ndarray, h2: np.ndarray, mask: np.ndarray, apix: float, s
                 fsc_dips_a=dips, warnings=warnings)
 
 
+def _settings_of(job, cls):
+    from .jobs import settings_of
+    return settings_of(job, cls)
+
+
 def run_sharpen(project: Project, job, log=print) -> dict:
     job = project.job(job)
-    s = SharpenSettings(**{k: v for k, v in job.params.items() if k in SharpenSettings.__dataclass_fields__})
+    s = _settings_of(job, SharpenSettings)
     rj = project.job(job.params["refine"])
     t0 = time.time()
-    h1, apix = _read(os.path.join(rj.path, "half1_unfil.mrc"))
-    h2, _ = _read(os.path.join(rj.path, "half2_unfil.mrc"))
-    mpath = project.abs(s.mask) if s.mask else os.path.join(rj.path, "mask.mrc")
+    pre = f"class{s.cls:02d}_" if rj.type == "HeteroRefine" else ""
+    h1, apix = _read(os.path.join(rj.path, f"{pre}half1_unfil.mrc"))
+    h2, _ = _read(os.path.join(rj.path, f"{pre}half2_unfil.mrc"))
+    mpath = project.abs(s.mask) if s.mask else os.path.join(rj.path, f"{pre}mask.mrc")
     mask, mapix = _read(mpath)
     if mask.shape != h1.shape or abs(mapix - apix) > 1e-3 * apix:
         raise ValueError(f"mask {mpath}: {mask.shape} at {mapix:.4f} A/px, half maps {h1.shape} at {apix:.4f} A/px")
     r = postprocess(h1, h2, np.clip(mask, 0, 1), apix, s)
     _write(os.path.join(job.path, "sharpened.mrc"), r["sharp"], apix)
     _write(os.path.join(job.path, "sharpened_masked.mrc"), r["sharp"] * r["mask"], apix)
-    figure(os.path.join(job.path, "postprocess.png"), r, f"{job.name} (from {rj.name})")
+    src_name = rj.name + (f" class {s.cls}" if pre else "")
+    figure(os.path.join(job.path, "postprocess.png"), r, f"{job.name} (from {src_name})")
+    from .diagnostics import write_fsc
+    write_fsc(os.path.join(job.path, "fsc"), r["fsc"], r["box_a"], resolution_a=round(r["resolution_a"], 3),
+              main="corrected", title=f"{job.name} (from {src_name})")
+    with open(os.path.join(job.path, "guinier.json"), "w") as f:
+        json.dump(dict(s2_inv_a2=r["s2"].round(6).tolist(), ln_amplitude=np.log(np.maximum(r["amp"], 1e-30)).round(4).tolist(),
+                       ln_amplitude_sharpened=np.log(np.maximum(r["amp_sharp"], 1e-30)).round(4).tolist(),
+                       fit={k: v for k, v in r["fit"].items()}, b_factor=r["b_factor"], b_auto=r["b_auto"]), f)
+    lres = None
+    if s.local_res:
+        lres = local_resolution(job.path, h1, h2, r, apix, s, f"{job.name} (from {src_name})", log)
+        r["warnings"] += lres.pop("warnings", [])
     for w in r["warnings"]:
         log(f"[sharpen] warning: {w}")
     summ = dict(resolution_a=round(r["resolution_a"], 2), resolution_masked_uncorrected_a=round(r["resolution_masked_a"], 2),
@@ -188,73 +215,101 @@ def run_sharpen(project: Project, job, log=print) -> dict:
                 mask_fraction=round(r["mask_fraction"], 4), density_outside_mask=round(r["density_outside_mask"], 4),
                 fsc_dips_a=r["fsc_dips_a"], warnings=r["warnings"], apix=round(apix, 4), box=int(h1.shape[0]),
                 fsc_corrected=[round(float(x), 4) for x in r["fsc"]["corrected"]], map="sharpened.mrc",
-                seconds=round(time.time() - t0, 1))
+                **({"local_resolution": lres} if lres else {}), seconds=round(time.time() - t0, 1))
     project.set_status(job, "finished", summ)
     log(f"[sharpen] {summ['resolution_a']} A (corrected masked FSC 0.143), B {summ['b_factor']} A^2")
     return summ
 
 
-def figure(path: str, r: dict, title: str):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    fig = plt.figure(figsize=(13, 8.2), dpi=110)
-    gs = fig.add_gridspec(2, 3, height_ratios=[1, 1])
-    ax = fig.add_subplot(gs[0, :2])
-    k = np.arange(len(r["fsc"]["corrected"])) / r["box_a"]
-    styles = [("unmasked", "#767a86", "-"), ("masked", "#3987e5", "-"), ("randomised", "#e34948", ":"),
-              ("corrected", "#1a1a1a", "-")]
-    labels = dict(unmasked="unmasked", masked="masked (uncorrected)",
-                  randomised=f"masked, phases randomised beyond {r['randomised_from_a']:.1f} A", corrected="corrected masked")
-    for key, c, ls in styles:
-        ax.plot(k[1:], r["fsc"][key][1:], ls, color=c, lw=1.6 if key == "corrected" else 1.1, label=labels[key])
-    ax.axhline(0.143, color="#999", lw=0.8, ls="--")
-    ax.axhline(0.5, color="#ccc", lw=0.8, ls="--")
-    ax.axvline(1 / r["resolution_a"], color="#1a1a1a", lw=0.8, ls="--")
-    for d in r["fsc_dips_a"]:
-        ax.axvline(1 / d, color="#eda100", lw=0.8)
-    ax.set_xlim(0, k[-1])
-    ax.set_ylim(-0.1, 1.02)
-    ax.set_xlabel("resolution (1/A)")
-    ax.set_ylabel("FSC")
-    sec = ax.secondary_xaxis("top", functions=(lambda x: 1 / np.maximum(x, 1e-6), lambda x: 1 / np.maximum(x, 1e-6)))
-    sec.set_xticks([20, 10, 6, 5, 4, 3.5, 3, 2.5])
-    sec.set_xlabel("A")
-    ax.legend(fontsize=8, loc="lower left", frameon=False)
-    ax.set_title(f"{r['resolution_a']:.2f} A (corrected, 0.143)   masked {r['resolution_masked_a']:.2f}   "
-                 f"unmasked {r['resolution_unmasked_a']:.2f}   0.5: {r['resolution_05_a']:.2f} A", fontsize=10)
-    ax.spines[["top", "right"]].set_visible(False)
+def local_resolution(outdir: str, h1, h2, r: dict, apix: float, s: SharpenSettings, title_: str, log=print) -> dict:
+    """Local resolution of the half maps inside the mask (localres.py): localres.mrc (A per voxel), localres_filtered.mrc
+    (the B-sharpened map low-passed at every voxel to its local resolution), localres.png, localres.json."""
+    from . import plots3d
+    from .localres import localres
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    t0 = time.time()
+    m = r["mask"]
+    window = int(round(s.local_window_a / apix)) if s.local_window_a else 0
+    out = localres(h1, h2, m, apix, r["resolution_a"], window_px=window, filtered=False, dev=dev)
+    lr = out["map"]
+    full = 0.5 * (torch.as_tensor(h1, device=dev) + torch.as_tensor(h2, device=dev))
+    kk = _shells(full.shape[0], dev) / (full.shape[0] * apix)
+    sharpB = torch.fft.irfftn(torch.fft.rfftn(full) * torch.exp(-r["b_factor"] * kk ** 2 / 4), s=full.shape)
+    from .localres import local_filter
+    filt = local_filter(sharpB, lr, apix)
+    lr_np = lr.cpu().numpy()
+    _write(os.path.join(outdir, "localres.mrc"), lr_np, apix)
+    _write(os.path.join(outdir, "localres_filtered.mrc"), filt.cpu().numpy(), apix)
+    st = out["stats"]
+    with open(os.path.join(outdir, "localres.json"), "w") as f:
+        json.dump(st, f)
+    plots3d.localres_figure(os.path.join(outdir, "localres.png"), r["sharp"], lr_np, m, r["resolution_a"], st, title_)
+    warnings = []
+    if st["at_nyquist"] > 0.05:
+        nyq = 2 * apix
+        if r["resolution_a"] > 1.3 * nyq:
+            warnings.append(f"local resolution reaches Nyquist ({nyq:.2f} A) in {st['at_nyquist'] * 100:.0f}% of the mask "
+                            f"although the map is at {r['resolution_a']:.2f} A: the half maps may share noise "
+                            "(duplicate particles, or halves that are not independent)")
+        else:
+            warnings.append(f"the map ({r['resolution_a']:.2f} A) is close to Nyquist ({nyq:.2f} A): in "
+                            f"{st['at_nyquist'] * 100:.0f}% of the mask the local resolution is only known to be "
+                            f"<= {nyq:.2f} A (refine at a smaller pixel size to measure it)")
+    log(f"[sharpen] local resolution: median {st['median_a']} A (5-95%: {st['p05_a']}-{st['p95_a']} A), window "
+        f"{st['window_a']} A, {time.time() - t0:.1f}s")
+    keep = {k: st[k] for k in ("median_a", "p05_a", "p25_a", "p75_a", "p95_a", "window_a", "at_nyquist")}
+    keep.update(map="localres.mrc", filtered="localres_filtered.mrc", seconds=round(time.time() - t0, 1),
+                warnings=warnings)
+    return keep
 
+
+@themed
+def figure(path: str, r: dict, title_: str):
+    """FSC curves (corrected, masked, unmasked, phase-randomised), Guinier plot with the fit, central slices of the
+    sharpened map with the mask outline."""
+    from .plots3d import _fsc_axes
+    fig = plt.figure(figsize=(13, 8.4))
+    gs = fig.add_gridspec(2, 3, height_ratios=[1, 1], left=0.06, right=0.98, top=top(fig, 0.8),
+                          bottom=0.04 + 0.025 * len(r["warnings"]), hspace=0.32, wspace=0.28)
+    ax = fig.add_subplot(gs[0, :2])
+    curves = [("corrected masked", r["fsc"]["corrected"]), ("masked, uncorrected", r["fsc"]["masked"]),
+              ("unmasked", r["fsc"]["unmasked"]),
+              (f"phases randomised beyond {r['randomised_from_a']:.1f} Å", r["fsc"]["randomised"])]
+    styles = [(T.series[0], "-"), (T.series[1], "-"), (T.series[2], "-"), (T.ink3, ":")]
+    _fsc_axes(ax, curves, r["box_a"], (len(r["fsc"]["corrected"]) - 1) / r["box_a"], styles)
+    for d in r["fsc_dips_a"]:
+        ax.axvline(1 / d, color=STATUS["warning"], lw=0.8)
+    ax.set_title("Fourier shell correlation")
     ax = fig.add_subplot(gs[0, 2])
     s2, f = r["s2"], r["fit"]
     sel = (s2 > 0) & (s2 <= (1.15 / r["resolution_a"]) ** 2)
     a0 = np.log(np.maximum(r["amp"][sel], 1e-30))
     a1 = np.log(np.maximum(r["amp_sharp"][sel], 1e-30))
-    ax.plot(s2[sel], a0 - a0[0], color="#3987e5", lw=1.2, label="map (masked)")
-    ax.plot(s2[sel], a1 - a1[0], color="#1a1a1a", lw=1.2, label="sharpened")
+    ax.plot(s2[sel], a0 - a0[0], color=T.series[0], lw=1.6, label="map (masked)")
+    ax.plot(s2[sel], a1 - a1[0], color=T.series[1], lw=1.6, label="sharpened")
     if "slope" in f:
         x = np.array([1 / f["from_a"] ** 2, 1 / f["to_a"] ** 2])
-        ax.plot(x, f["slope"] * x + f["intercept"] - a0[0], "--", color="#e34948", lw=1,
-                label=f"fit: B {r['b_auto']:.0f} A$^2$, r$^2$ {f['r2']:.2f}")
-        ax.axvspan(*x, color="#e34948", alpha=0.06)
-    ax.set_xlabel("1/d$^2$ (1/A$^2$)")
+        ax.axvspan(*x, color=T.well, zorder=0)
+        ax.plot(x, f["slope"] * x + f["intercept"] - a0[0], "--", color=T.ink, lw=1.2,
+                label=f"fit {f['from_a']:.0f}-{f['to_a']:.1f} Å: B {r['b_auto']:.0f} Å², r² {f['r2']:.2f}")
+    ax.set_xlabel("1/d² (1/Å²)")
     ax.set_ylabel("ln amplitude (relative)")
-    ax.set_title(f"Guinier: applied B {r['b_factor']:.0f} A$^2$", fontsize=10)
-    ax.legend(fontsize=8, frameon=False)
-    ax.spines[["top", "right"]].set_visible(False)
-
+    ax.set_title(f"Guinier plot · applied B {r['b_factor']:.0f} Å²")
+    ax.legend(loc="lower left")
+    grid_y(ax)
     v, m = r["sharp"], r["mask"]
     c = v.shape[0] // 2
+    lo_, hi = np.percentile(v, [1, 99.9])
     for i, (sl, ms, name) in enumerate([(v[c], m[c], "z"), (v[:, c], m[:, c], "y"), (v[:, :, c], m[:, :, c], "x")]):
         ax = fig.add_subplot(gs[1, i])
-        lo_, hi = np.percentile(v, [1, 99.9])
-        ax.imshow(sl, cmap="gray", vmin=lo_, vmax=hi, origin="lower")
-        ax.contour(ms, levels=[0.5], colors="#1baf7a", linewidths=0.8)
-        ax.set_title(f"sharpened, central {name} slice (mask outline)", fontsize=9)
-        ax.axis("off")
-    if r["warnings"]:
-        fig.text(0.01, 0.005, "\n".join("warning: " + w for w in r["warnings"]), fontsize=8, color="#b5330f", va="bottom")
-    fig.suptitle(title, fontsize=11)
-    fig.tight_layout(rect=(0, 0.05 if r["warnings"] else 0, 1, 0.97))
+        ax.imshow(sl, cmap=GRAY, vmin=lo_, vmax=hi, origin="lower")
+        ax.contour(ms, levels=[0.5], colors=T.series[2], linewidths=0.8)
+        ax.set_title(f"sharpened · central {name} section · mask outline", fontsize=9, fontweight="normal")
+        image_axes(ax)
+    title(fig, f"Sharpened map · {r['resolution_a']:.2f} Å · B {r['b_factor']:.0f} Å²",
+          f"{title_} · corrected masked FSC 0.143 {r['resolution_a']:.2f} Å · masked {r['resolution_masked_a']:.2f} Å · "
+          f"unmasked {r['resolution_unmasked_a']:.2f} Å · FSC 0.5 {r['resolution_05_a']:.2f} Å · mask "
+          f"{r['mask_fraction'] * 100:.1f}% of the box")
+    warnings_text(fig, r["warnings"])
     fig.savefig(path)
     plt.close(fig)

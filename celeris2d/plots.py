@@ -3,20 +3,11 @@ from __future__ import annotations
 
 import numpy as np
 
-BLUE, ORANGE = "#2a78d6", "#eb6834"          # categorical slots 1, 2 (validated reference palette)
-INK, INK2, GRID, SURFACE = "#0b0b0b", "#52514e", "#e4e3df", "#fcfcfb"
+from .plotstyle import STATUS, T, plt, themed, title as _title_block, top
 
 
-def _mpl():
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    plt.rcParams.update({"font.size": 8, "axes.edgecolor": INK2, "axes.labelcolor": INK2, "xtick.color": INK2,
-                         "ytick.color": INK2, "axes.titlecolor": INK, "axes.titlesize": 9, "axes.titleweight": "bold",
-                         "axes.spines.top": False, "axes.spines.right": False, "axes.grid": True,
-                         "grid.color": GRID, "grid.linewidth": 0.6, "axes.axisbelow": True,
-                         "figure.facecolor": SURFACE, "axes.facecolor": SURFACE, "legend.frameon": False})
-    return plt
+def _rgb(h):
+    return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
 
 
 def _font(size, bold=False):
@@ -26,13 +17,14 @@ def _font(size, bold=False):
     return ImageFont.truetype(path, size)
 
 
+@themed
 def gallery(path, imgs, pops, apix, conf=None, title="Celeris2D", ncol=None, tile=200, gap=8, marks=None):
     """Class mosaic (Pillow, fixed layout): rounded tiles sorted by size, class badge, count/share on a
     gradient strip, confidence bar along the bottom edge."""
     from PIL import Image, ImageDraw
 
-    bg, ink, ink2, track = (14, 15, 19), (240, 239, 236), (160, 162, 170), (52, 56, 66)
-    blue = tuple(int(BLUE[i:i + 2], 16) for i in (1, 3, 5))
+    bg, ink, ink2, track = _rgb(T.plane), _rgb(T.ink), _rgb(T.ink2), _rgb(T.line)
+    blue = _rgb(T.series[0])
     order = np.argsort(-pops)
     K = len(order)
     ncol = ncol or (5 if K <= 10 else 8 if K <= 32 else 10)
@@ -85,17 +77,19 @@ def gallery(path, imgs, pops, apix, conf=None, title="Celeris2D", ncol=None, til
             t = Image.blend(t, Image.new("RGB", t.size, bg), 0.55)
         canvas.paste(t, (x0, y0), rmask)
         if marks is not None and marks[k]:
-            d.rounded_rectangle((x0 - 3, y0 - 3, x0 + tile + 2, y0 + tile + 2), radius + 3, outline=(27, 175, 122),
+            d.rounded_rectangle((x0 - 3, y0 - 3, x0 + tile + 2, y0 + tile + 2), radius + 3, outline=_rgb(STATUS["good"]),
                                 width=3)
     canvas.save(path, optimize=True)
 
 
+@themed
 def stats(path, history, pops, conf, title=""):
     """history: list of per-iteration dicts from Classifier2D; pops/conf: per-class size and mean max-posterior."""
-    plt = _mpl()
+    BLUE, ORANGE, INK = T.series[0], T.series[1], T.ink
     it = np.array([h["it"] for h in history])
     full = np.array([h["n"] for h in history]) == max(h["n"] for h in history)
-    fig, ax = plt.subplots(2, 3, figsize=(13, 6.6))
+    fig, ax = plt.subplots(2, 3, figsize=(13, 6.9))
+    fig.subplots_adjust(left=0.06, right=0.98, top=top(fig, 0.7), bottom=0.08, wspace=0.25, hspace=0.45)
 
     a = ax[0, 0]
     lim = [h["res"] for h in history]
@@ -137,7 +131,7 @@ def stats(path, history, pops, conf, title=""):
     from matplotlib.ticker import MaxNLocator
     for a in ax.flat:
         a.xaxis.set_major_locator(MaxNLocator(integer=True))
-    fig.suptitle(title, fontsize=10, color=INK, x=0.01, ha="left")
-    fig.tight_layout()
-    fig.savefig(path, dpi=130)
+        a.yaxis.grid(True, color=T.grid, lw=0.8)
+    _title_block(fig, "2D classification", title)
+    fig.savefig(path, dpi=120)
     plt.close(fig)

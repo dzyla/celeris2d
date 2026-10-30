@@ -344,30 +344,34 @@ def run_polish(project: Project, job, log=print) -> dict:
     return summ
 
 
-def _figure(path, B_rel, scale, w, box_a, track_rms, title):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(1, 3, figsize=(13, 3.6), dpi=110)
+def _figure(path, B_rel, scale, w, box_a, track_rms, title_):
+    from .plotstyle import themed
+    themed(_draw)(path, B_rel, scale, w, box_a, track_rms, title_)
+
+
+def _draw(path, B_rel, scale, w, box_a, track_rms, title_):
+    """Per-frame B-factor and scale (separate axes), the resulting frame weights at a few resolutions, and the
+    spread of the particle tracks."""
+    from .plotstyle import T, grid_y, note, plt, title, top
+    fig, ax = plt.subplots(1, 4, figsize=(15, 3.6))
+    fig.subplots_adjust(left=0.05, right=0.98, top=top(fig, 0.75), bottom=0.17, wspace=0.32)
     fr = np.arange(1, len(B_rel) + 1)
-    ax[0].plot(fr, B_rel, "o-", ms=3)
-    ax[0].set_xlabel("frame")
-    ax[0].set_ylabel("relative B-factor (A^2)")
-    a2 = ax[0].twinx()
-    a2.plot(fr, scale, "s-", ms=3, color="#c8372d")
-    a2.set_ylabel("scale", color="#c8372d")
-    k = np.arange(w.shape[1]) / box_a
-    for res in (20, 8, 5, 4, 3):
+    ax[0].plot(fr, B_rel, "o-", ms=3, color=T.series[0])
+    ax[0].set(title="Relative B-factor", xlabel="frame", ylabel="Å²")
+    ax[1].plot(fr, scale, "o-", ms=3, color=T.series[0])
+    ax[1].set(title="Scale", xlabel="frame", ylabel="relative")
+    for q, res in enumerate((20, 5, 3)):
         i = int(round(box_a / res))
         if i < w.shape[1]:
-            ax[1].plot(fr, w[:, i], label=f"{res} A")
-    ax[1].set_xlabel("frame")
-    ax[1].set_ylabel("weight")
-    ax[1].legend(frameon=False, fontsize=8)
-    ax[2].hist(track_rms, bins=60)
-    ax[2].set_xlabel("track rms about its mean (A)")
-    ax[2].set_ylabel("particles")
-    fig.suptitle(title, fontsize=10)
-    fig.tight_layout()
+            ax[2].plot(fr, w[:, i], color=T.series[q], label=f"{res} Å")
+    ax[2].set(title="Frame weight", xlabel="frame", ylabel="weight")
+    ax[2].legend(loc="upper right")
+    ax[3].hist(track_rms, bins=60, color=T.series[0])
+    if len(track_rms):
+        note(ax[3], f"median {np.median(track_rms):.2f} Å", "upper right")
+    ax[3].set(title="Particle tracks", xlabel="rms about the mean position (Å)", ylabel="particles")
+    for a in ax:
+        grid_y(a)
+    title(fig, "Polishing", title_)
     fig.savefig(path)
     plt.close(fig)

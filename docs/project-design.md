@@ -101,10 +101,24 @@ engine's model convention (the particle's centre is at +shift from the box centr
   found on) minus the centre in this extraction, so any pair of extractions works. Writes map.mrc
   (solvent-masked), map_nomask, mask, half maps, fsc.png, table `particles` = uid, rot, tilt, psi, shifts, fit,
   half. `global_iters` adds exhaustive orientation searches to the first iterations.
+- **HeteroRefine** (heterogeneous refinement; particles, starting poses, K reference maps given as job numbers or
+  `job:class`, a map may be repeated): each class starts from its reference low-passed to `res_start_a` (the first
+  scaled to the particles at their poses, the others to its low-resolution Fourier amplitudes); with
+  `global_search` every particle first searches all orientations in every class (references may come from
+  different ab initio runs, in different frames) and joins the class it fits best; then `refine_particles` with K
+  models refines the pose in every class each iteration and moves the particle to the best one, all classes
+  compared at the same (the worst) resolution. Writes per class `classNN_map.mrc` / `_map_nomask` / `_mask` /
+  `_half1_unfil` / `_half2_unfil` and `classNN_fsc.{json,star,xml}`; table `particles` adds `cls`. The user picks the
+  classes: `select_classes` works on it like on a Class2D job, and Refine3D takes `classes=(k, ...)` with the
+  HeteroRefine as poses and reference (the map of the particles' class). Controls on T20S (homogeneous): two copies
+  of the refined map split 48 / 52 % with equal resolution (4.35 / 4.26 A) and views (SCF 0.84 / 0.87); the refined
+  D7 map against the C1 ab initio map (a worse map of the same particle) 54 / 46 %, and the C1 class holds a narrow
+  set of views (SCF 0.11) - a poor reference can keep the particles whose views it matches, so judge classes by
+  their maps, FSC and angular distribution, not by size alone.
 - **Polish** (on a Refine3D job): per-particle tracks and per-frame weights from the movies (method in
   `polish.py`'s docstring); a particle job like an extraction, same uids, centred at the refined centre, and the
   table keeps each particle's half (its track was fitted against that half map).
-- **Sharpen** (on a Refine3D job; `celeris2d/sharpen.py`, RELION PostProcess): corrected masked FSC (phases
+- **Sharpen** (on a Refine3D job or a HeteroRefine class; `celeris2d/sharpen.py`, RELION PostProcess): corrected masked FSC (phases
   randomised beyond the shell where the unmasked FSC drops below 0.8), automatic Guinier B-factor (10 A to the
   resolution), FSC weighting, low-pass at the resolution. `sharpened.mrc`, `sharpened_masked.mrc`,
   `postprocess.png` (four FSC curves, Guinier plot, central slices with the mask outline) and warnings: the mask
@@ -113,6 +127,37 @@ engine's model convention (the particle's centre is at +shift from the box centr
   B -106 A^2 unpolished; no warnings, 1-2 s. The one-shell dip of the corrected curve sits at the first randomised
   shell (the mask leaks correlation from the unrandomised shells into it; RELION's curve has the same) - not a
   reconstruction artifact; the unmasked curve has none.
+
+**Diagnostics every 3D job writes** (`jobs.refinement_report`, `diagnostics.py`, figures in `plots3d.py`):
+`fsc.png` and the curves as `fsc.json` (all curves), `fsc.star` (RELION `data_fsc` labels) and `fsc.xml` (EMDB
+deposition format); `views.png` + `views.json` (angular distribution on an equal-area map, with the share of
+directions occupied, the share in the busiest 10 % and the sampling compensation factor SCF of Baldwin & Lyumkis
+2020: 1 = uniform Fourier sampling, towards 0 when directions of Fourier space are missing - symmetry copies count);
+`progress.png` (resolution and alignment limit, angular step and share of particles that moved, per iteration; with
+classes also the class sizes); `particles.png` (fit of used vs left-out particles, aligned centre from box centre,
+orientation change from the start); `map_views.png` (projections and sections with the mask outline). HeteroRefine
+adds `views_classes.png` (one map per class, shared scale). The summary repeats the numbers (`scf`,
+`view_coverage`, `history`, `orientation_change_*`) and lists `warnings` (narrow views, uneven Fourier sampling,
+start poses that did not fit), shown at the top of the job in the dashboard. InitialModel writes the same FSC and
+views files. Sharpen adds `fsc.{json,star,xml}`, `guinier.json` and, with `local_res` (default on), local
+resolution (`localres.py`): FSC 0.143 of the two half maps in a Hann-windowed cube (~7x the resolution, >= 20 px)
+around grid points in the mask, interpolated to every voxel -> `localres.mrc` (A), `localres_filtered.mrc` (the
+B-sharpened map low-passed at every voxel to its local resolution), `localres.png`, `localres.json`. On synthetic
+half maps with two regions of known resolution (2.69 / 5.44 A) the estimates are within 2-3 % with that window
+(5-7 % too fine with a 16 px window). T20S (3.10 A, Nyquist 2.85 A): median 3.22 A, 5-95 % 2.85-6.61 A; core
+at Nyquist in 24 % of the mask (flagged: the map is close to Nyquist). MotionCtf / Pick / Extract jobs write
+`overview.png` (every micrograph's defocus, astigmatism, CTF fit, drift, local motion, CTF score / picks /
+particles in processing order) and `micrographs.csv`; per-micrograph figures for every movie with
+`figures="all"`.
+
+**Figures** share one style (`plotstyle.py`): every figure is drawn in a dark (default) and a light theme,
+`x.png` and `x.light.png`; the project page switches both. Colours come from the theme (validated categorical
+slots, sequential blue ramp, blue/red diverging, fixed status colours), never literals.
+
+**Job registry** (`jobs.registry()`): per particle job type its settings dataclass, input parameters, make and
+run functions. Rerun (and anything else that handles jobs generically) goes through it, so a new job type is one
+entry; stored parameters are read with `settings_of` (unknown keys ignored, missing ones at their defaults), so
+settings can be added or retired without breaking old jobs.
 
 **Gold-standard halves are never mixed.** A particle keeps the half of the refinement its poses come from
 (Refine3D reads the poses job's `half` column; RELION's rlnRandomSubset), so a polished or re-refined particle is
@@ -146,7 +191,7 @@ with its own D7 average 0.62 vs 0.90 for the D7 map), so a reliable C1 ab initio
 `celeris2d-web --project DIR` (or `celeris2d-web` started inside a project directory) serves `/project`: every job
 with its type, label, status and key number (particles, resolution...), and per job its lineage and dependents,
 results, figures, files and parameters (`/project#014` opens job 14). "Run again" makes a particle job (Class2D,
-InitialModel, Refine3D, Polish) again as a new numbered job with the same parameters (`jobs.rerun`), so both stay
+InitialModel, Refine3D, HeteroRefine, Polish, Sharpen) again as a new numbered job with the same parameters (`jobs.rerun`), so both stay
 for comparison; for MotionCtf / Pick / Extract it carries on with movies the job does not have yet.
 
 ## Compatibility (on request)

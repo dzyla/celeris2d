@@ -56,8 +56,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     created REAL, PRIMARY KEY (job_id, movie_id));
 """
 
-JOB_TYPES = ("Import", "MotionCtf", "Pick", "Extract", "Select", "Class2D", "InitialModel", "Refine3D", "Polish",
-             "Sharpen")
+JOB_TYPES = ("Import", "MotionCtf", "Pick", "Extract", "Select", "Class2D", "InitialModel", "Refine3D", "HeteroRefine",
+             "Polish", "Sharpen")
 PER_MOVIE = dict(MotionCtf="micrographs", Pick="picks", Extract="chunks", Polish="chunks")
 HEAVY = dict(MotionCtf=(".mrc",), Extract=(".mrcs",), Polish=(".mrcs",))   # purgeable files of a job's data folder
 REBUILDABLE = ("MotionCtf", "Extract")         # purged files can be made again from the recorded parameters
@@ -360,10 +360,12 @@ class Project:
 
     def aligned_particles(self, ref) -> Job:
         """The particle job (Extract / Polish) whose box centres an alignment job's shifts are relative to: a
-        Refine3D job's particles, or the extraction a Class2D (or the Class2D of an InitialModel) was run on."""
+        Refine3D / HeteroRefine job's particles, or the extraction a Class2D (or the Class2D of an InitialModel) was
+        run on."""
         job = self.job(ref)
-        if job.type == "Refine3D":
-            return self.job(job.params["particles"])
+        if job.type in ("Refine3D", "HeteroRefine"):
+            src = self.job(job.params["particles"])
+            return src if src.type in PARTICLE_JOBS else self.ancestor(src, PARTICLE_JOBS)
         if job.type == "InitialModel":
             job = self.job(job.params["class2d"])
         if job.type != "Class2D":
