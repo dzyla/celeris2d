@@ -1695,7 +1695,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
     fsc_solvent = corrected_masked_fsc(vols[order[0]][0].real(), vols[order[0]][1].real(), solvent[0])
     tag = f"{len(idx):,} particles · {prm.sym}" + (f" (relaxed from {relaxed_from})" if relaxed_from else "")
     if M > 1:
-        curves = [(f"3D class {r + 1}", fs[m].cpu().numpy()) for r, m in enumerate(order[:3])]
+        curves = [(f"3D class {r + 1}", fs[m].cpu().numpy()) for r, m in enumerate(order)]
     else:
         curves = [("soft sphere mask", fs[0].cpu().numpy()), ("no mask", fsc_unmasked.cpu().numpy()),
                   ("solvent mask", fsc_solvent.cpu().numpy())]

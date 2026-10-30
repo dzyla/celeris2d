@@ -386,8 +386,10 @@ def hetero_refine(particles_job: str, poses_job: str, references: list[str], sym
                   res_start_a: float = 20.0, global_search: bool = True, label: str = "") -> str:
     """A HeteroRefine job (heterogeneous refinement / 3D classification with alignment) in the background: the
     particles are split among the reference maps, each class refined with its own poses, half maps and FSC.
-    references: one per class, job numbers ("12") or "job:class" ("25:2" = model 2 of an InitialModel, "30:3" =
-    class 3 of a HeteroRefine); the same map can be given several times (a junk decoy is any poor map).
+    references: one per class, job numbers ("12"), "job:class" ("25:2" = model 2 of an InitialModel, "30:3" =
+    class 3 of a HeteroRefine) or "decoy" (a junk class: the first map with its phases randomised beyond 30 A, so
+    particles that fit no structure gather there - cryoSPARC's decoy references); the same map can be given several
+    times.
     global_search: every class first searches all orientations (references in different frames). The user chooses
     the classes to keep: select_classes on the job, or refine3d with classes=[...]."""
     from . import jobs

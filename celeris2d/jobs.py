@@ -258,6 +258,21 @@ class InitialModelSettings:
     gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
 
+def _as_classified(project: Project, c: Job, src):
+    """Restrict src (the particles a Class2D job was given) to those it classified, in the order it saw them: an
+    extraction that kept growing afterwards (more movies, live collection) would otherwise no longer match the 2D
+    result the job saved (its session is keyed on the particle count)."""
+    u = project.table(c, "particles").read(["uid"])["uid"]
+    have = src.parts["celUid"].to_numpy(np.int64)
+    if len(have) == len(u):
+        return
+    keep = np.flatnonzero(np.isin(have, u))
+    if len(keep) != len(u) or not np.array_equal(have[keep], np.asarray(u, np.int64)):
+        raise ValueError(f"{c.name}: its particles changed since it ran (not a superset in the same order): run the "
+                         "Class2D job again")
+    src.subset(keep)
+
+
 def initial_model_job(project: Project, class2d, s: InitialModelSettings, label: str = "") -> Job:
     c = project.job(class2d)
     return project.new_job("InitialModel", dict(params_of(s), class2d=c.id), [c], label or f"{s.sym}_from{c.id:03d}")
@@ -273,6 +288,7 @@ def run_initial_model(project: Project, job, log=print) -> dict:
     c = project.job(job.params["class2d"])
     cs = settings_of(c, Class2DSettings)
     src = particle_source(project, c.params["particles"])
+    _as_classified(project, c, src)
     ses, _ = _session(project, c, src, cs.diameter_a, project.summary_of(c)["max_res_a"], s.gpus, log,
                       workdir=os.path.join(c.path, "session"))
     if "2d" not in ses.results:
@@ -504,9 +520,14 @@ def map_job(project: Project, ref) -> Job:
 
 
 def _reference_map(rj: Job, cls: int = 0) -> tuple[np.ndarray, float, str]:
-    """A job's map before masking: a HeteroRefine / Class3D class (1-based cls), else map_nomask.mrc / map.mrc."""
+    """A job's map before masking: a HeteroRefine / Class3D class (1-based cls; 0: the class with most particles),
+    else map_nomask.mrc / map.mrc."""
     import mrcfile
     if rj.type in CLASS_JOBS:
+        if not cls:
+            sp = os.path.join(rj.path, "summary.json")
+            cl = json.load(open(sp)).get("classes", []) if os.path.isfile(sp) else []
+            cls = max(cl, key=lambda c: c.get("particles", 0))["cls"] if cl else 1
         names = [f"class{cls:02d}_map_nomask.mrc"]
     else:
         names = ["map_nomask.mrc", "map.mrc"]
@@ -625,7 +646,15 @@ def run_refine3d(project: Project, job, log=print) -> dict:
 @dataclass
 class HeteroRefineSettings:
     references: tuple = ()          # maps, one per class: job numbers ("12") or "job:class" ("25:2" = InitialModel
-                                    # model 2, "30:3" = HeteroRefine class 3); a reference can be given several times
+                                    # model 2, "30:3" = HeteroRefine class 3); a reference can be given several times;
+                                    # "decoy": a junk class (cryoSPARC's decoy references) - the first reference with
+                                    # its phases randomised beyond decoy_res_a (its size and power, no structure), so
+                                    # particles that fit no structure gather there; use with global_search. Which
+                                    # class ends up clean is decided by the data, not by the reference it started
+                                    # from: judge the classes by their maps and resolution. dz_2025_10, 153k
+                                    # unselected particles, references (ab initio map, decoy, decoy): one class of
+                                    # 35k holds 76 % of the particles that fit the map (MapScore) at 34 % fit; three
+                                    # copies of the map instead: best class 51 % at 18 %, the rest split over two
     sym: str = "C1"                 # point-group symmetry, the user's choice
     n_iter: int = 12                # iterations
     res_start_a: float = 20.0       # first alignment / comparison resolution
@@ -642,6 +671,7 @@ class HeteroRefineSettings:
                                     # every iteration below 15 A), "static" (once from each reference), "none" (the
                                     # particle sphere only), or a MaskCreate job / .mrc path (one mask for every class)
     seed: int = 0                   # random seed (noise added to repeated references)
+    decoy_res_a: float = 30.0       # "decoy" references keep the first reference only to this resolution (A)
     gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
 
@@ -652,7 +682,7 @@ def hetero_refine_job(project: Project, particles, poses, s: HeteroRefineSetting
     if len(s.references) < 2:
         raise ValueError("heterogeneous refinement needs at least two reference maps")
     p, q = project.job(particles), project.job(poses)
-    refs = [project.job(str(r).split(":")[0]) for r in s.references]
+    refs = [project.job(str(r).split(":")[0]) for r in s.references if str(r) != "decoy"]
     ins = [p, q] + [r for i, r in enumerate(refs) if r.id not in [x.id for x in [p, q] + refs[:i]]]
     return project.new_job("HeteroRefine", dict(params_of(s), references=[str(r) for r in s.references], particles=p.id,
                                                 poses=q.id), ins, label or f"K{len(s.references)}_on{p.id:03d}")
@@ -673,6 +703,22 @@ def _reference(project: Project, ref: str):
             return np.array(f.data, np.float32), float(f.voxel_size.x), f"{rj.name} model {k}"
     v, a, _ = _reference_map(rj)
     return v, a, rj.name
+
+
+def decoy_map(vol: torch.Tensor, box_a: float, res_a: float, diameter_a: float, seed: int = 0) -> torch.Tensor:
+    """A junk reference: vol's Fourier phases randomised beyond res_a (its low-resolution envelope and power spectrum
+    kept, no structure), inside a soft sphere of the particle diameter."""
+    from .abinitio import sphere_mask
+    b = vol.shape[0]
+    F = torch.fft.rfftn(vol.float())
+    k = torch.fft.fftfreq(b, device=vol.device) * b
+    kz = torch.arange(b // 2 + 1, device=vol.device, dtype=torch.float32)
+    kk = torch.sqrt(k[:, None, None] ** 2 + k[None, :, None] ** 2 + kz[None, None, :] ** 2)
+    g = torch.Generator().manual_seed(seed)
+    ph = torch.exp(2j * np.pi * torch.rand(F.shape, generator=g)).to(vol.device)
+    F = torch.where(kk > box_a / res_a, F.abs() * ph, F)
+    out = torch.fft.irfftn(F, s=vol.shape)
+    return out * sphere_mask(b, 0.5 * diameter_a * b / box_a, 3.0, vol.device).to(out.dtype)
 
 
 def _amplitude(vol: torch.Tensor, box_a: float, lo_a: float, hi_a: float) -> float:
@@ -718,7 +764,13 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
     # references: same box and pixel size; the first scaled to the particles at their poses, the others to the
     # first's Fourier amplitudes at low resolution (they may be in other frames, so poses cannot scale them)
     vols, names = [], []
-    for r in s.references:
+    if str(s.references[0]) == "decoy":
+        raise ValueError("the first reference must be a map (decoys are made from it)")
+    for i, r in enumerate(s.references):
+        if str(r) == "decoy":
+            vols.append(decoy_map(vols[0], box_a, s.decoy_res_a, clf.p.diameter_a, seed=s.seed + 11 * i))
+            names.append(f"decoy ({s.decoy_res_a:g} A)")
+            continue
         v, a, nm = _reference(project, r)
         vols.append(map_to_box(v, a, b, apix))
         names.append(nm)
@@ -836,7 +888,7 @@ def refinement_report(job, tag: str, sym: str, box_a: float, apix: float, A_star
     curves = [(lab, fsc_np[k]) for k, lab in (("corrected", "solvent mask, corrected"), ("sphere_masked", "soft sphere"),
                                               ("unmasked", "no mask")) if k in fsc_np]
     if cls is not None:
-        curves = [(class_labels[i], fsc_np[f"class{i + 1}"]) for i in range(len(class_labels)) if f"class{i + 1}" in fsc_np][:3]
+        curves = [(class_labels[i], fsc_np[f"class{i + 1}"]) for i in range(len(class_labels)) if f"class{i + 1}" in fsc_np]
     rot, tilt, _ = (x.numpy() for x in matrix_to_euler(A.cpu()))
     stats = dg.angular_stats(A.cpu(), sym)
     dg.write_views(out_("views.json"), rot, tilt, stats)

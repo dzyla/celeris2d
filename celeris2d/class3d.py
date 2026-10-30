@@ -712,7 +712,7 @@ def class3d_report(job, tag, sym, box_a, apix, r: Class3DResult, z, post, maps, 
     pops = [int((z == k).sum()) for k in range(K)]
     plots3d.class_summary_figure(out_("map_views.png"), maps, labels, pops, res_cls, tag)
     plots3d.class3d_progress_figure(out_("progress.png"), r.history, post, tag)
-    curves = [(labels[k], fsc_all[f"class{k + 1}"]) for k in order if f"class{k + 1}" in fsc_all][:3]
+    curves = [(labels[k], fsc_all[f"class{k + 1}"]) for k in order if f"class{k + 1}" in fsc_all]
     if curves:
         plots3d.fsc_figure(out_("fsc.png"), curves, box_a, apix, tag,
                            heading="Half-map FSC per class (solvent mask, corrected)")

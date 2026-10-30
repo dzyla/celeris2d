@@ -245,3 +245,22 @@ def test_symmetrize_accumulators_matches_symmetric_insertion():
     rel = lambda a, b_: float((a - b_).norm() / b_.norm())
     assert rel(maps[1], maps[0]) < 0.05, rel(maps[1], maps[0])
     assert rel(maps[1], vol) < 1.1 * rel(maps[0], vol) + 0.01
+
+
+def test_model_fsc_not_cut_at_classification_resolution(tmp_path, particles):
+    """3D classes (n_models > 1): each class's half maps go to Nyquist, so its FSC falls and stays down. The J20 run
+    (classes filtered to 10 A) showed curves that fell to ~0.1 at the filter edge and rose to ~0.2 behind it: the
+    halves were reconstructed only 4 shells past res_a and the mask spread the low shells beyond. Classified here at
+    40 A, the old code's class FSC rose back to 0.27-0.44 after crossing 0.143; now it stays within +-0.05."""
+    import json
+    path, _ = particles
+    s = Session(str(tmp_path / "work"), log=lambda *a: None)
+    s.load(path, diameter=200, max_res=12, gpus="0")
+    s.classify("k12", K=12, n_iter=15)
+    s.abinitio("k12_m2", "k12", n_starts=4, sgd_iter=12, n_iter=6, check_starts=2, drop_frac=0.0, n_models=2,
+               class3d_res=40.0, class3d_iter=6)
+    curves = json.load(open(os.path.join(s.workdir, "k12_m2", "fsc.json")))["curves"]
+    for k in ("class1_sphere_masked", "class2_sphere_masked"):
+        c = np.asarray(curves[k])
+        cross = int(np.argmax(c < 0.143))
+        assert cross > 0 and c[cross:].max() < 0.143, (k, c.round(2).tolist())

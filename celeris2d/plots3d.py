@@ -51,10 +51,19 @@ def _fsc_axes(ax, curves, box_a, nyq, styles=None, thr=0.143):
 @themed
 def fsc_figure(path: str, curves: list[tuple[str, np.ndarray]], box_a: float, apix: float, title_: str,
                heading: str = "Half-map FSC", styles=None, warnings=()):
-    """curves: (label, FSC per shell of a box_a box) - at most 3 solid series (+ dotted helpers via styles)."""
+    """curves: (label, FSC per shell of a box_a box) - 3 solid series are drawn (+ dotted helpers via styles); further
+    solid curves (e.g. 3D classes 4.., largest first) are listed with their resolution in a note, not dropped."""
+    extra = []
+    if styles is None and len(curves) > 3:
+        curves, extra = list(curves[:3]), list(curves[3:])
     fig, ax = plt.subplots(figsize=(6.6, 4.1))
-    fig.subplots_adjust(left=0.1, right=0.97, top=top(fig, 0.75), bottom=0.14 + 0.05 * len(warnings))
+    fig.subplots_adjust(left=0.12, right=0.97, top=top(fig, 0.75), bottom=0.14 + 0.05 * len(warnings))
     _fsc_axes(ax, curves, box_a, 1 / (2 * apix), styles)
+    if extra:
+        def res(f):
+            first = next((i for i in range(1, len(f)) if f[i] < 0.143), None)
+            return f"{box_a / first:.2f} Å" if first and first < len(f) - 1 else "≤ Nyquist"
+        note(ax, "not drawn:\n" + "\n".join(f"{lab}   {res(np.asarray(f, float))}" for lab, f in extra))
     title(fig, heading, title_)
     warnings_text(fig, list(warnings))
     fig.savefig(path)
