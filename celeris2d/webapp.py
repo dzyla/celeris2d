@@ -849,6 +849,22 @@ def create(workdir, project_dir=None):
         with open(os.path.join(os.path.dirname(__file__), "web", "index.html")) as fh:
             return HTMLResponse(fh.read(), headers={"Cache-Control": "no-store"})
 
+    @app.get("/web/plotly.js")
+    def plotly_js():
+        """Plotly for the interactive figures: the copy inside the Python plotly package when installed (offline),
+        else the CDN."""
+        try:
+            import plotly
+            path = os.path.join(os.path.dirname(plotly.__file__), "package_data", "plotly.min.js")
+            if os.path.isfile(path):
+                with open(path, "rb") as fh:
+                    return Response(fh.read(), media_type="text/javascript",
+                                    headers={"Cache-Control": "max-age=86400"})
+        except ImportError:
+            pass
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse("https://cdn.plot.ly/plotly-2.35.2.min.js")
+
     @app.get("/web/{fn}")
     def web_module(fn: str):
         """Add-on page modules (e.g. abinitio3d.js), kept out of index.html so each can change on its own."""
@@ -916,10 +932,12 @@ def create(workdir, project_dir=None):
                     full = os.path.join(dp, f)
                     files.append(dict(path=prj.rel(full), size=os.path.getsize(full)))
         movies = os.path.join(j.path, "figures", "movies")
+        movie_files = sorted(prj.rel(os.path.join(movies, f)) for f in os.listdir(movies)
+                             if f.endswith(".png") and ".light." not in f) if os.path.isdir(movies) else []
         run = proj_state["runs"].get(j.name)
         return dict(name=j.name, type=j.type, status=j.status, params=j.params, summary=prj.summary_of(j),
                     lineage=prj.lineage(j), dependents=prj.dependents(j), files=files,
-                    movie_figures=len(os.listdir(movies)) if os.path.isdir(movies) else 0,
+                    movie_figures=len(movie_files), movie_files=movie_files, final=j.id in prj.final_marks(),
                     log=prj.rel(j.log_path) if os.path.exists(j.log_path) else None,
                     error=run["error"] if run else None)
 
@@ -946,7 +964,7 @@ def create(workdir, project_dir=None):
         with open(full, "rb") as fh:
             data = fh.read()
         mt = {".png": "image/png", ".gif": "image/gif", ".svg": "image/svg+xml", ".md": "text/markdown",
-              ".csv": "text/csv"}.get(os.path.splitext(full)[1], "application/octet-stream")
+              ".csv": "text/csv", ".json": "application/json"}.get(os.path.splitext(full)[1], "application/octet-stream")
         return Response(data, media_type=mt, headers={"Cache-Control": "no-cache"})
 
     @app.get("/api/project/jobtypes")
@@ -964,9 +982,14 @@ def create(workdir, project_dir=None):
         spec = registry().get(body.get("type"))
         if spec is None:
             raise HTTPException(400, f"unknown job type {body.get('type')!r}")
-        return _start_job(lambda prj: (lambda j: (j, lambda: spec.run(prj, j, log=st._log)))(
-            new_job(prj, spec.type, body.get("inputs") or {}, body.get("settings") or {}, body.get("label") or "")),
-            body.get("type"))
+        from .scheduler import queue_job
+        prj = _prj()
+        try:
+            j = queue_job(prj, spec.type, body.get("inputs") or {}, body.get("settings") or {}, body.get("label") or "")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        _kick()
+        return dict(job=j.name, status="queued")
 
     @app.post("/api/project/open")
     def project_open(body: dict = Body(...)):
@@ -1021,8 +1044,120 @@ def create(workdir, project_dir=None):
     def project_rerun(body: dict = Body(...)):
         """Run a job again (jobs.rerun): particle jobs as a new job with the same parameters, movie jobs carry on
         with movies they do not have. One run at a time."""
-        from .jobs import rerun
-        return _start_job(lambda prj: rerun(prj, body["job"], log=st._log), body["job"])
+        from .scheduler import queue_rerun
+        prj = _prj()
+        try:
+            j = queue_rerun(prj, body["job"])
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        _kick()
+        return dict(job=j.name, status="queued")
+
+    # ------------------------------------------------------------------ the queue (scheduler.py)
+    proj_state["auto_select"] = True
+    wake = threading.Event()
+
+    def _kick():
+        wake.set()
+
+    def _scheduler():
+        """Runs the open project's queued jobs one at a time, when the GPU is free."""
+        from .project import Project
+        from .scheduler import next_job, run_job
+        while True:
+            wake.wait(3.0)
+            wake.clear()
+            try:
+                root = proj_state.get("root")
+                if not root or (st.job and not st.job.get("done")):
+                    continue
+                prj = Project(root)
+                prj.reap_stale()                      # crashed "running" jobs: failed, not blocking the queue
+                j = next_job(prj)
+                if j is None:
+                    continue
+                rec = dict(error=None, job=j)
+
+                def work(prj=prj, j=j, rec=rec):
+                    try:
+                        run_job(prj, j, log=st._log, auto_select=proj_state["auto_select"])
+                    except BaseException as e:      # noqa: BLE001 - recorded on the job by run_job
+                        rec["error"] = repr(e)
+                        raise
+                    finally:
+                        wake.set()                    # the next queued job
+                name, rec["thread"] = st.submit("project", j.name, work)
+                proj_state["runs"][name] = rec
+            except RuntimeError:                      # the GPU became busy meanwhile
+                continue
+            except Exception as e:                    # noqa: BLE001 - the scheduler must keep running
+                st._log(f"[queue] {type(e).__name__}: {e}")
+
+    threading.Thread(target=_scheduler, daemon=True, name="project-queue").start()
+
+    @app.get("/api/project/queue")
+    def project_queue():
+        from .scheduler import queue_state
+        prj = _prj()
+        try:
+            prj.reap_stale()
+        except Exception:                            # noqa: BLE001 - the queue must still show
+            pass
+        return dict(queue_state(prj), auto_select=proj_state["auto_select"])
+
+    @app.post("/api/project/queue")
+    def project_queue_set(body: dict = Body(...)):
+        """{auto_select: bool}: a waiting Select job after every classification run from the queue."""
+        if "auto_select" in body:
+            proj_state["auto_select"] = bool(body["auto_select"])
+        return dict(auto_select=proj_state["auto_select"])
+
+    @app.post("/api/project/cancel")
+    def project_cancel(body: dict = Body(...)):
+        from .scheduler import cancel
+        try:
+            return dict(job=cancel(_prj(), body["job"]).name)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/api/project/select")
+    def project_select(body: dict = Body(...)):
+        """{job, classes: [1-based], note}: the choice for a waiting Select job, or a new Select of a class job."""
+        from .scheduler import complete_select
+        try:
+            j = complete_select(_prj(), body["job"], [int(k) for k in body.get("classes") or []], body.get("note", ""))
+        except (ValueError, KeyError) as e:
+            raise HTTPException(400, str(e))
+        _kick()
+        return dict(job=j.name)
+
+    @app.get("/api/project/classes")
+    def project_classes(job: str):
+        """The classes of a Class2D / HeteroRefine / Class3D job (or of a Select job's source) for the gallery:
+        image(s) per class (PNG data URIs), particles, resolution; and which are chosen if it is a Select."""
+        from .gallery import class_gallery
+        prj = _prj()
+        try:
+            return class_gallery(prj, job)
+        except (ValueError, KeyError) as e:
+            raise HTTPException(400, str(e))
+
+    @app.get("/api/project/volume")
+    def project_volume(path: str, size: int = 160, color: str = ""):
+        """A map of the project for the 3D viewer: binary (JSON header length, header, uint8 voxels[, uint8 colour
+        volume]) - see gallery.volume_payload."""
+        from .gallery import volume_payload
+        prj = _prj()
+        full = os.path.realpath(os.path.join(prj.root, path))
+        if not full.startswith(os.path.realpath(prj.root) + os.sep) or not os.path.isfile(full):
+            raise HTTPException(404, path)
+        cfull = None
+        if color:
+            cfull = os.path.realpath(os.path.join(prj.root, color))
+            if not cfull.startswith(os.path.realpath(prj.root) + os.sep) or not os.path.isfile(cfull):
+                raise HTTPException(404, color)
+        return Response(volume_payload(full, max(48, min(int(size), 256)), cfull),
+                        media_type="application/octet-stream", headers={"Cache-Control": "no-cache"})
 
     def _start_job(make, what):
         """make(project) -> (job, fn) under the GPU-job lock (no second job is made while one runs); fn runs on the

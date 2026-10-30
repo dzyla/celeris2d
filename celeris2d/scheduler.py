@@ -1,0 +1,117 @@
+"""Job queue of a project for the dashboard: jobs are made at once with status "queued" and run one at a time (one GPU
+job) as soon as every input has finished; a job whose input failed fails too, with the reason. After a
+classification (Class2D, HeteroRefine, Class3D) run from the queue, a Select job is made in status "waiting": it
+waits for the user to choose the classes in the dashboard (complete_select), and jobs queued on it run after that.
+Agents (MCP) and scripts call the jobs directly and get no waiting selections.
+
+Statuses: queued (waits for its inputs / the GPU), waiting (waits for the user), running, finished, failed,
+cancelled. The queue is the project's catalog itself, so it survives a restart of the dashboard.
+"""
+from __future__ import annotations
+
+from .project import Job, Project
+
+AUTO_SELECT = ("Class2D", "HeteroRefine", "Class3D")
+MOVIE_JOBS = ("MotionCtf", "Pick", "Extract")
+DONE_OK = ("finished",)
+DONE_BAD = ("failed", "cancelled", "deleted")
+
+
+def queue_job(project: Project, job_type: str, inputs: dict, settings: dict | None = None, label: str = "") -> Job:
+    """A new job of any registered type, queued (inputs may themselves be queued or waiting)."""
+    from .jobs import new_job
+    j = new_job(project, job_type, inputs, settings or {}, label)
+    project.set_status(j, "queued")
+    return j
+
+
+def queue_rerun(project: Project, ref) -> Job:
+    """Run a job again through the queue: a movie job carries on with new movies, a particle job is copied to a new
+    job with the same inputs and settings (jobs.rerun)."""
+    from .jobs import registry
+    from .jobspec import settings_of
+    old = project.job(ref)
+    if old.type in MOVIE_JOBS:
+        project.set_status(old, "queued")
+        return old
+    spec = registry().get(old.type)
+    if spec is None:
+        raise ValueError(f"{old.type} jobs are not run again (make a new one)")
+    j = spec.make(project, *(old.params.get(i.name) for i in spec.inputs), settings_of(old, spec.settings))
+    project.set_status(j, "queued")
+    return j
+
+
+def waiting_select(project: Project, source) -> Job:
+    """A Select job of `source`'s classes that waits for the user's choice."""
+    src = project.job(source)
+    j = project.new_job("Select", dict(source=src.id, waiting=True, note="choose the classes to keep"), [src],
+                        f"of{src.id:03d}")
+    project.set_status(j, "waiting", dict(waiting=f"choose the classes of {src.name} to keep"))
+    return j
+
+
+def complete_select(project: Project, job, classes: list[int], note: str = "") -> Job:
+    """The user's choice for a waiting Select job (or a new Select job on a classification job)."""
+    from .jobs import select_classes
+    j = project.job(job)
+    if j.type == "Select":
+        if j.status != "waiting":
+            raise ValueError(f"{j.name} is {j.status}, not waiting for a choice")
+        return select_classes(project, j.params["source"], classes, note=note, job=j)
+    return select_classes(project, j, classes, note=note)
+
+
+def cancel(project: Project, job) -> Job:
+    j = project.job(job)
+    if j.status not in ("queued", "waiting"):
+        raise ValueError(f"{j.name} is {j.status}: only queued or waiting jobs can be cancelled")
+    project.set_status(j, "cancelled", dict(project.summary_of(j), error="cancelled"))
+    return j
+
+
+def next_job(project: Project) -> Job | None:
+    """The oldest queued job whose inputs have all finished; queued jobs with a failed / cancelled input fail."""
+    jobs = project.jobs(include_deleted=True)
+    status = dict(zip(jobs["id"].astype(int), jobs["status"]))
+    for r in jobs[jobs["status"] == "queued"].itertuples():
+        j = project.job(int(r.id))
+        bad = [i for i in j.inputs if status.get(i, "deleted") in DONE_BAD]
+        if bad:
+            names = ", ".join(project.job(i).name for i in bad if i in status)
+            project.set_status(j, "failed", dict(error=f"input {names or bad} did not finish"))
+            status[j.id] = "failed"
+            continue
+        if all(status.get(i) in DONE_OK for i in j.inputs):
+            return j
+    return None
+
+
+def run_job(project: Project, job, log=print, auto_select: bool = True):
+    """Run a queued job (on the caller's thread); after a classification, a waiting Select job."""
+    from . import pipeline as pl
+    from .jobs import registry
+    j = project.job(job)
+    project.set_status(j, "running")
+    try:
+        if j.type in MOVIE_JOBS:
+            pl.run(project, [j], log=log)
+        else:
+            spec = registry().get(j.type)
+            if spec is None:
+                raise ValueError(f"{j.type} jobs cannot run from the queue")
+            spec.run(project, j, log=log)
+    except BaseException as e:                    # noqa: BLE001 - recorded on the job, re-raised for the caller
+        project.set_status(j, "failed", dict(project.summary_of(j), error=f"{type(e).__name__}: {e}"))
+        raise
+    j = project.job(j.id)
+    if auto_select and j.type in AUTO_SELECT and j.status == "finished":
+        waiting_select(project, j)
+    return j
+
+
+def queue_state(project: Project) -> dict:
+    """Queued, waiting and running jobs (names, oldest first) for the dashboard."""
+    jobs = project.jobs()
+    pick = lambda st: [n for n in jobs[jobs["status"] == st]["name"]]
+    return dict(running=pick("running"), queued=pick("queued"), waiting=pick("waiting"))

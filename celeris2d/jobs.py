@@ -17,6 +17,7 @@ shift_y_a, used.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import math
 import os
@@ -207,16 +208,19 @@ def run_class2d(project: Project, job, log=print) -> dict:
     return summ
 
 
-def select_classes(project: Project, class2d, classes: list[int], label: str = "", note: str = "") -> Job:
+def select_classes(project: Project, class2d, classes: list[int], label: str = "", note: str = "", job=None) -> Job:
     """A Select job with the particles of these classes (1-based numbers, as in the gallery) of a Class2D job (or a
-    HeteroRefine / Class3D: its table `particles` has the same uid / cls columns)."""
+    HeteroRefine / Class3D: its table `particles` has the same uid / cls columns). job: a Select job waiting for this
+    choice (scheduler.waiting_select), filled instead of making a new one."""
+    if not classes:
+        raise ValueError("choose at least one class")
     c = project.job(class2d)
     t = project.table(c, "particles").read(["uid", "cls"])
     keep = np.isin(t["cls"], np.asarray(classes, int) - 1)
     chosen = sorted(int(k) for k in classes)
     K = len(project.summary_of(c).get("table", [])) or int(t["cls"].max()) + 1
     job = project.select(c, t["uid"][keep], label=label or f"{len(classes)}cls_of{c.id:03d}",
-                         note=note or f"classes {chosen} of {c.name}", rejected=t["uid"][~keep])
+                         note=note or f"classes {chosen} of {c.name}", rejected=t["uid"][~keep], job=job)
     rejected = [k for k in range(1, K + 1) if k not in chosen]
     project.update_params(job, classes=chosen, rejected_classes=rejected)
     cm = c.find("classes.mrcs")
@@ -294,7 +298,15 @@ def _as_classified(project: Project, c: Job, src):
 
 
 def initial_model_job(project: Project, class2d, s: InitialModelSettings, label: str = "") -> Job:
+    """class2d: a Class2D job (classes from s.classes), or a Select job of one (its classes, read when the job runs:
+    the Select may still be waiting for the choice - scheduler.py)."""
     c = project.job(class2d)
+    if c.type == "Select":
+        src = project.job(c.params["source"])
+        if src.type != "Class2D":
+            raise ValueError(f"InitialModel: {c.name} selects classes of {src.name}, not of a Class2D job")
+        return project.new_job("InitialModel", dict(params_of(s), class2d=src.id, select=c.id), [c],
+                               label or f"{s.sym}_from{c.id:03d}")
     return project.new_job("InitialModel", dict(params_of(s), class2d=c.id), [c], label or f"{s.sym}_from{c.id:03d}")
 
 
@@ -305,6 +317,12 @@ def run_initial_model(project: Project, job, log=print) -> dict:
     from . import abinitio as ab
     job = project.job(job)
     s = settings_of(job, InitialModelSettings)
+    if job.params.get("select"):                    # the classes of a Select job (chosen after this job was queued)
+        sel = project.job(job.params["select"])
+        if not sel.params.get("classes"):
+            raise ValueError(f"{sel.name} has no classes chosen")
+        s = dataclasses.replace(s, classes=tuple(int(k) for k in sel.params["classes"]))
+        project.update_params(job, classes=list(s.classes))
     c = project.job(job.params["class2d"])
     cs = settings_of(c, Class2DSettings)
     src = particle_source(project, c.params["particles"])
@@ -1170,7 +1188,8 @@ def registry() -> dict[str, JobSpec]:
                 key=lambda s: f"{_n(s.get('particles'))} ptcls · K{s.get('classes', '')}",
                 figures=("gallery.png",)),
         JobSpec("InitialModel", "ab initio 3D from 2D classes and their particles", InitialModelSettings,
-                (Input("class2d", ("Class2D",), doc="the 2D classification (classes chosen in settings)"),),
+                (Input("class2d", ("Class2D", "Select"), doc="the 2D classification (classes chosen in settings), or a "
+                                                             "selection of its classes"),),
                 initial_model_job, run_initial_model, key=_res_key,
                 figures=("map_views.png", "fsc.png", "views.png", "reprojections.png")),
         JobSpec("Refine3D", "local 3D refinement with gold-standard halves", Refine3DSettings,

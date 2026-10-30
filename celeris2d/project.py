@@ -195,14 +195,14 @@ class Job:
 
     def out(self, name: str) -> str:
         """Where a result file named `name` goes (folder by kind, job number in front); the folder is created."""
-        sub = _SUBDIR.get(os.path.splitext(name)[1].lower(), "data")
+        sub = _subdir(name)
         p = os.path.join(self.path, sub, self.prefix + name) if sub else os.path.join(self.path, self.prefix + name)
         os.makedirs(os.path.dirname(p), exist_ok=True)
         return p
 
     def find(self, name: str) -> str:
         """A result file by its plain name: the current layout, else the flat layout of older jobs (or None)."""
-        p = os.path.join(self.path, _SUBDIR.get(os.path.splitext(name)[1].lower(), "data") or "", self.prefix + name)
+        p = os.path.join(self.path, _subdir(name) or "", self.prefix + name)
         if os.path.exists(p):
             return p
         old = os.path.join(self.path, name)
@@ -224,6 +224,13 @@ class Job:
 _SUBDIR = {".mrc": "maps", ".mrcs": "maps", ".bild": "maps", ".png": "figures", ".gif": "figures", ".json": "data",
            ".star": "data", ".xml": "data", ".csv": "data", ".cs": "data", ".csg": "data", ".npz": "data", ".txt": "data",
            ".log": ""}
+
+
+def _subdir(name: str) -> str:
+    """The folder of a result file: by extension; a figure's data (x.plot.json, figjson.py) stays next to x.png."""
+    if name.lower().endswith(".plot.json"):
+        return "figures"
+    return _SUBDIR.get(os.path.splitext(name)[1].lower(), "data")
 
 
 class run_log:
@@ -749,13 +756,20 @@ class Project:
         return np.array([f"{s}:{a:.1f}:{b:.1f}" for s, a, b in zip(df["stem"], np.round(x, 1), np.round(y, 1))])
 
     # ------------------------------------------------------------------ selections (Select jobs)
-    def select(self, source, uids, label: str = "", note: str = "", inputs=(), rejected=None) -> Job:
+    def select(self, source, uids, label: str = "", note: str = "", inputs=(), rejected=None, job=None) -> Job:
         """A Select job: a set of particle uids (e.g. the good classes of a 2D run on a binned extraction). It
         applies to any extraction of the same picks (extract with select=<this job>). rejected: the uids that were
-        considered and left out, kept as the table "rejected" (selected_uids(job, rejected=True))."""
+        considered and left out, kept as the table "rejected" (selected_uids(job, rejected=True)). job: an existing
+        Select job waiting for the choice (scheduler.waiting_select) to fill instead of a new one."""
         uids = np.unique(np.asarray(uids, dtype=np.int64))
         src = self.job(source)
-        job = self.new_job("Select", dict(source=src.id, particles=len(uids), note=note), [source, *inputs], label)
+        if job is None:
+            job = self.new_job("Select", dict(source=src.id, particles=len(uids), note=note), [source, *inputs], label)
+        else:
+            job = self.job(job)
+            job.params.pop("waiting", None)
+            self.update_params(job, source=src.id, particles=len(uids), note=note)
+            self.set_status(job, "running")
         ex = src if src.type in ("Select", *PARTICLE_JOBS) else self.job(self.ancestor(src, PARTICLE_JOBS))
         p = self.table(ex, "particles").read(["uid"])
         o = np.argsort(p["uid"])

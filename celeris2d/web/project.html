@@ -4,338 +4,584 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Celeris2D project</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+  /* the plots' own dark theme (plotstyle.py), so a page and its figures are one surface */
   :root {
-    --bg: #0e0f13; --panel: #16181f; --panel2: #1d2029; --panel3: #242833; --line: #2a2e3a; --ink: #f0efec; --ink2: #a0a3ad; --ink3: #767a86;
-    --accent: #3987e5; --accent2: #1c3350; --good: #0ca30c; --bad: #d03b3b; --warn: #fab219; --serious: #ec835a;
+    --plane: #0e0f13; --surface: #16181f; --well: #1d2029; --raise: #242833; --line: #2a2e3a; --axis: #383c48;
+    --ink: #f0efec; --ink2: #a0a3ad; --ink3: #767a86;
+    --data: #3987e5; --data-dim: #173357; --you: #fab219; --you-dim: #3a2f12;
+    --good: #0ca30c; --bad: #d03b3b; --serious: #ec835a;
+    --font: "Atkinson Hyperlegible Next", "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", sans-serif;
     color-scheme: dark;
   }
-  :root[data-theme="light"] {
-    --bg: #f9f9f7; --panel: #fcfcfb; --panel2: #f0efec; --panel3: #e8e7e3; --line: #e1e0d9; --ink: #0b0b0b; --ink2: #52514e; --ink3: #898781;
-    --accent: #2a78d6; --accent2: #dbe9fb; color-scheme: light;
-  }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  header { display: flex; align-items: center; gap: 14px; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel); min-height: 46px; }
-  header h1 { font-size: 18px; margin: 0; white-space: nowrap; }
-  header h1 span { color: var(--accent); }
-  #root { color: var(--ink2); font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  a { color: var(--accent); text-decoration: none; }
-  button { background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px 11px; font: inherit; cursor: pointer; }
-  button:hover:not(:disabled) { border-color: var(--accent); }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--plane); color: var(--ink); font: 14px/1.45 var(--font); font-variant-numeric: tabular-nums; }
+  a { color: var(--data); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  :focus-visible { outline: 2px solid var(--data); outline-offset: 2px; }
+  button { background: var(--well); color: var(--ink); border: 1px solid var(--line); border-radius: 7px; padding: 6px 12px;
+           font: inherit; font-size: 13px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--ink3); }
+  button.go { background: var(--data); border-color: var(--data); color: #fff; font-weight: 600; }
+  button.go:hover:not(:disabled) { filter: brightness(1.1); border-color: var(--data); }
+  button.you { background: var(--you); border-color: var(--you); color: #1b1404; font-weight: 700; }
+  button.quiet { background: transparent; border-color: transparent; color: var(--ink2); }
+  button.quiet:hover:not(:disabled) { color: var(--ink); border-color: var(--line); }
+  button.danger:hover:not(:disabled) { border-color: var(--bad); color: #fff; background: var(--bad); }
   button:disabled { opacity: .4; cursor: not-allowed; }
-  input { background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; font: inherit; width: 100%; }
-  .wrap { display: grid; grid-template-columns: minmax(340px, 34%) 1fr; height: calc(100vh - 46px); }
-  aside { overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); }
-  .filter { position: sticky; top: 0; background: var(--panel); padding: 10px 12px; border-bottom: 1px solid var(--line); }
-  .job { display: grid; grid-template-columns: 34px 1fr auto; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); cursor: pointer; align-items: center; }
-  .job:hover { background: var(--panel2); }
-  .job.sel { background: var(--accent2); }
-  .job .n { color: var(--ink3); font: 12px ui-monospace, Menlo, monospace; }
-  .job .t { font-weight: 600; }
+  input, select { background: var(--well); color: var(--ink); border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; font: inherit; }
+  input[type=range] { padding: 0; accent-color: var(--data); }
+  input[type=checkbox] { accent-color: var(--data); }
+
+  /* frame */
+  .top { display: flex; align-items: center; gap: 14px; height: 52px; padding: 0 18px; border-bottom: 1px solid var(--line); background: var(--surface); }
+  .brand { font-weight: 700; font-size: 17px; letter-spacing: -.2px; white-space: nowrap; }
+  .brand b { color: var(--data); font-weight: 700; }
+  .proj { min-width: 0; flex: 1; display: flex; align-items: baseline; gap: 10px; }
+  .proj .name { font-weight: 600; font-size: 15px; white-space: nowrap; }
+  .proj .path { color: var(--ink3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pulse { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: var(--ink2); white-space: nowrap; }
+  .pulse .d { width: 8px; height: 8px; border-radius: 50%; background: var(--good); display: inline-block; }
+  .pulse .d.on { background: var(--you); animation: blink 1.6s ease-in-out infinite; }
+  @keyframes blink { 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .pulse .d.on { animation: none; } }
+  .wrap { display: grid; grid-template-columns: 330px 1fr; height: calc(100vh - 52px); }
+  .rail { overflow-y: auto; background: var(--surface); border-right: 1px solid var(--line); }
+  main { overflow-y: auto; min-width: 0; }
+
+  /* rail */
+  .sect { padding: 12px 14px 6px; }
+  .sect h2 { font-size: 13px; font-weight: 600; color: var(--ink2); margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; }
+  .ask { display: block; width: 100%; text-align: left; background: var(--you-dim); border: 1px solid var(--you); border-radius: 9px;
+         padding: 9px 11px; margin: 0 0 8px; color: var(--ink); cursor: pointer; }
+  .ask strong { color: var(--you); display: block; font-size: 13px; }
+  .ask span { color: var(--ink2); font-size: 12px; }
+  .q { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px; padding: 5px 2px; font-size: 13px; }
+  .q .who { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .q .who:hover { color: var(--data); }
+  .q .st { color: var(--ink3); font-size: 12px; }
+  .tog { display: flex; gap: 7px; align-items: center; color: var(--ink2); font-size: 12px; margin: 6px 0 2px; }
+  .find { position: sticky; top: 0; z-index: 2; background: var(--surface); padding: 10px 14px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .find input { width: 100%; }
+  .job { display: grid; grid-template-columns: 30px 1fr auto; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--line); cursor: pointer; align-items: center; }
+  .job:hover { background: var(--well); }
+  .job.sel { background: var(--data-dim); }
+  .job .n { color: var(--ink3); font-size: 12px; }
+  .job .t { font-weight: 600; font-size: 13.5px; }
   .job .l { color: var(--ink2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .job .k { color: var(--ink2); font-size: 11.5px; text-align: right; white-space: nowrap; }
-  .st { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; background: var(--ink3); }
-  .st.finished { background: var(--good); } .st.running { background: var(--warn); } .st.failed { background: var(--bad); }
-  main { overflow-y: auto; padding: 16px 22px 60px; min-width: 0; }
-  h2 { margin: 0 0 4px; font-size: 18px; }
-  h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .8px; color: var(--ink2); margin: 22px 0 8px; }
-  .muted { color: var(--ink2); } .err { color: var(--bad); }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-  .chip { background: var(--panel2); border: 1px solid var(--line); border-radius: 12px; padding: 2px 9px; font-size: 12px; cursor: pointer; }
-  .chip:hover { border-color: var(--accent); }
-  table.kv { border-collapse: collapse; font-size: 12.5px; }
-  table.kv td { padding: 3px 14px 3px 0; vertical-align: top; border-bottom: 1px solid var(--line); }
-  table.kv td:first-child { color: var(--ink2); white-space: nowrap; }
-  table.kv td:last-child { font-variant-numeric: tabular-nums; word-break: break-word; }
-  .figs img { max-width: 100%; border: 1px solid var(--line); border-radius: 6px; margin: 0 0 12px; background: var(--panel); }
-  .warnbox { border: 1px solid var(--serious); border-radius: 6px; padding: 8px 12px; margin: 10px 0; color: var(--ink); }
-  .warnbox b { color: var(--serious); }
-  .figs .cap { color: var(--ink3); font-size: 11.5px; margin: -8px 0 14px; }
-  details summary { cursor: pointer; color: var(--ink2); }
-  .log { max-height: 340px; overflow: auto; font: 11.5px ui-monospace, Menlo, monospace; white-space: pre-wrap;
-         background: var(--panel2); padding: 8px 10px; border-radius: 6px; margin: 6px 0 0; }
-  .files a { display: block; font: 12px ui-monospace, Menlo, monospace; padding: 2px 0; }
-  .bar { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
-  .empty { color: var(--ink3); padding: 40px; text-align: center; }
-  .star { color: var(--serious); font-weight: 700; margin-left: 6px; font-size: 11px; letter-spacing: .5px; }
-  button.danger { border-color: var(--bad); color: var(--bad); }
-  button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
-  .bar { flex-wrap: wrap; }
-  .methods { white-space: pre-wrap; font-size: 12.5px; background: var(--panel2); padding: 10px 14px; border-radius: 6px; }
-  .flow img { max-width: min(100%, 560px); background: #fff; border-radius: 6px; display: block; }
-  table.kv table.kv { margin: 0; } table.kv table.kv td { border-bottom: none; padding: 1px 12px 1px 0; }
-  @media (max-width: 760px) { .wrap { grid-template-columns: 1fr; height: auto; } aside { max-height: 45vh; } }
+  .job .k { color: var(--ink2); font-size: 12px; text-align: right; white-space: nowrap; max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; vertical-align: 1px; background: var(--ink3); }
+  .dot.finished { background: var(--good); } .dot.running { background: var(--you); } .dot.failed { background: var(--bad); }
+  .dot.queued { background: transparent; border: 1.5px solid var(--ink2); } .dot.waiting { background: var(--you); border-radius: 2px; }
+  .dot.cancelled { background: var(--axis); }
+  .fin { color: var(--you); font-size: 12px; margin-left: 6px; }
+
+  /* job */
+  .head { display: flex; align-items: flex-start; gap: 16px; padding: 18px 26px 12px; flex-wrap: wrap; }
+  .head h1 { font-size: 22px; font-weight: 700; margin: 0; letter-spacing: -.3px; }
+  .head .sub { color: var(--ink2); font-size: 13px; margin-top: 2px; }
+  .head .acts { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .warn { margin: 0 26px 10px; border-left: 3px solid var(--serious); background: var(--well); padding: 7px 12px; border-radius: 0 7px 7px 0; font-size: 13px; }
+  .err { color: var(--bad); }
+  .stage { background: #000; margin: 0 26px; border-radius: 10px; position: relative; overflow: hidden; border: 1px solid var(--line); }
+  .nums { display: flex; gap: 34px; flex-wrap: wrap; padding: 16px 26px 4px; }
+  .num { min-width: 90px; }
+  .num .v { font-size: 26px; font-weight: 700; letter-spacing: -.5px; line-height: 1.1; }
+  .num .v small { font-size: 15px; font-weight: 500; color: var(--ink2); margin-left: 2px; }
+  .num .c { color: var(--ink2); font-size: 12.5px; }
+  .tabs { display: flex; gap: 2px; padding: 14px 26px 0; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--plane); z-index: 3; }
+  .tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--ink2); padding: 8px 12px; font-size: 13.5px; }
+  .tabs button.on { color: var(--ink); border-bottom-color: var(--data); }
+  .pane { padding: 18px 26px 70px; }
+  .muted { color: var(--ink2); }
+  .empty { color: var(--ink2); padding: 60px 30px; text-align: center; }
+  .empty h1 { color: var(--ink); font-size: 20px; }
+
+  /* figures */
+  .fig { margin: 0 0 26px; }
+  .fig .bar { display: flex; justify-content: space-between; align-items: center; margin: 0 0 6px; font-size: 12.5px; color: var(--ink2); }
+  .fig .plot { background: var(--surface); border-radius: 8px; overflow: hidden; min-height: 40px; }
+  .fig img { max-width: min(100%, 1150px); display: block; border-radius: 8px; }
+  .fig .plot { max-width: 1150px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .seg button { border: none; border-radius: 0; padding: 3px 10px; font-size: 12px; background: var(--well); color: var(--ink2); }
+  .seg button.on { background: var(--raise); color: var(--ink); }
+
+  /* gallery */
+  .gal-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 12px 14px; background: var(--surface); border-bottom: 1px solid var(--line); }
+  .gal-tools .sum { margin-right: auto; font-size: 13.5px; }
+  .gal-tools .sum b { font-size: 16px; }
+  .gal { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--cell, 132px), 1fr)); gap: 8px; padding: 14px; max-height: 70vh; overflow-y: auto; }
+  .cls { position: relative; border-radius: 8px; overflow: hidden; cursor: pointer; background: #000; border: 2px solid transparent; transition: border-color .08s; }
+  .cls img { width: 100%; display: block; aspect-ratio: 1; image-rendering: auto; }
+  .cls .three { display: grid; grid-template-columns: repeat(3, 1fr); }
+  .cls .lab { position: absolute; left: 0; right: 0; bottom: 0; padding: 14px 7px 4px; font-size: 11.5px; color: #fff;
+              background: linear-gradient(transparent, rgba(0,0,0,.85)); display: flex; justify-content: space-between; }
+  .cls.on { border-color: var(--data); }
+  .cls.on::after { content: "✓"; position: absolute; top: 5px; right: 6px; width: 20px; height: 20px; border-radius: 50%; background: var(--data);
+                   color: #fff; font-size: 13px; text-align: center; line-height: 20px; font-weight: 700; }
+  .cls.off { opacity: .45; }
+  .gal.three { --cell: 270px; }
+
+  /* 3D */
+  .v3 { display: grid; grid-template-columns: 1fr 250px; min-height: 520px; }
+  .v3 canvas { width: 100%; height: 100%; min-height: 520px; display: block; cursor: grab; touch-action: none; }
+  .v3 .ctl { background: var(--surface); border-left: 1px solid var(--line); padding: 14px; display: flex; flex-direction: column; gap: 12px; font-size: 13px; }
+  .v3 .ctl label { color: var(--ink2); font-size: 12px; display: block; margin-bottom: 3px; }
+  .v3 .ctl select, .v3 .ctl input[type=range] { width: 100%; }
+  .v3 .row { display: flex; gap: 5px; flex-wrap: wrap; }
+  .v3 .lvl { font-size: 18px; font-weight: 700; }
+  .ramp { height: 8px; border-radius: 4px; background: linear-gradient(90deg, #296bd1, #ededeb, #d94038); }
+  .hint { position: absolute; left: 12px; bottom: 10px; font-size: 12px; color: #9aa; pointer-events: none; }
+  .launch { display: grid; place-items: center; min-height: 300px; gap: 12px; text-align: center; color: var(--ink2); padding: 14px; }
+  .launch img { max-height: 210px; max-width: 100%; border-radius: 6px; }
+  .mic { display: grid; grid-template-columns: 1fr; }
+  .mic img { width: 100%; display: block; }
+  .mic .nav { display: flex; gap: 10px; align-items: center; padding: 10px 14px; background: var(--surface); }
+  .mic .nav input[type=range] { flex: 1; }
+
+  table.kv { border-collapse: collapse; font-size: 13px; width: 100%; max-width: 980px; }
+  table.kv td { padding: 4px 16px 4px 0; vertical-align: top; border-bottom: 1px solid var(--line); }
+  table.kv td:first-child { color: var(--ink2); white-space: nowrap; width: 1%; }
+  table.kv table.kv td { border-bottom: none; padding: 1px 12px 1px 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
+  .chip { background: var(--well); border: 1px solid var(--line); border-radius: 14px; padding: 3px 10px; font-size: 12.5px; cursor: pointer; }
+  .chip:hover { border-color: var(--data); }
+  .log { max-height: 60vh; overflow: auto; font: 12px ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; background: var(--surface); padding: 10px 12px; border-radius: 8px; }
+  .files a { display: block; padding: 3px 0; font-size: 13px; }
+  .form td { padding: 7px 14px 7px 0; vertical-align: top; }
+  .form td:first-child { color: var(--ink2); white-space: nowrap; padding-top: 12px; }
+  .form input:not([type=checkbox]), .form select { width: 100%; max-width: 560px; }
+  .form .help { color: var(--ink3); font-size: 12px; margin-top: 2px; max-width: 640px; }
+  .methods { white-space: pre-wrap; background: var(--surface); padding: 12px 16px; border-radius: 8px; font-size: 13px; max-width: 980px; }
+  .flow img { max-width: min(100%, 560px); background: #fff; border-radius: 8px; display: block; }
+  @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; height: auto; } .rail { max-height: 50vh; } .v3 { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
-<header>
-  <h1>Celeris<span>2D</span> project</h1>
-  <div id="root">loading...</div>
-  <a href="/">2D dashboard</a>
+<header class="top">
+  <div class="brand">Celeris<b>2D</b></div>
+  <div class="proj"><span class="name" id="pname">…</span><span class="path" id="ppath"></span></div>
+  <div class="pulse" id="pulse"></div>
+  <a href="/" title="the single-dataset 2D classification page">2D page</a>
   <button id="open" title="open another project folder (the one with project.db)">Open project…</button>
   <button id="report" title="flowchart, methods text and settings of the jobs marked final and everything they came from">Report</button>
-  <button id="newjob" class="primary" title="make a job of any type, its form built from the job type's settings">New job</button>
-  <button id="theme" title="switch the page and its figures between dark and light">Light</button>
-  <button id="refresh">Refresh</button>
+  <button id="newjob" class="go">New job</button>
 </header>
 <div class="wrap">
-  <aside>
-    <div class="filter"><input id="q" placeholder="filter: number, type, label, status, final"></div>
+  <nav class="rail" aria-label="jobs">
+    <div class="sect" id="asks"></div>
+    <div class="sect" id="queue"></div>
+    <div class="find"><input id="q" placeholder="Find a job: number, type, label, status, final" aria-label="find a job"></div>
     <div id="list"></div>
-  </aside>
-  <main id="detail"><div class="empty">Select a job.</div></main>
+  </nav>
+  <main id="main"><div class="empty"><h1>Choose a job on the left</h1><p>or start one with New job.</p></div></main>
 </div>
+<script src="/web/plots.js"></script>
+<script src="/web/volume.js"></script>
 <script>
+'use strict';
 const $ = s => document.querySelector(s);
-const esc = s => String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
-let jobs = [], current = null, timer = null;
-let theme = 'dark';
-try { theme = localStorage.getItem('celeris-theme') || 'dark'; } catch (e) {}
-function applyTheme() {
-  document.documentElement.dataset.theme = theme;
-  $('#theme').textContent = theme === 'dark' ? 'Light' : 'Dark';
-}
-// a figure x.png has a light variant x.light.png (plotstyle.py); pick the one matching the page
-const isVariant = p => /\.(light|dark)\.png$/.test(p);
-function figFor(path, files) {
-  if (theme !== 'light') return path;
-  const lp = path.replace(/\.png$/, '.light.png');
-  return files.some(f => f.path === lp) ? lp : path;
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+const fmt = v => typeof v === 'number' ? (Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : String(+v.toFixed(3))) : esc(v);
+const file = p => `/api/project/file?path=${encodeURIComponent(p)}`;
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const THEME = () => ({surface: css('--surface'), well: css('--well'), line: css('--line'), axis: css('--axis'), grid: css('--line'),
+                      ink: css('--ink'), ink2: css('--ink2'), ink3: css('--ink3'), font: css('--font')});
+const MAPJOBS = ['Refine3D', 'LocalRefine', 'InitialModel', 'Sharpen', 'Subtract', 'ModeMaps', 'MaskCreate', 'Polish', 'CtfRefine'];
+const CLASSJOBS = ['Class2D', 'HeteroRefine', 'Class3D', 'Select'];
+let jobs = [], queue = {running: [], queued: [], waiting: []}, autoSelect = true, current = null, tab = 'plots', types = {};
+let pollTimer = null, logTimer = null, viewer = null;
+
+async function api(url, body) {
+  const r = await fetch(url, body === undefined ? {} : {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.detail || r.statusText);
+  return d;
 }
 
-// the number a job is judged by: from its job type's spec on the server (jobspec.key_of)
-const key = j => j.key || '';
-
+// ------------------------------------------------------------------ project, queue, list
 async function load() {
-  const r = await fetch('/api/project');
-  if (!r.ok) { $('#root').textContent = (await r.json()).detail; return; }
-  const d = await r.json();
-  $('#root').innerHTML = `<b>${esc(d.root)}</b> · ${d.jobs.length} jobs` + (d.running.length ? ` · running: ${esc(d.running.join(', '))}` : '');
+  let d;
+  try { d = await api('/api/project'); } catch (e) { $('#pname').textContent = 'No project open'; $('#ppath').textContent = e.message; return; }
   jobs = d.jobs;
-  renderList();
-  if (current) showJob(current, false);
-  clearTimeout(timer);
-  if (jobs.some(j => j.status === 'running')) timer = setTimeout(load, 5000);
+  $('#pname').textContent = d.root.split(/[\\/]/).filter(Boolean).pop();
+  $('#ppath').textContent = d.root;
+  try { const q = await api('/api/project/queue'); queue = q; autoSelect = q.auto_select; } catch (e) {}
+  renderPulse(); renderAsks(); renderQueue(); renderList();
+  clearTimeout(pollTimer);
+  const busy = queue.running.length + queue.queued.length;
+  pollTimer = setTimeout(async () => { const before = JSON.stringify(jobs.map(j => j.status)); await load();
+    if (current && JSON.stringify(jobs.map(j => j.status)) !== before) showJob(current, false); }, busy ? 4000 : 20000);
 }
-
+function renderPulse() {
+  const r = queue.running.length, q = queue.queued.length, w = queue.waiting.length;
+  $('#pulse').innerHTML = `<span class="d ${r ? 'on' : ''}"></span>` +
+    (r ? `running ${esc(queue.running[0].slice(0, 3))}` : 'idle') + (q ? `, ${q} queued` : '') + (w ? `, <b style="color:var(--you)">${w} waiting for you</b>` : '');
+}
+function renderAsks() {
+  const w = queue.waiting.map(n => jobs.find(j => j.name === n)).filter(Boolean);
+  $('#asks').innerHTML = w.length ? `<h2>Waiting for you</h2>` + w.map(j => `
+    <button class="ask" data-n="${esc(j.name)}"><strong>Choose the classes to keep</strong>
+      <span>${esc(j.name)} · from ${esc((j.inputs || [])[0] || '')}</span></button>`).join('') : '';
+  $('#asks').style.display = w.length ? '' : 'none';
+  document.querySelectorAll('.ask').forEach(b => b.onclick = () => showJob(b.dataset.n));
+}
+function renderQueue() {
+  const rows = [...queue.running.map(n => [n, 'running']), ...queue.queued.map(n => [n, 'queued'])];
+  $('#queue').innerHTML = `<h2>Queue <span class="muted" style="font-weight:400">${rows.length ? rows.length + ' job' + (rows.length > 1 ? 's' : '') : 'empty'}</span></h2>` +
+    rows.map(([n, s]) => `<div class="q"><span class="who" data-n="${esc(n)}"><span class="dot ${s}"></span>${esc(n)}</span>` +
+      (s === 'queued' ? `<button class="quiet" data-c="${esc(n)}" title="take it out of the queue">Cancel</button>` : `<span class="st">running</span>`) + '</div>').join('') +
+    `<label class="tog"><input type="checkbox" id="autosel" ${autoSelect ? 'checked' : ''}> Ask me to choose classes after each classification</label>`;
+  document.querySelectorAll('#queue .who').forEach(e => e.onclick = () => showJob(e.dataset.n));
+  document.querySelectorAll('#queue [data-c]').forEach(b => b.onclick = async () => {
+    try { await api('/api/project/cancel', {job: b.dataset.c}); } catch (e) { alert(e.message); }
+    load();
+  });
+  $('#autosel').onchange = async e => { await api('/api/project/queue', {auto_select: e.target.checked}); };
+}
 function renderList() {
   const q = $('#q').value.trim().toLowerCase();
   const rows = jobs.filter(j => !q || `${j.name} ${j.type} ${j.status} ${j.final ? 'final' : ''}`.toLowerCase().includes(q)).reverse();
   $('#list').innerHTML = rows.map(j => `
-    <div class="job ${j.name === current ? 'sel' : ''}" data-n="${esc(j.name)}">
+    <div class="job ${j.name === current ? 'sel' : ''}" data-n="${esc(j.name)}" tabindex="0">
       <div class="n">${String(j.id).padStart(3, '0')}</div>
-      <div><div class="t"><span class="st ${esc(j.status)}" title="${esc(j.status)}"></span>${esc(j.type)}${j.final ? `<span class="star" title="${esc(j.final_note || 'final')}">★ FINAL</span>` : ''}</div>
+      <div><div class="t"><span class="dot ${esc(j.status)}" title="${esc(j.status)}"></span>${esc(j.type)}${j.final ? '<span class="fin" title="' + esc(j.final_note || 'final') + '">★ final</span>' : ''}</div>
            <div class="l">${esc(j.label || '')}</div></div>
-      <div class="k">${esc(key(j))}</div>
-    </div>`).join('') || '<div class="empty">No jobs.</div>';
-  document.querySelectorAll('.job').forEach(e => e.onclick = () => showJob(e.dataset.n));
+      <div class="k" title="${esc(j.key || j.status)}">${esc(j.status === 'finished' ? (j.key || '') : j.status)}</div>
+    </div>`).join('') || '<div class="empty">No jobs yet. Start with New job.</div>';
+  document.querySelectorAll('.job').forEach(e => { e.onclick = () => showJob(e.dataset.n); e.onkeydown = ev => { if (ev.key === 'Enter') showJob(e.dataset.n); }; });
+}
+$('#q').oninput = renderList;
+
+// ------------------------------------------------------------------ a job
+function numbers(j) {
+  const s = j.summary || {}, sh = typeof s.sharpened === 'object' && s.sharpened ? s.sharpened : {};
+  const out = [];
+  const add = (v, unit, cap) => { if (v !== undefined && v !== null && v !== '' && typeof v !== 'object') out.push([v, unit, cap]); };
+  const res = s.resolution_solvent_mask_a ?? (j.type === 'Sharpen' ? s.resolution_a : undefined) ?? s.resolution_a;
+  add(res, 'Å', 'resolution, FSC 0.143');
+  add(s.resolution_unmasked_a, 'Å', 'unmasked');
+  add(sh.resolution_a, 'Å', 'sharpened');
+  add(s.b_factor ?? sh.b_factor, 'Å²', 'B-factor');
+  add(s.particles_used ?? s.particles ?? s.picks, '', s.particles_used ? 'particles used' : s.particles ? 'particles' : 'picks');
+  add(s.micrographs ?? s.movies, '', s.micrographs ? 'micrographs' : 'movies');
+  add(s.classes && typeof s.classes !== 'object' ? s.classes : undefined, '', 'classes');
+  add(s.seconds ? (s.seconds >= 120 ? Math.round(s.seconds / 60) : Math.round(s.seconds)) : undefined, s.seconds >= 120 ? 'min' : 's', 'run time');
+  return out.slice(0, 6);
+}
+async function showJob(name, scroll = true) {
+  current = name; renderList();
+  clearTimeout(logTimer);
+  let j;
+  try { j = await api('/api/project/job?job=' + encodeURIComponent(name)); } catch (e) { $('#main').innerHTML = `<div class="empty err">${esc(e.message)}</div>`; return; }
+  if (current !== j.name) return;
+  history.replaceState(null, '', '#' + j.name.slice(0, 3));
+  const meta = jobs.find(x => x.name === j.name) || {};
+  const s = j.summary || {};
+  const warns = s.warnings || [];
+  const canRerun = !['Import', 'Select'].includes(j.type);
+  const runLabel = j.status === 'failed' ? 'Restart' : ['MotionCtf', 'Pick', 'Extract'].includes(j.type) ? 'Continue with new movies' : 'Run again';
+  $('#main').innerHTML = `
+    <div class="head">
+      <div><h1>${esc(j.type)} <span class="muted" style="font-weight:500">${esc(j.name.slice(0, 3))}</span></h1>
+        <div class="sub"><span class="dot ${esc(j.status)}"></span>${esc(j.status === 'waiting' ? 'waiting for your choice' : j.status)}${meta.label ? ' · ' + esc(meta.label) : ''}${j.final ? ' · <span style="color:var(--you)">★ final</span>' : ''}</div></div>
+      <div class="acts">
+        ${canRerun ? `<button id="rerun" class="${j.status === 'failed' ? 'go' : ''}" ${['running', 'queued', 'waiting'].includes(j.status) ? 'disabled' : ''} title="a new job with the same inputs and settings, through the queue">${runLabel}</button>` : ''}
+        ${types[j.type] ? `<button id="edit" title="the New job form with this job's inputs and settings">Change settings…</button>` : ''}
+        ${['queued', 'waiting'].includes(j.status) ? `<button id="cancel">Cancel</button>` : ''}
+        <button id="final" title="final jobs and everything they came from make the publication report">${j.final ? '★ Final' : '☆ Mark final'}</button>
+        <button id="del" class="danger" ${j.status === 'running' ? 'disabled' : ''} title="move the job to the project's Trash folder">Delete</button>
+      </div>
+    </div>
+    ${j.error || s.error ? `<div class="warn err">${esc(j.error || s.error)}</div>` : ''}
+    ${warns.map(w => `<div class="warn">${esc(w)}</div>`).join('')}
+    <div id="stage"></div>
+    <div class="nums">${numbers(j).map(([v, u, c]) => `<div class="num"><div class="v">${fmt(v)}${u ? `<small>${u}</small>` : ''}</div><div class="c">${esc(c)}</div></div>`).join('')}</div>
+    <div class="tabs" role="tablist">${['plots', 'files', 'log', 'settings', 'lineage'].map(t => `<button data-t="${t}" class="${t === tab ? 'on' : ''}" role="tab">${{plots: 'Plots', files: 'Files', log: 'Log', settings: 'Settings', lineage: 'Made from'}[t]}</button>`).join('')}</div>
+    <div class="pane" id="pane"></div>`;
+  document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { tab = b.dataset.t; document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b)); renderPane(j); });
+  renderStage(j);
+  renderPane(j);
+  const on = (id, fn) => { const b = $('#' + id); if (b) b.onclick = fn; };
+  on('rerun', async () => { try { const d = await api('/api/project/rerun', {job: j.name}); current = d.job; await load(); showJob(d.job); } catch (e) { alert(e.message); } });
+  on('edit', () => jobForm(j.type, j.params));
+  on('cancel', async () => { try { await api('/api/project/cancel', {job: j.name}); await load(); showJob(j.name, false); } catch (e) { alert(e.message); } });
+  on('final', async () => {
+    let note = '';
+    if (!j.final) { note = prompt('A note for the report (for example "final map, Figure 2"):', ''); if (note === null) return; }
+    await api('/api/project/final', {job: j.name, final: !j.final, note}); await load(); showJob(j.name, false);
+  });
+  on('del', async () => {
+    if (!confirm(`Delete ${j.name}? It moves to the project's Trash folder.`)) return;
+    try { await api('/api/project/delete', {job: j.name}); }
+    catch (e) {
+      if (!/input of/.test(e.message)) { alert(e.message); return; }
+      if (!confirm(e.message + '\n\nDelete it anyway? Those jobs keep their own results.')) return;
+      try { await api('/api/project/delete', {job: j.name, force: true}); } catch (e2) { alert(e2.message); return; }
+    }
+    current = null; $('#main').innerHTML = '<div class="empty"><h1>Deleted</h1><p>It is in the project\'s Trash folder.</p></div>'; load();
+  });
+  if (scroll) $('#main').scrollTop = 0;
 }
 
-function kv(obj, depth = 0) {   // nested results (nu, sharpened, ...) as tables, not JSON
+// the data stage: what the job made, first
+function renderStage(j) {
+  const st = $('#stage');
+  if (viewer) { viewer.dispose(); viewer = null; }
+  if (CLASSJOBS.includes(j.type) && !['running', 'queued', 'cancelled', 'failed'].includes(j.status)) return stageGallery(st, j);
+  const maps = j.files.filter(f => /\.mrc$/.test(f.path) && !/half[12]|(^|_)mask\.mrc$|localres|nu_cutoff|_frames/.test(f.path.split('/').pop()));
+  if (MAPJOBS.includes(j.type) && maps.length) return stageVolume(st, j, maps);
+  if (j.movie_files && j.movie_files.length) return stageMics(st, j);
+  st.innerHTML = '';
+}
+async function stageGallery(st, j) {
+  st.className = 'stage';
+  st.innerHTML = '<div class="launch">loading classes…</div>';
+  let g;
+  try { g = await api('/api/project/classes?job=' + encodeURIComponent(j.name)); }
+  catch (e) { st.className = ''; st.innerHTML = ''; return; }
+  if (current !== j.name) return;
+  const sel = new Set(g.chosen || []);
+  const editable = j.type !== 'Select' || g.waiting;
+  const is3 = g.kind === '3d';
+  st.innerHTML = `<div class="gal-tools">
+      <div class="sum" id="gsum"></div>
+      ${editable ? `<button class="quiet" data-a="all">All</button><button class="quiet" data-a="none">None</button><button class="quiet" data-a="inv">Invert</button>
+      <label class="muted" style="font-size:12px">size <input type="range" id="gsize" min="90" max="220" value="${is3 ? 90 : 132}" style="width:90px;vertical-align:middle"></label>
+      <button class="${g.waiting ? 'you' : 'go'}" id="gsave" disabled>${g.waiting ? 'Keep these classes' : 'Make a selection'}</button>` : ''}
+    </div>
+    <div class="gal ${is3 ? 'three' : ''}" id="gal">${g.classes.map(c => `
+      <div class="cls ${sel.size ? (sel.has(c.cls) ? 'on' : 'off') : ''}" data-c="${c.cls}" title="class ${c.cls}: ${c.n.toLocaleString()} particles${c.res ? ', ' + c.res + ' Å' : ''}">
+        ${c.images.length > 1 ? `<div class="three">${c.images.map(s => `<img src="${s}" alt="">`).join('')}</div>` : c.images.length ? `<img src="${c.images[0]}" alt="class ${c.cls}">` : '<div style="aspect-ratio:3/1"></div>'}
+        <div class="lab"><span>${c.cls}</span><span>${c.n.toLocaleString()}${c.share != null ? ' · ' + (100 * c.share).toFixed(1) + '%' : ''}${c.res ? ' · ' + c.res + ' Å' : ''}</span></div>
+      </div>`).join('')}</div>`;
+  const total = g.classes.reduce((a, c) => a + c.n, 0);
+  const upd = () => {
+    const n = g.classes.filter(c => sel.has(c.cls)).reduce((a, c) => a + c.n, 0);
+    $('#gsum').innerHTML = editable ? (sel.size ? `<b>${sel.size}</b> of ${g.classes.length} classes, <b>${n.toLocaleString()}</b> particles (${(100 * n / Math.max(total, 1)).toFixed(1)}%)`
+      : `Click the classes to keep. ${g.classes.length} classes, ${total.toLocaleString()} particles`)
+      : `${sel.size} classes kept of ${esc(g.source)}`;
+    document.querySelectorAll('.cls').forEach(e => { const k = +e.dataset.c; e.classList.toggle('on', sel.has(k)); e.classList.toggle('off', sel.size > 0 && !sel.has(k)); });
+    const b = $('#gsave'); if (b) b.disabled = !sel.size;
+  };
+  if (editable) {
+    document.querySelectorAll('.cls').forEach(e => e.onclick = () => { const k = +e.dataset.c; sel.has(k) ? sel.delete(k) : sel.add(k); upd(); });
+    document.querySelectorAll('[data-a]').forEach(b => b.onclick = () => {
+      const a = b.dataset.a;
+      g.classes.forEach(c => { if (a === 'all') sel.add(c.cls); else if (a === 'none') sel.delete(c.cls); else sel.has(c.cls) ? sel.delete(c.cls) : sel.add(c.cls); });
+      upd();
+    });
+    $('#gsize').oninput = e => $('#gal').style.setProperty('--cell', e.target.value * (is3 ? 3 : 1) + 'px');
+    $('#gsave').onclick = async () => {
+      $('#gsave').disabled = true;
+      try { const d = await api('/api/project/select', {job: j.name, classes: [...sel].sort((a, b) => a - b)}); await load(); showJob(d.job); }
+      catch (e) { alert(e.message); $('#gsave').disabled = false; }
+    };
+  }
+  upd();
+}
+function stageVolume(st, j, maps) {
+  st.className = 'stage';
+  const rank = p => ['_map.mrc', 'sharpened_masked.mrc', 'sharpened.mrc', 'map_nomask.mrc'].findIndex(x => p.endsWith(x));
+  maps.sort((a, b) => (rank(a.path) < 0 ? 9 : rank(a.path)) - (rank(b.path) < 0 ? 9 : rank(b.path)));
+  const localres = j.files.find(f => /localres\.mrc$/.test(f.path));
+  const preview = j.files.find(f => /map_views\.png$/.test(f.path)) || j.files.find(f => /postprocess\.png$/.test(f.path));
+  st.innerHTML = `<div class="launch">
+      ${preview ? `<img src="${file(preview.path)}" alt="map preview">` : ''}
+      <div><button class="go" id="go3d">Show the map in 3D</button>
+      <div class="muted" style="font-size:12px;margin-top:6px">${maps.length} map${maps.length > 1 ? 's' : ''} in this job; the viewer loads a downsampled copy (~8 MB)</div></div></div>`;
+  $('#go3d').onclick = () => openViewer(st, j, maps, localres);
+}
+async function openViewer(st, j, maps, localres) {
+  st.innerHTML = `<div class="v3"><div style="position:relative"><canvas id="v3c" aria-label="3D map"></canvas><div class="hint">drag to rotate · wheel to zoom · double-click to reset</div></div>
+    <div class="ctl">
+      <div><label for="v3m">Map</label><select id="v3m">${maps.map(m => `<option value="${esc(m.path)}">${esc(m.path.split('/').pop())}</option>`).join('')}</select></div>
+      <div><label for="v3l">Threshold <span id="v3lv" class="lvl"></span></label><input type="range" id="v3l" min="0" max="1000" value="500">
+        <div class="row" id="v3p" style="margin-top:6px"></div></div>
+      ${localres ? `<div><label class="tog" style="margin:0"><input type="checkbox" id="v3c2"> Colour by local resolution</label><div id="v3r" style="display:none;margin-top:6px"><div class="ramp"></div><div class="row muted" style="justify-content:space-between;font-size:11.5px"><span id="v3r0"></span><span id="v3r1"></span></div></div></div>` : ''}
+      <div><label>View along</label><div class="row"><button data-ax="z">z</button><button data-ax="y">y</button><button data-ax="x">x</button></div></div>
+      <div class="muted" id="v3i" style="font-size:12px"></div>
+      <div><button id="v3s">Save image</button></div>
+    </div></div>`;
+  try { viewer = CelerisVolume.create($('#v3c'), {bg: '#000000'}); }
+  catch (e) { st.innerHTML = `<div class="launch err">${esc(e.message)}</div>`; return; }
+  let head = null;
+  const lv = () => head ? head.min + (head.max - head.min) * $('#v3l').value / 1000 : 0;
+  const setLv = v => { $('#v3l').value = Math.round(1000 * (v - head.min) / (head.max - head.min)); viewer.setLevel(v); $('#v3lv').textContent = (+v.toPrecision(3)); };
+  const loadMap = async () => {
+    $('#v3i').textContent = 'loading…';
+    const path = $('#v3m').value;
+    const sameJob = localres && path.split('/').slice(0, 2).join('/') === localres.path.split('/').slice(0, 2).join('/');
+    try { head = await viewer.load(`/api/project/volume?path=${encodeURIComponent(path)}${sameJob ? '&color=' + encodeURIComponent(localres.path) : ''}`); }
+    catch (e) { $('#v3i').textContent = e.message; return; }
+    $('#v3p').innerHTML = Object.entries(head.levels).map(([k, v]) => `<button data-lv="${v}" title="${k.endsWith('σ') ? k + ' above the noise at the box edge' : k + ' of the strongest density'}">${k}</button>`).join('');
+    document.querySelectorAll('[data-lv]').forEach(b => b.onclick = () => setLv(+b.dataset.lv));
+    setLv(head.level);
+    $('#v3i').innerHTML = `${esc(head.name)}<br>${head.box} px at ${head.apix_file.toFixed(3)} Å, shown at ${head.shape[0]} px`;
+    if (head.color && $('#v3r0')) { $('#v3r0').textContent = head.color.min.toFixed(2) + ' Å'; $('#v3r1').textContent = head.color.max.toFixed(2) + ' Å'; }
+  };
+  $('#v3l').oninput = () => { viewer.setLevel(lv()); $('#v3lv').textContent = +lv().toPrecision(3); };
+  $('#v3m').onchange = loadMap;
+  if ($('#v3c2')) $('#v3c2').onchange = e => { viewer.setColor(e.target.checked); $('#v3r').style.display = e.target.checked ? '' : 'none'; };
+  document.querySelectorAll('[data-ax]').forEach(b => b.onclick = () => viewer.view(b.dataset.ax));
+  $('#v3s').onclick = () => { const a = document.createElement('a'); a.href = viewer.snapshot(); a.download = j.name + '_3d.png'; a.click(); };
+  loadMap();
+}
+function stageMics(st, j) {
+  st.className = 'stage';
+  const fs = j.movie_files;
+  st.innerHTML = `<div class="mic"><div class="nav"><button id="mp" aria-label="previous micrograph">‹</button>
+      <input type="range" id="mr" min="0" max="${fs.length - 1}" value="0" aria-label="micrograph"><button id="mn" aria-label="next micrograph">›</button>
+      <span class="muted" id="ml" style="min-width:220px;text-align:right"></span></div><img id="mi" alt="micrograph figure"></div>`;
+  const show = i => { i = Math.max(0, Math.min(fs.length - 1, i)); $('#mr').value = i; $('#mi').src = file(fs[i]);
+    $('#ml').textContent = `${i + 1} of ${fs.length}: ${fs[i].split('/').pop().replace(/^j\d+_/, '').replace('.png', '')}`; };
+  $('#mr').oninput = e => show(+e.target.value);
+  $('#mp').onclick = () => show(+$('#mr').value - 1);
+  $('#mn').onclick = () => show(+$('#mr').value + 1);
+  show(0);
+}
+
+// tabs
+function renderPane(j) {
+  const p = $('#pane');
+  clearTimeout(logTimer);
+  if (tab === 'plots') return panePlots(p, j);
+  if (tab === 'files') {
+    const fs = j.files.filter(f => !/\.(png|gif)$/.test(f.path) && !/\.plot\.json$/.test(f.path));
+    p.innerHTML = fs.length ? `<div class="files">${fs.map(f => `<a href="${file(f.path)}" download>${esc(f.path)} <span class="muted">${(f.size / 1e6).toFixed(1)} MB</span></a>`).join('')}</div>` : '<p class="muted">No files besides the figures.</p>';
+    return;
+  }
+  if (tab === 'log') { p.innerHTML = `<pre class="log" id="log"></pre>`; return followLog(j.name, 0); }
+  if (tab === 'settings') {
+    const hide = new Set(['history', 'figures', 'warnings', 'fsc_solvent', 'fsc_corrected']);
+    const summ = Object.fromEntries(Object.entries(j.summary || {}).filter(([k, v]) => !hide.has(k) && !(Array.isArray(v) && v.length > 12)));
+    p.innerHTML = `<h3 class="muted" style="margin:0 0 6px;font-size:13px">Results</h3>${kv(summ)}<h3 class="muted" style="margin:18px 0 6px;font-size:13px">Settings</h3>${kv(j.params)}`;
+    return;
+  }
+  if (tab === 'lineage') {
+    p.innerHTML = `<h3 class="muted" style="margin:0 0 6px;font-size:13px">Made from</h3>${chips(j.lineage.slice(1))}
+      <h3 class="muted" style="margin:0 0 6px;font-size:13px">Used by</h3>${chips(j.dependents)}
+      <button id="flowb">Draw the flowchart</button><div id="flowbox" class="flow" style="margin-top:12px"></div>`;
+    document.querySelectorAll('#pane .chip').forEach(e => e.onclick = () => showJob(e.dataset.n));
+    $('#flowb').onclick = async () => {
+      $('#flowbox').innerHTML = '<p class="muted">drawing…</p>';
+      try { const d = await api('/api/project/flow?job=' + encodeURIComponent(j.name));
+        $('#flowbox').innerHTML = `<img src="${file(d.png)}&t=${Date.now()}" alt="flowchart"><p><a href="${file(d.svg)}" download>flowchart.svg</a> (text stays editable)</p>`; }
+      catch (e) { $('#flowbox').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+    };
+  }
+}
+const chips = arr => arr.length ? `<div class="chips">${arr.map(n => `<span class="chip" data-n="${esc(n)}">${esc(n)}</span>`).join('')}</div>` : '<p class="muted">none</p>';
+function kv(obj, depth = 0) {
   const cell = v => (v && typeof v === 'object' && !Array.isArray(v) && depth < 2) ? kv(v, depth + 1)
     : esc(Array.isArray(v) ? v.map(x => typeof x === 'object' ? JSON.stringify(x) : x).join(', ') : (typeof v === 'object' ? JSON.stringify(v) : v));
   return '<table class="kv">' + Object.entries(obj).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${cell(v)}</td></tr>`).join('') + '</table>';
 }
-const post = async (url, body) => {
-  const r = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
-  const d = await r.json();
-  if (!r.ok) throw new Error(d.detail || r.statusText);
-  return d;
-};
-
-async function showJob(name, scroll = true) {
-  current = name;
-  renderList();
-  const r = await fetch('/api/project/job?job=' + encodeURIComponent(name));
-  const j = await r.json();
-  if (!r.ok) { $('#detail').innerHTML = `<div class="err">${esc(j.detail)}</div>`; return; }
-  if (current !== j.name) { current = j.name; renderList(); }
-  history.replaceState(null, '', '#' + j.name.slice(0, 3));
-  const hide = new Set(['history', 'figures', 'warnings']);
-  const summ = Object.fromEntries(Object.entries(j.summary || {}).filter(([k, v]) => !hide.has(k) && (!Array.isArray(v) || v.length <= 8)));
-  const warns = (j.summary || {}).warnings || [];
-  const isFig = p => /\.(png|gif)$/.test(p);
-  const figs = j.files.filter(f => isFig(f.path) && !isVariant(f.path));
-  const other = j.files.filter(f => !isFig(f.path));
-  const canRerun = !['Import', 'Select'].includes(j.type);
-  const fin = (jobs.find(x => x.name === j.name) || {}).final;
-  const chips = (arr) => arr.length ? `<div class="chips">${arr.map(n => `<span class="chip" data-n="${esc(n)}">${esc(n)}</span>`).join('')}</div>` : '<span class="muted">none</span>';
-  $('#detail').innerHTML = `
-    <h2>${esc(j.name)}</h2>
-    <div class="muted"><span class="st ${esc(j.status)}"></span>${esc(j.status)} · ${esc(j.type)}</div>
-    ${j.error ? `<p class="err">${esc(j.error)}</p>` : ''}
-    ${warns.length ? `<div class="warnbox">${warns.map(w => `<div><b>⚠ warning</b> ${esc(w)}</div>`).join('')}</div>` : ''}
-    <div class="bar">
-      ${canRerun ? `<button class="primary" id="rerun" ${j.status === 'running' ? 'disabled' : ''} title="the same inputs and settings">${j.status === 'failed' ? 'Restart (same settings)' : ['MotionCtf', 'Pick', 'Extract'].includes(j.type) ? 'Continue (new movies)' : 'Run again as a new job'}</button>` : ''}
-      ${types[j.type] ? `<button id="edit" title="the New job form with this job's inputs and settings">Change settings and run</button>` : ''}
-      <button id="final" title="final jobs and everything they came from make the publication report">${fin ? '★ Unmark final' : '☆ Mark final'}</button>
-      <button id="flow" title="flowchart of this job and every job it was made from">Flowchart</button>
-      <button id="del" class="danger" ${j.status === 'running' ? 'disabled' : ''} title="move the job (folder and data) to the project's Trash/">Delete</button>
-    </div>
-    <div id="flowbox" class="flow"></div>
-    <h3>Comes from</h3>${chips(j.lineage.slice(1))}
-    <h3>Used by</h3>${chips(j.dependents)}
-    <h3>Results</h3>${kv(summ)}
-    ${figs.length ? `<h3>Figures</h3><div class="figs">${figs.map(f => `<img loading="lazy" src="/api/project/file?path=${encodeURIComponent(figFor(f.path, j.files))}&t=${Date.now()}" alt="${esc(f.path)}"><div class="cap">${esc(f.path)}</div>`).join('')}</div>` : ''}
-    ${other.length ? `<h3>Files</h3><div class="files">${other.map(f => `<a href="/api/project/file?path=${encodeURIComponent(f.path)}" download>${esc(f.path)} (${(f.size / 1e6).toFixed(1)} MB)</a>`).join('')}</div>` : ''}
-    ${j.movie_figures ? `<p class="muted">${j.movie_figures} per-micrograph figures in figures/movies/</p>` : ''}
-    <h3>Log</h3><details id="logbox" ${j.status === 'running' ? 'open' : ''}><summary>${j.log ? esc(j.log) : 'no run log (jobs made before run logs, or not started)'}</summary><pre id="log" class="log"></pre></details>
-    <h3>Parameters</h3><details><summary>${Object.keys(j.params).length} parameters</summary>${kv(j.params)}</details>`;
-  followLog(j.name);
-  document.querySelectorAll('#detail .chip').forEach(e => e.onclick = () => showJob(e.dataset.n));
-  const eb = $('#edit');
-  if (eb) eb.onclick = () => jobForm(j.type, j.params);
-  const b = $('#rerun');
-  if (b) b.onclick = async () => {
-    if (!confirm(`Run ${j.name} again?`)) return;
-    b.disabled = true;
-    const r = await fetch('/api/project/rerun', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({job: j.name})});
-    const d = await r.json();
-    if (!r.ok) { alert(d.detail); b.disabled = false; return; }
-    current = d.job;
-    load();
+let interactive = true;
+try { interactive = localStorage.getItem('celeris-interactive') !== '0'; } catch (e) {}
+function panePlots(p, j) {
+  const figs = j.files.filter(f => /\.(png|gif)$/.test(f.path) && !/\.(light|dark)\.png$/.test(f.path));
+  const hasJson = f => j.files.some(x => x.path === f.path.replace(/\.png$/, '.plot.json'));
+  if (!figs.length) { p.innerHTML = `<p class="muted">${j.status === 'running' ? 'Figures appear here when the job finishes.' : 'This job has no figures.'}</p>`; return; }
+  p.innerHTML = figs.map((f, i) => `<div class="fig"><div class="bar"><span>${esc(f.path.split('/').pop().replace(/^j\d+_/, '').replace(/\.(png|gif)$/, '').replace(/_/g, ' '))}</span>
+      ${hasJson(f) ? `<span class="seg"><button data-i="${i}" data-m="live" class="${interactive ? 'on' : ''}">Interactive</button><button data-i="${i}" data-m="img" class="${interactive ? '' : 'on'}">Image</button></span>` : ''}</div>
+      <div class="plot" id="fig${i}"></div></div>`).join('');
+  const draw = (i, live) => {
+    const f = figs[i], box = $('#fig' + i);
+    if (live && hasJson(f)) {
+      box.innerHTML = '<p class="muted" style="padding:14px">drawing…</p>';
+      fetch(file(f.path.replace(/\.png$/, '.plot.json'))).then(r => r.json()).then(spec => { box.innerHTML = ''; return CelerisPlots.render(box, spec, THEME()); })
+        .catch(e => { box.innerHTML = `<img src="${file(f.path)}" alt=""><p class="muted">${esc(e.message)}</p>`; });
+    } else box.innerHTML = `<img loading="lazy" src="${file(f.path)}" alt="${esc(f.path)}">`;
   };
-  $('#final').onclick = async () => {
-    let note = '';
-    if (!fin) { note = prompt('Mark final - a note for the report (e.g. "final map, Figure 2"):', ''); if (note === null) return; }
-    try { await post('/api/project/final', {job: j.name, final: !fin, note}); } catch (e) { alert(e.message); return; }
-    await load();
-  };
-  $('#flow').onclick = async () => {
-    $('#flowbox').innerHTML = '<p class="muted">drawing…</p>';
-    const r = await fetch('/api/project/flow?job=' + encodeURIComponent(j.name));
-    const d = await r.json();
-    if (!r.ok) { $('#flowbox').innerHTML = `<p class="err">${esc(d.detail)}</p>`; return; }
-    $('#flowbox').innerHTML = `<h3>Flowchart</h3><img src="/api/project/file?path=${encodeURIComponent(d.png)}&t=${Date.now()}">
-      <p><a href="/api/project/file?path=${encodeURIComponent(d.svg)}" download>flowchart (SVG, editable text)</a></p>`;
-  };
-  $('#del').onclick = async () => {
-    if (!confirm(`Delete ${j.name}? It moves to the project's Trash/ folder (recoverable by hand).`)) return;
-    try { await post('/api/project/delete', {job: j.name}); }
-    catch (e) {
-      if (!/input of/.test(e.message) || !confirm(e.message + '\n\nDelete anyway? Those jobs keep their own results.')) { if (!/input of/.test(e.message)) alert(e.message); return; }
-      try { await post('/api/project/delete', {job: j.name, force: true}); } catch (e2) { alert(e2.message); return; }
-    }
-    current = null; $('#detail').innerHTML = '<div class="empty">Deleted.</div>'; load();
-  };
-  if (scroll) $('#detail').scrollTop = 0;
+  const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { io.unobserve(e.target); draw(+e.target.id.slice(3), interactive); } }), {rootMargin: '300px'});
+  figs.forEach((f, i) => io.observe($('#fig' + i)));
+  document.querySelectorAll('.seg button').forEach(b => b.onclick = () => {
+    const live = b.dataset.m === 'live';
+    interactive = live; try { localStorage.setItem('celeris-interactive', live ? '1' : '0'); } catch (e) {}
+    b.parentNode.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    draw(+b.dataset.i, live);
+  });
+}
+async function followLog(name, offset) {
+  clearTimeout(logTimer);
+  if (current !== name || !$('#log')) return;
+  let d;
+  try { d = await api(`/api/project/log?job=${encodeURIComponent(name)}&offset=${offset}`); } catch (e) { return; }
+  if (current !== name || !$('#log')) return;
+  const pre = $('#log'), atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
+  pre.textContent += d.text || (offset ? '' : 'No run log for this job.');
+  if (atEnd) pre.scrollTop = pre.scrollHeight;
+  if (d.status === 'running') logTimer = setTimeout(() => followLog(name, d.offset), 3000);
 }
 
-async function showReport() {
-  current = null; renderList();
-  $('#detail').innerHTML = '<p class="muted">making the report…</p>';
-  const r = await fetch('/api/project/report', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
-  const d = await r.json();
-  if (!r.ok) { $('#detail').innerHTML = `<h2>Report</h2><p class="err">${esc(d.detail)}</p><p class="muted">Open a job and press "☆ Mark final" on the maps / particle sets the publication reports.</p>`; return; }
-  const f = p => `/api/project/file?path=${encodeURIComponent(p)}`;
-  $('#detail').innerHTML = `<h2>Report</h2>
-    <p class="muted">${d.jobs.length} jobs lead to the final job(s) ${d.finals.map(esc).join(', ')}. Written to <b>report/</b> in the project.</p>
-    <div class="bar"><a href="${f(d.flowchart_svg)}" download>flowchart.svg</a> · <a href="${f(d.flowchart)}" download>flowchart.png</a> ·
-      <a href="${f(d.methods)}" download>methods.md</a> · <a href="${f(d.settings)}" download>settings.csv</a></div>
-    <div class="flow"><img src="${f(d.flowchart)}&t=${Date.now()}"></div>
-    <h3>Methods</h3><div class="methods">${esc(d.methods_text)}</div>`;
-}
-$('#report').onclick = showReport;
-$('#open').onclick = async () => {
-  const root = prompt('Project folder (the one with project.db; Windows paths like E:\\linux\\celeris\\inx6 work too):', '');
-  if (!root) return;
-  try { await post('/api/project/open', {root}); } catch (e) { alert(e.message); return; }
-  current = null; $('#detail').innerHTML = '<div class="empty">Select a job.</div>'; load();
-};
-
-// ------------------------------------------------------------------ New job (built from /api/project/jobtypes)
-let types = {};
-async function loadTypes() {
-  try {
-    const r = await fetch('/api/project/jobtypes');
-    if (r.ok) types = Object.fromEntries((await r.json()).map(t => [t.type, t]));
-  } catch (e) {}
-}
-
-function fieldInput(f, v) {
-  const id = 'f_' + f.name;
-  const val = v === undefined ? f.default : v;
-  if (f.kind === 'bool') return `<input type="checkbox" id="${id}" ${val ? 'checked' : ''}>`;
-  const shown = Array.isArray(val) ? val.join(', ') : (val == null ? '' : val);
-  const type = (f.kind === 'int' || f.kind === 'float') ? 'number' : 'text';
-  const step = f.kind === 'float' ? 'any' : '1';
-  return `<input type="${type}" ${type === 'number' ? `step="${step}"` : ''} id="${id}" value="${esc(shown)}">`;
-}
-
+// ------------------------------------------------------------------ new job, report, open
+async function loadTypes() { try { types = Object.fromEntries((await api('/api/project/jobtypes')).map(t => [t.type, t])); } catch (e) {} }
 function jobForm(type, params = {}) {
-  current = null;
-  renderList();
+  current = null; renderList();
   const names = Object.keys(types);
-  if (!names.length) { $('#detail').innerHTML = '<div class="err">no job types (server too old?)</div>'; return; }
+  if (!names.length) { $('#main').innerHTML = '<div class="empty err">The server did not send job types.</div>'; return; }
   type = type || names[0];
   const t = types[type];
-  const sel = jobs.filter(x => x.status === 'finished');
-  const opt = (inp) => {
-    const ok = sel.filter(x => inp.types.includes(x.type));
+  const usable = jobs.filter(x => ['finished', 'queued', 'waiting', 'running'].includes(x.status));
+  const opt = inp => {
+    const ok = usable.filter(x => inp.types.includes(x.type));
     const pre = params[inp.name] != null ? Number(params[inp.name]) : (ok.length ? ok[ok.length - 1].id : null);
     return (inp.optional ? '<option value="">(default)</option>' : '') +
-      ok.map(x => `<option value="${x.id}" ${x.id === pre ? 'selected' : ''}>${esc(x.name)} ${esc(key(x))}</option>`).join('');
+      ok.map(x => `<option value="${x.id}" ${x.id === pre ? 'selected' : ''}>${esc(x.name)}${x.status !== 'finished' ? ' (' + x.status + ')' : ' · ' + esc(x.key || '')}</option>`).join('');
   };
-  $('#detail').innerHTML = `
-    <h2>New job</h2>
-    <div class="bar"><select id="ftype">${names.map(n => `<option ${n === type ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
-      <span class="muted">${esc(t.title)}</span></div>
-    <h3>Inputs</h3>
-    <table class="kv">${t.inputs.map(i => `<tr><td>${esc(i.name)}${i.optional ? '' : ' *'}</td><td><select id="in_${esc(i.name)}">${opt(i)}</select>
-      <div class="muted">${esc(i.doc)} (${esc(i.types.join(' / '))})</div></td></tr>`).join('')}</table>
-    <h3>Settings</h3>
-    <table class="kv">${t.settings.map(f => `<tr><td>${esc(f.name)}</td><td>${fieldInput(f, params[f.name])}
-      <div class="muted">${esc(f.help)}</div></td></tr>`).join('')}</table>
-    <div class="bar"><input id="flabel" placeholder="label (optional)" style="flex: 1; max-width: 360px"><button class="primary" id="frun" style="white-space: nowrap">Make and run</button></div>
-    <p class="err" id="ferr"></p>`;
+  const field = f => {
+    const v = params[f.name] === undefined ? f.default : params[f.name];
+    if (f.kind === 'bool') return `<input type="checkbox" id="f_${f.name}" ${v ? 'checked' : ''}>`;
+    const shown = Array.isArray(v) ? v.join(', ') : (v == null ? '' : v);
+    const num = f.kind === 'int' || f.kind === 'float';
+    return `<input ${num ? `type="number" step="${f.kind === 'float' ? 'any' : '1'}"` : 'type="text"'} id="f_${f.name}" value="${esc(shown)}">`;
+  };
+  $('#main').innerHTML = `<div class="head"><div><h1>New job</h1><div class="sub">It goes into the queue and runs when its inputs are ready.</div></div></div>
+    <div class="pane" style="padding-top:0">
+    <table class="form"><tr><td>Job type</td><td><select id="ftype">${names.map(n => `<option ${n === type ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select><div class="help">${esc(t.title)}</div></td></tr>
+    ${t.inputs.map(i => `<tr><td>${esc(i.name)}${i.optional ? '' : ' *'}</td><td><select id="in_${esc(i.name)}">${opt(i)}</select><div class="help">${esc(i.doc)} (${esc(i.types.join(', '))}); jobs still queued or waiting can be inputs</div></td></tr>`).join('')}
+    ${t.settings.map(f => `<tr><td>${esc(f.name)}</td><td>${field(f)}<div class="help">${esc(f.help)}</div></td></tr>`).join('')}
+    <tr><td>Label</td><td><input id="flabel" placeholder="optional, e.g. C8_nu"></td></tr></table>
+    <p><button class="go" id="frun">Add to the queue</button> <span class="err" id="ferr"></span></p></div>`;
   $('#ftype').onchange = e => jobForm(e.target.value);
   $('#frun').onclick = async () => {
     const inputs = {}, settings = {};
     t.inputs.forEach(i => { const v = $('#in_' + i.name).value; if (v) inputs[i.name] = Number(v); });
-    t.settings.forEach(f => {
-      const el = $('#f_' + f.name);
-      settings[f.name] = f.kind === 'bool' ? el.checked : el.value;
-    });
+    t.settings.forEach(f => { const el = $('#f_' + f.name); settings[f.name] = f.kind === 'bool' ? el.checked : el.value; });
     $('#frun').disabled = true;
-    const r = await fetch('/api/project/new', {method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({type, inputs, settings, label: $('#flabel').value})});
-    const d = await r.json();
-    if (!r.ok) { $('#ferr').textContent = d.detail; $('#frun').disabled = false; return; }
-    current = d.job;
-    load();
+    try { const d = await api('/api/project/new', {type, inputs, settings, label: $('#flabel').value}); await load(); showJob(d.job); }
+    catch (e) { $('#ferr').textContent = e.message; $('#frun').disabled = false; }
   };
 }
-$('#newjob').onclick = () => jobForm(current && types[(jobs.find(x => x.name === current) || {}).type] ? jobs.find(x => x.name === current).type : null);
-
-let logTimer = null;
-async function followLog(name, offset = 0) {   // the run log, appended every 3 s while the job runs
-  clearTimeout(logTimer);
-  if (current !== name || !$('#log')) return;
-  const r = await fetch(`/api/project/log?job=${encodeURIComponent(name)}&offset=${offset}`);
-  if (!r.ok || current !== name) return;
-  const d = await r.json();
-  const pre = $('#log');
-  const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
-  pre.textContent += d.text;
-  if (atEnd) pre.scrollTop = pre.scrollHeight;
-  if (d.status === 'running') logTimer = setTimeout(() => followLog(name, d.offset), 3000);
-  else if (offset && d.text) showJob(name, false);   // just finished: show its results
-}
-
-$('#q').oninput = renderList;
-$('#theme').onclick = () => {
-  theme = theme === 'dark' ? 'light' : 'dark';
-  try { localStorage.setItem('celeris-theme', theme); } catch (e) {}
-  applyTheme();
-  if (current) showJob(current, false);
+$('#newjob').onclick = () => { const j = jobs.find(x => x.name === current); jobForm(j && types[j.type] ? j.type : null); };
+$('#report').onclick = async () => {
+  current = null; renderList();
+  $('#main').innerHTML = '<div class="empty">Making the report…</div>';
+  let d;
+  try { d = await api('/api/project/report', {}); }
+  catch (e) { $('#main').innerHTML = `<div class="empty"><h1>No final jobs yet</h1><p>${esc(e.message)}</p><p>Open the jobs whose maps or particles the publication reports and press ☆ Mark final.</p></div>`; return; }
+  $('#main').innerHTML = `<div class="head"><div><h1>Report</h1><div class="sub">${d.jobs.length} jobs lead to ${d.finals.map(esc).join(', ')}; written to the project's report folder</div></div>
+      <div class="acts"><a href="${file(d.flowchart_svg)}" download><button>flowchart.svg</button></a><a href="${file(d.methods)}" download><button>methods.md</button></a><a href="${file(d.settings)}" download><button>settings.csv</button></a></div></div>
+    <div class="pane" style="padding-top:4px"><div class="flow"><img src="${file(d.flowchart)}&t=${Date.now()}" alt="flowchart"></div>
+    <h3 class="muted" style="margin:22px 0 6px;font-size:13px">Methods</h3><div class="methods">${esc(d.methods_text)}</div></div>`;
 };
-applyTheme();
+$('#open').onclick = async () => {
+  const root = prompt('Project folder (the one with project.db). Windows paths such as E:\\linux\\celeris\\inx6 work too:', '');
+  if (!root) return;
+  try { await api('/api/project/open', {root}); } catch (e) { alert(e.message); return; }
+  current = null; $('#main').innerHTML = '<div class="empty"><h1>Choose a job on the left</h1></div>'; load();
+};
+
+window.addEventListener('hashchange', () => { const h = decodeURIComponent(location.hash.slice(1)); const m = jobs.find(j => j.name.startsWith(h)); if (m && m.name !== current) showJob(m.name); });
 loadTypes();
-$('#refresh').onclick = load;
-if (location.hash.length > 1) current = decodeURIComponent(location.hash.slice(1));   // /project#014 opens job 14
-load();
+if (location.hash.length > 1) current = decodeURIComponent(location.hash.slice(1));
+load().then(() => { if (current) { const m = jobs.find(j => j.name.startsWith(current)); if (m) showJob(m.name); } });
 </script>
 </body>
 </html>

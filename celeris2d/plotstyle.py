@@ -10,6 +10,7 @@ gray midpoint, fixed status colours. The dark surface is the dashboard's panel c
 """
 from __future__ import annotations
 
+import contextlib
 import functools
 import os
 import threading
@@ -79,6 +80,25 @@ def variant(path: str, name: str) -> str:
     return f"{root}.{name}{ext}"
 
 
+@contextlib.contextmanager
+def _export_json():
+    """While a figure function draws the default theme: every PNG it saves also gets x.plot.json (figjson)."""
+    from matplotlib.figure import Figure
+    from . import figjson
+    orig = Figure.savefig
+
+    def savefig(self, fname, *a, **k):
+        out = orig(self, fname, *a, **k)
+        if isinstance(fname, (str, os.PathLike)) and str(fname).endswith(".png"):
+            figjson.write(self, str(fname))
+        return out
+    Figure.savefig = savefig
+    try:
+        yield
+    finally:
+        Figure.savefig = orig
+
+
 def themed(fn):
     """Draw fn(path, ...) once per theme in THEMES (current theme set first); returns the default theme's result."""
     @functools.wraps(fn)
@@ -88,7 +108,11 @@ def themed(fn):
             try:
                 for name in sorted(THEMES, key=lambda n: n != DEFAULT):
                     apply(name)
-                    r = fn(variant(path, name), *a, **k)
+                    if name == DEFAULT:                  # its data too, for the dashboard's interactive plot
+                        with _export_json():
+                            r = fn(variant(path, name), *a, **k)
+                    else:
+                        r = fn(variant(path, name), *a, **k)
                     if name == DEFAULT or out is None:
                         out = r
             finally:
