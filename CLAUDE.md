@@ -94,9 +94,10 @@ Layers, bottom to top:
    reconstruction at known poses (docs/preprocess-status.md). Judge motion correction by such downstream FSC or
    the even/odd-frame FRC, not by FRC against another program's micrograph (shared shot noise).
 4. **Front ends**: `cli.py` (one-shot runs, output writers, `pick_devices`), `session.py` (stateful
-   `Session`), and `webapp.py` (FastAPI + `web/index.html`) and `mcp_server.py`, both thin wrappers
-   around one `Session`, running one GPU job at a time; `mcp_server.py` also has the project tools. The 3D part of the page is `web/abinitio3d.js`, loaded
-   by index.html, which only emits `celeris:status` / `celeris:result` events for it — keep the two independent.
+   `Session`), and `webapp.py` (FastAPI; its page is the project dashboard `web/project.html` at /project - `/`
+   redirects there; the old single-dataset 2D page is gone, its /api/* Session endpoints remain) and `mcp_server.py`,
+   both thin wrappers around one `Session`, running one GPU job at a time; `mcp_server.py` also has the project tools.
+   Movie jobs (Import, MotionCtf, Pick, Extract) are dashboard job types through `moviejobs.movie_registry()`.
 
 ### Cross-cutting conventions
 
@@ -113,9 +114,9 @@ Layers, bottom to top:
   15 A) / static (once from the starting map) / none (particle sphere) / a MaskCreate job or .mrc
   (`jobs.solvent_mask_arg`). NU refinements write `nu_cutoff.mrc`, `nu.png` and per-iteration `nu` statistics.
 - **Dashboard (/project)**: `scheduler.py` is the queue (statuses queued / waiting / running / finished / failed /
-  cancelled in the catalog; a queued job runs when its inputs finished, in a process of its own (`start`) that `stop` ends; after a Class2D / HeteroRefine / Class3D run
+  cancelled in the catalog; a queued job runs when its inputs finished, in a process of its own (`start`, output in `jNNN_process.log`, so it outlives a dashboard restart; `busy` keeps one GPU job at a time) that `stop` ends; a queued MotionCtf -> Pick -> Extract runs as one chain (`movie_chain`); a running Class2D writes `live.json` every iteration (`gallery.live_classes`) and the page shows it with the log tail; after a Class2D / HeteroRefine / Class3D run
   from the queue a Select job waits for the user - `complete_select`; MCP / scripts get none). `gallery.py` gives
-  class galleries and 8-bit volumes for the browser's WebGL2 raymarcher (`web/volume.js`). Every `themed` figure also
+  class galleries and 8-bit volumes for the browser's WebGL2 raymarcher (`web/volume.js`; cropped to the particle first, so most maps are shown at full pixel size; default level = the map in one piece, dust hidden, rough maps smoothed by one voxel; local-resolution colour range from the values on the surface). Every `themed` figure also
   writes `x.plot.json` (`figjson.py`; `Job.out` keeps it next to x.png) that `web/plots.js` draws with Plotly in the
   same layout; panels it cannot describe (projections, meshes, colour bars) are embedded as pictures. `report.py`:
   final jobs (`Project.mark_final`) -> flowchart.svg / methods.md / settings.csv.

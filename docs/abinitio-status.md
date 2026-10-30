@@ -1,6 +1,6 @@
 # Ab initio 3D — status and open problems (2026-10-29)
 
-Code: `celeris2d/abinitio.py` (algorithm), `celeris2d/plots3d.py` (figures), `celeris2d/web/abinitio3d.js`
+Code: `celeris2d/abinitio.py` (algorithm), `celeris2d/plots3d.py` (figures)
 (dashboard module), `Session.abinitio`, `tests/test_abinitio.py`, `scripts/abinitio_workflow.py` (2D → selection →
 ab initio), `scripts/compare_maps.py` (map vs reference FSC after rotation/hand/translation search),
 `scripts/simulate_heterogeneity.py`. README "Ab initio 3D" explains the pipeline.

@@ -1,9 +1,9 @@
-"""Celeris2D web dashboard: load a dataset, change every setting, run, select classes, rerun, export.
+"""Celeris2D web dashboard: a processing project (web/project.html at /project) - movies to maps, a job queue,
+selections that wait for the user, live progress, interactive figures, 3D maps, the publication report.
 
-    celeris2d-web --port 8765            # then open http://<host>:8765  (or tunnel: ssh -L 8765:localhost:8765 host)
+    celeris2d-web --port 8765 --project DIR   # then open http://<host>:8765  (or tunnel: ssh -L 8765:localhost:8765 host)
 
-One dataset is held in memory (spectra on the GPU), so every rerun on a subset starts immediately. GPU jobs
-run one at a time on a worker thread; the page polls /api/status for progress and the live log.
+The /api/* Session endpoints (one dataset held in memory for 2D runs) remain for scripts and tests.
 """
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ import io
 import json
 import os
 import re
-import subprocess
 import threading
 import time
 import traceback
@@ -845,10 +844,11 @@ def create(workdir, project_dir=None):
         except RuntimeError as e:
             raise HTTPException(409, str(e))
 
-    @app.get("/", response_class=HTMLResponse)
+    @app.get("/")
     def index():
-        with open(os.path.join(os.path.dirname(__file__), "web", "index.html")) as fh:
-            return HTMLResponse(fh.read(), headers={"Cache-Control": "no-store"})
+        """The dashboard is the project page (2D classification is a Class2D job there)."""
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse("/project")
 
     @app.get("/web/plotly.js")
     def plotly_js():
@@ -868,7 +868,7 @@ def create(workdir, project_dir=None):
 
     @app.get("/web/{fn}")
     def web_module(fn: str):
-        """Add-on page modules (e.g. abinitio3d.js), kept out of index.html so each can change on its own."""
+        """The page's script modules (plots.js, volume.js)."""
         path = os.path.join(os.path.dirname(__file__), "web", os.path.basename(fn))
         if not fn.endswith(".js") or not os.path.isfile(path):
             raise HTTPException(404, fn)
@@ -931,7 +931,8 @@ def create(workdir, project_dir=None):
                 if f.endswith((".png", ".gif", ".mrc", ".mrcs", ".star", ".cs", ".csg", ".json", ".xml", ".csv", ".md")) \
                         and f not in ("job.json", "summary.json"):
                     full = os.path.join(dp, f)
-                    files.append(dict(path=prj.rel(full), size=os.path.getsize(full)))
+                    stt = os.stat(full)
+                    files.append(dict(path=prj.rel(full), size=stt.st_size, mtime=stt.st_mtime))
         movies = os.path.join(j.path, "figures", "movies")
         movie_files = sorted(prj.rel(os.path.join(movies, f)) for f in os.listdir(movies)
                              if f.endswith(".png") and ".light." not in f) if os.path.isdir(movies) else []
@@ -941,7 +942,7 @@ def create(workdir, project_dir=None):
                     lineage=prj.lineage(j), dependents=prj.dependents(j), files=files,
                     movie_figures=len(movie_files), movie_files=movie_files, final=j.id in prj.final_marks(),
                     log=prj.rel(j.log_path) if os.path.exists(j.log_path) else None,
-                    error=run["error"] if run else None))
+                    error=run["error"] if run else None, now=time.time()))
 
     @app.get("/api/project/log")
     def project_log(job: str, offset: int = 0):
@@ -975,30 +976,37 @@ def create(workdir, project_dir=None):
         their kinds, defaults and help (from the settings dataclasses) - the New job form is built from this."""
         from .jobs import registry
         from .jobspec import describe
-        return [describe(sp) for sp in registry().values()]
+        from .moviejobs import movie_registry
+        return [describe(sp) for sp in [*movie_registry().values(), *registry().values()]]
 
     @app.post("/api/project/new")
     def project_new(body: dict = Body(...)):
         """Make and run a job of any registered type: {type, inputs: {name: job}, settings: {...}, label}."""
-        from .jobs import new_job, registry
-        spec = registry().get(body.get("type"))
+        from .jobs import registry
+        from .moviejobs import movie_registry
+        spec = registry().get(body.get("type")) or movie_registry().get(body.get("type"))
         if spec is None:
             raise HTTPException(400, f"unknown job type {body.get('type')!r}")
         from .scheduler import queue_job
         prj = _prj()
         try:
             j = queue_job(prj, spec.type, body.get("inputs") or {}, body.get("settings") or {}, body.get("label") or "")
-        except ValueError as e:
+        except (ValueError, TypeError, KeyError, LookupError) as e:
             raise HTTPException(400, str(e))
         _kick()
-        return dict(job=j.name, status="queued")
+        return dict(job=j.name, status=j.status)
 
     @app.post("/api/project/open")
     def project_open(body: dict = Body(...)):
-        """Open another project (a folder with project.db): {root}."""
-        root = os.path.expanduser(str(body.get("root", "")).strip())
-        if os.name != "nt" and len(root) > 2 and root[1] == ":":           # a Windows path typed into WSL: E:\x -> /mnt/e/x
-            root = "/mnt/" + root[0].lower() + root[2:].replace("\\", "/")
+        """Open another project (a folder with project.db): {root}; {root, create: true} makes a new one there (an
+        empty or new folder)."""
+        from .moviejobs import _wsl
+        from .project import Project
+        root = _wsl(body.get("root", ""))                  # a Windows path typed into WSL: E:\x -> /mnt/e/x
+        if body.get("create") and not os.path.isfile(os.path.join(root, "project.db")):
+            if os.path.isdir(root) and os.listdir(root):
+                raise HTTPException(400, f"{root} is not empty: choose a new or empty folder for a new project")
+            Project(root)
         prj = _prj(root)
         return dict(root=prj.root)
 
@@ -1065,7 +1073,7 @@ def create(workdir, project_dir=None):
     def _scheduler():
         """Runs the open project's queued jobs one at a time, when the GPU is free."""
         from .project import Project
-        from .scheduler import next_job, start
+        from .scheduler import busy, next_job, process_log, start
         while True:
             wake.wait(3.0)
             wake.clear()
@@ -1075,6 +1083,8 @@ def create(workdir, project_dir=None):
                     continue
                 prj = Project(root)
                 prj.reap_stale()                      # crashed "running" jobs: failed, not blocking the queue
+                if busy(prj) is not None:             # a job still running from before a restart, or a script's
+                    continue
                 j = next_job(prj)
                 if j is None:
                     continue
@@ -1082,13 +1092,14 @@ def create(workdir, project_dir=None):
 
                 def work(prj=prj, j=j, rec=rec):
                     try:                              # a process of its own: the Stop button ends it (scheduler.stop)
-                        proc = start(prj, j, auto_select=proj_state["auto_select"], stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT, text=True, bufsize=1)
-                        tail = []
-                        for line in proc.stdout:
-                            st._log(line.rstrip())
-                            tail = (tail + [line.rstrip()])[-5:]
+                        proc = start(prj, j, auto_select=proj_state["auto_select"])
+                        st._log(f"[queue] {j.name} started (process {proc.pid})")
                         code = proc.wait()
+                        try:
+                            with open(process_log(prj.job(j.id)), errors="replace") as fh:
+                                tail = [x.rstrip() for x in fh.readlines()[-5:]]
+                        except OSError:
+                            tail = []
                         if prj.job(j.id).status == "running":     # died before recording how it ended
                             prj.set_status(prj.job(j.id), "failed", dict(prj.summary_of(j),
                                            error=f"the job's process ended (exit code {code}): " + " | ".join(tail)))
@@ -1153,6 +1164,16 @@ def create(workdir, project_dir=None):
         _kick()
         return dict(job=j.name)
 
+    @app.get("/api/project/live")
+    def project_live(job: str):
+        """A running job's live snapshot (live.json: a Class2D job's classes as they form), or {} when it has none."""
+        j = _prj().job(job)
+        p = os.path.join(j.path, "live.json")
+        if j.status != "running" or not os.path.isfile(p):
+            return {}
+        with open(p) as fh:
+            return Response(fh.read(), media_type="application/json", headers={"Cache-Control": "no-store"})
+
     @app.get("/api/project/classes")
     def project_classes(job: str):
         """The classes of a Class2D / HeteroRefine / Class3D job (or of a Select job's source) for the gallery:
@@ -1182,7 +1203,7 @@ def create(workdir, project_dir=None):
         return _views_cache[key]
 
     @app.get("/api/project/volume")
-    def project_volume(path: str, size: int = 160, color: str = "", dust: int = 1, smooth: int = -1):
+    def project_volume(path: str, size: int = 256, color: str = "", dust: int = 1, smooth: int = -1):
         """A map of the project for the 3D viewer: binary (JSON header length, header, uint8 voxels[, uint8 colour
         volume]) - see gallery.volume_payload."""
         from .gallery import volume_payload
@@ -1195,7 +1216,7 @@ def create(workdir, project_dir=None):
             cfull = os.path.realpath(os.path.join(prj.root, color))
             if not cfull.startswith(os.path.realpath(prj.root) + os.sep) or not os.path.isfile(cfull):
                 raise HTTPException(404, color)
-        return Response(volume_payload(full, max(48, min(int(size), 256)), cfull, bool(dust),
+        return Response(volume_payload(full, max(48, min(int(size), 384)), cfull, bool(dust),
                                        None if smooth < 0 else bool(smooth)),
                         media_type="application/octet-stream", headers={"Cache-Control": "no-cache"})
 

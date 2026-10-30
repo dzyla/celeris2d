@@ -383,7 +383,9 @@ class Project:
         """running / finished / failed / aborted; summary: the job's key numbers (summary.json). A running job
         records the process running it (is_running): this one, or `pid` (a process started for it)."""
         if status == "running":
-            job.params.update(run_pid=pid or os.getpid(), run_host=socket.gethostname())
+            job.params.update(run_pid=pid or os.getpid(), run_host=socket.gethostname(),
+                              run_started=job.params.get("run_started") if pid is None and job.params.get("run_started")
+                              and job.params.get("run_pid") == os.getpid() else time.time())   # started for it: kept
             with self._db() as c:
                 c.execute("UPDATE jobs SET params=? WHERE id=?", (json.dumps(job.params, default=str), job.id))
         with self._db() as c:

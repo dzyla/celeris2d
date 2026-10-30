@@ -22,6 +22,7 @@ import json
 import math
 import os
 import shutil
+import threading
 import time
 from dataclasses import dataclass
 
@@ -186,7 +187,31 @@ def run_class2d(project: Project, job, log=print) -> dict:
     max_res = s.max_res_a or max(6.0, 2 * src.apix)
     t0 = time.time()
     ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log)
-    ses.classify("2d", K=s.n_classes, seeds=s.seeds)
+    live = os.path.join(job.path, "live.json")
+    done = threading.Event()
+
+    def snapshot():                                  # the classes as they form, for the dashboard (gallery.live_classes)
+        from .gallery import live_classes
+        last = -1
+        while not done.wait(2.0):
+            c = ses.clf
+            if c is None or not c.history or getattr(c, "pop_live", None) is None or len(c.history) == last:
+                continue
+            try:
+                d = live_classes(c, job, t0)
+                with open(live + ".tmp", "w") as fh:
+                    json.dump(d, fh)
+                os.replace(live + ".tmp", live)
+                last = len(c.history)
+            except Exception:                        # noqa: BLE001 - a missed snapshot is retried next time
+                pass
+    threading.Thread(target=snapshot, daemon=True, name="class2d-live").start()
+    try:
+        ses.classify("2d", K=s.n_classes, seeds=s.seeds)
+    finally:
+        done.set()
+        if os.path.exists(live):
+            os.remove(live)
     r = ses.results["2d"]
     _write_results(project, job, src, r.idx, dict(cls=r.labels.astype(np.int16), psi=r.psi.astype(np.float32),
                                                   shift_x_a=r.offsets[:, 0].astype(np.float32),
@@ -1307,9 +1332,10 @@ def new_job(project: Project, job_type: str, inputs: dict, settings: dict | None
     """Make a job of any registered type from input job references and settings values (checked and converted
     against the settings dataclass; unknown names are an error). Returns the job; spec.run(project, job) runs it."""
     from .jobspec import coerce
-    spec = registry().get(job_type)
+    from .moviejobs import movie_registry
+    spec = registry().get(job_type) or movie_registry().get(job_type)
     if spec is None:
-        raise ValueError(f"unknown job type {job_type!r} (known: {sorted(registry())})")
+        raise ValueError(f"unknown job type {job_type!r} (known: {sorted(movie_registry()) + sorted(registry())})")
     args = []
     for i in spec.inputs:
         ref = inputs.get(i.name)

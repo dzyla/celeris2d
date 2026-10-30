@@ -118,21 +118,21 @@ hand — ready for Refine3D), `particles_dropped.star`, `poses.npz`, `summary.js
 curves) and figures (`fsc.png`, `views.png`, `reprojections.png`, `map_views.png`). The hand of
 an ab initio map is arbitrary.
 
-Dashboard: open a 2D result, select good classes, **Ab initio 3D** (symmetry field and **3D settings** next to it);
-maps appear as chips with a 3D viewer, the FSC chart and the figures. Python: `Session.abinitio(name,
-"run1:good", sym="C1", n_models=1)`; script: `scripts/abinitio_workflow.py`.
+Dashboard: an **InitialModel** job on a Class2D job or on the selection of its classes. Python:
+`Session.abinitio(name, "run1:good", sym="C1", n_models=1)`; script: `scripts/abinitio_workflow.py`.
 
 ## Web dashboard
 ```bash
-celeris2d-web --port 8765                  # on the GPU machine; open http://localhost:8765
-ssh -L 8765:localhost:8765 <gpu-host>      # from your laptop, if the server runs remotely
+celeris2d-web --port 8765 --project /data/myproject   # on the GPU machine; open http://localhost:8765
+ssh -L 8765:localhost:8765 <gpu-host>                  # from your laptop, if the server runs remotely
 ```
-Enter the particle file path (and any setting: mask, resolution, GPUs, subset, speed preset, every advanced
-parameter), **Load** (particles stream to the GPU and stay there), **Run**. Click class tiles to select them
-(green) — **All / None / Invert / Suggest** (Suggest is an automatic 2-cluster proposal; it always splits, so
-review it). **Re-run selected / unselected** classifies just those particles (seconds, no reloading), and
-**Export** writes good / ambiguous / bad particle sets (`.star` and/or `.cs`) at a P(good) threshold. Every
-result is kept (chips at the top) and saved in the work directory.
+A processing project from movies to maps: **New project…** (a new or empty folder), then **New job** - Import
+(a folder of movies), MotionCtf, Pick, Extract, Class2D, InitialModel, Refine3D, ... Jobs go into a queue and
+run one at a time as soon as their inputs are ready, each in its own process (**Stop** ends it); a running job
+shows its log and newest figure live. After a 2D or 3D classification a selection waits for you: click the
+classes to keep (**Keep these classes**); jobs queued on it run after that. Every figure is also interactive
+(zoom, hover), maps open in a 3D viewer, and **Mark final** + **Report** give the publication flowchart,
+methods and settings.
 
 ## Settings optimizer (`--optimize N`, dashboard button, MCP `optimize_settings`)
 Tries the alignment margin (0 / 4 shells) × solvent flattening (off / on) on N random particles,

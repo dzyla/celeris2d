@@ -64,3 +64,30 @@ def test_stop_running_job_and_job_process(tmp_path):
     assert p.job(bad.id).params["run_pid"] == pr.pid and pr.wait(timeout=120) != 0
     assert p.job(bad.id).status == "failed" and "cannot run from the queue" in p.summary_of(bad)["error"]
     assert os.getpid() != pr.pid
+
+
+def test_movie_jobs_from_the_dashboard(tmp_path):
+    """Import from a folder is finished when made; MotionCtf -> Pick -> Extract queued on each other run as one
+    chain; an empty optional field (Pick threshold) is None, an empty required one an error."""
+    import numpy as np
+    import pytest
+    from celeris2d.jobspec import coerce
+    from celeris2d.pipeline import MotionSettings, PickSettings
+    from celeris2d.scheduler import movie_chain, queue_job
+    mv = tmp_path / "movies"
+    mv.mkdir()
+    for i in range(2):
+        (mv / f"m{i}.tif").write_bytes(np.zeros(16, np.uint8).tobytes())
+    (mv / "gain.tif").write_bytes(b"x")
+    p = Project(str(tmp_path / "prj"))
+    imp = queue_job(p, "Import", {}, {"movies": str(mv)})
+    assert imp.status == "finished" and len(p.movies(imp)) == 2          # the gain reference is not a movie
+    mc = queue_job(p, "MotionCtf", {"movies": imp.id}, {"apix": "1.1", "dose_total": "50"})
+    pk = queue_job(p, "Pick", {"micrographs": mc.id}, {"diameter_a": "130", "threshold": ""})
+    ex = queue_job(p, "Extract", {"picks": pk.id}, {"particle_a": "170"})
+    assert p.job(pk.id).params["threshold"] is None
+    assert [j.id for j in movie_chain(p, p.job(mc.id))] == [mc.id, pk.id, ex.id]
+    assert next_job(p).id == mc.id
+    with pytest.raises(ValueError, match="apix is required"):
+        coerce(MotionSettings, {"apix": "", "dose_total": "50"})
+    assert coerce(PickSettings, {"threshold": "0.3"})["threshold"] == 0.3

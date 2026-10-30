@@ -92,6 +92,7 @@ def _help(cls) -> dict:
 
 def _kind(f, default) -> str:
     t = f.type if isinstance(f.type, str) else getattr(f.type, "__name__", str(f.type))
+    t = re.sub(r"\s*\|\s*None$|^Optional\[(.*)\]$", r"\1", t.strip())    # float | None: a float that may be empty
     if isinstance(default, bool) or t == "bool":
         return "bool"
     if isinstance(default, int) or t == "int":
@@ -123,13 +124,22 @@ def schema(cls) -> list[dict]:
 def coerce(cls, values: dict) -> dict:
     """Form values (strings from a page, JSON from an agent) to the types of the settings fields; unknown names are
     an error (a typo must not be silently dropped)."""
-    kinds = {f["name"]: f["kind"] for f in schema(cls)}
+    sch = {f["name"]: f for f in schema(cls)}
+    kinds = {k: f["kind"] for k, f in sch.items()}
     bad = [k for k in values if k not in kinds]
     if bad:
         raise ValueError(f"unknown settings for {cls.__name__}: {bad} (known: {sorted(kinds)})")
+    required = {f.name for f in dataclasses.fields(cls)
+                if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING}
     out = {}
     for k, v in values.items():
         kind = kinds[k]
+        if v is None or (isinstance(v, str) and not v.strip() and kind != "str"):     # an empty form field
+            if k in required:
+                raise ValueError(f"{k} is required")
+            if sch[k]["default"] is None:
+                out[k] = None
+            continue                                                                    # its default
         if kind == "bool":
             out[k] = v if isinstance(v, bool) else str(v).strip().lower() in ("1", "true", "yes", "on")
         elif kind == "int":

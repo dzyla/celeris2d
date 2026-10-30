@@ -135,7 +135,10 @@
   .v3 .ctl select, .v3 .ctl input[type=range] { width: 100%; }
   .v3 .row { display: flex; gap: 5px; flex-wrap: wrap; }
   .v3 .lvl { font-size: 18px; font-weight: 700; }
-  .ramp { height: 8px; border-radius: 4px; background: linear-gradient(90deg, #296bd1, #ededeb, #d94038); }
+  .ramp { height: 10px; border-radius: 3px; background: linear-gradient(90deg, #313695, #4575b4, #abd9e9, #ffffbf, #fdae61, #d73027, #a50026); }
+  .ramp.turbo { background: linear-gradient(90deg, #30123b, #4686fb, #1be5b5, #a4fc3c, #fbb938, #e4460a, #7a0403); }
+  .crange { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 8px; align-items: center; font-size: 11.5px; margin-top: 6px; }
+  .crange input[type=range] { width: 100%; }
   .hint { position: absolute; left: 12px; bottom: 10px; font-size: 12px; color: #9aa; pointer-events: none; }
   .launch { display: grid; place-items: center; min-height: 300px; gap: 12px; text-align: center; color: var(--ink2); padding: 14px; }
   .launch img.fallback { max-width: 100%; border-radius: 6px; }
@@ -157,6 +160,18 @@
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
   .chip { background: var(--well); border: 1px solid var(--line); border-radius: 14px; padding: 3px 10px; font-size: 12.5px; cursor: pointer; }
   .chip:hover { border-color: var(--data); }
+  .live { padding: 14px 16px; }
+  .lhead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; min-width: 0; }
+  .lastline { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; text-align: right; font-size: 12px; }
+  .lbody { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+  .ltail { margin: 0; min-height: 300px; max-height: 420px; background: #0a0a0a; color: var(--ink2); }
+  .lfig { margin: 0; background: #0a0a0a; border-radius: 8px; overflow: hidden; }
+  .lfig img { width: 100%; display: block; }
+  .lfig figcaption { font-size: 12px; color: var(--ink3); padding: 6px 10px; }
+  .dot.pulse { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .dot.pulse { animation: none; } }
+  @media (max-width: 1100px) { .lbody { grid-template-columns: 1fr; } }
   .log { max-height: 60vh; overflow: auto; font: 12px ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; background: var(--surface); padding: 10px 12px; border-radius: 8px; }
   .files a { display: block; padding: 3px 0; font-size: 13px; }
   .form td { padding: 7px 14px 7px 0; vertical-align: top; }
@@ -173,8 +188,8 @@
   <div class="brand">Celeris<b>2D</b></div>
   <div class="proj"><span class="name" id="pname">…</span><span class="path" id="ppath"></span></div>
   <div class="pulse" id="pulse"></div>
-  <a href="/" title="the single-dataset 2D classification page">2D page</a>
   <button id="open" title="open another project folder (the one with project.db)">Open project…</button>
+  <button id="create" title="a new project in a new or empty folder; then Import your movies">New project…</button>
   <button id="report" title="flowchart, methods text and settings of the jobs marked final and everything they came from">Report</button>
   <button id="newjob" class="go">New job</button>
 </header>
@@ -201,7 +216,7 @@ const THEME = () => ({surface: css('--surface'), well: css('--well'), line: css(
 const MAPJOBS = ['Refine3D', 'LocalRefine', 'InitialModel', 'Sharpen', 'Subtract', 'ModeMaps', 'MaskCreate', 'Polish', 'CtfRefine'];
 const CLASSJOBS = ['Class2D', 'HeteroRefine', 'Class3D', 'Select'];
 let jobs = [], queue = {running: [], queued: [], waiting: []}, autoSelect = true, current = null, tab = 'plots', types = {};
-let pollTimer = null, logTimer = null, viewer = null;
+let pollTimer = null, logTimer = null, liveTimer = null, viewer = null;
 
 async function api(url, body) {
   const r = await fetch(url, body === undefined ? {} : {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
@@ -349,11 +364,63 @@ async function showJob(name, scroll = true) {
 function renderStage(j) {
   const st = $('#stage');
   if (viewer) { viewer.dispose(); viewer = null; }
+  if (j.status === 'running') return stageLive(st, j);
   if (CLASSJOBS.includes(j.type) && !['running', 'queued', 'cancelled', 'failed'].includes(j.status)) return stageGallery(st, j);
   const maps = j.files.filter(f => /\.mrc$/.test(f.path) && !/half[12]|(^|_)mask\.mrc$|localres|nu_cutoff|_frames/.test(f.path.split('/').pop()));
   if (MAPJOBS.includes(j.type) && maps.length) return stageVolume(st, j, maps);
   if (j.movie_files && j.movie_files.length) return stageMics(st, j);
   st.innerHTML = '';
+}
+// a running job: time, the last lines of its log and its newest figure, as they come
+function stageLive(st, j) {
+  st.className = 'stage';
+  const t0 = (j.params || {}).run_started, skew = Date.now() / 1000 - (j.now || Date.now() / 1000);
+  st.innerHTML = `<div class="live"><div class="lhead"><span class="dot running pulse"></span><b>Running</b> <span id="lel" class="muted"></span>
+      <span id="llast" class="muted lastline"></span></div>
+      ${j.type === 'Class2D' ? `<div id="lgal"><div class="muted" style="padding:18px 4px">The classes appear here after the first iteration.</div></div>` : ''}
+      <div class="lbody"><pre class="log ltail" id="ltail">waiting for the first lines of the log…</pre>
+      <figure class="lfig" id="lfig"><div class="muted" style="padding:30px;text-align:center">The job's figures appear here as it writes them.</div></figure></div></div>`;
+  let offset = 0, text = '', lastFig = '', n = 0, liveAt = 0;
+  const name = j.name;
+  const liveClasses = async () => {                 // a Class2D job's live.json: the classes as they form
+    const d = await api('/api/project/live?job=' + encodeURIComponent(name));
+    if (!d.classes || d.updated === liveAt || current !== name || !$('#lgal')) return;
+    liveAt = d.updated;
+    $('#lgal').innerHTML = `<div class="gal-tools"><div class="sum">Iteration <b>${d.it}</b> of ${d.n_iter} · ${d.res} Å · ${d.changed}% changed class · ${d.classes.length} classes</div></div>
+      <div class="gal" style="max-height:52vh">${d.classes.map(c => `<div class="cls" style="cursor:default"><img src="${c.images[0]}" alt="class ${c.cls}">
+        <div class="lab"><span>${c.cls}</span><span>${fmt(c.n)} · ${(100 * c.share).toFixed(1)}%</span></div></div>`).join('')}</div>`;
+  };
+  const tick = async () => {
+    clearTimeout(liveTimer);
+    if (current !== name || !$('#ltail')) return;
+    if (t0) { const s = Math.max(0, Date.now() / 1000 - skew - t0); $('#lel').textContent = `for ${s >= 3600 ? Math.floor(s / 3600) + ' h ' : ''}${Math.floor(s % 3600 / 60)} min ${Math.floor(s % 60)} s`; }
+    try {
+      if (j.type === 'Class2D') await liveClasses();
+      const d = await api(`/api/project/log?job=${encodeURIComponent(name)}&offset=${offset}`);
+      if (d.text) {
+        text = (text + d.text).split('\n').slice(-400).join('\n'); offset = d.offset;
+        const lines = text.trimEnd().split('\n');
+        $('#ltail').textContent = lines.slice(-18).join('\n');
+        $('#llast').textContent = lines[lines.length - 1].replace(/^\S+ \S+ /, '');
+      }
+      if (n++ % 2 === 0) {                     // every ~6 s: new figures
+        const jj = await api('/api/project/job?job=' + encodeURIComponent(name));
+        if (current !== name) return;
+        if (jj.status !== 'running') { await load(); return showJob(name, false); }
+        const figs = jj.files.filter(f => /\.png$/.test(f.path) && !/\.(light|dark)\.png$/.test(f.path)).sort((a, b) => b.mtime - a.mtime);
+        const mv = (jj.movie_files || []).slice(-1)[0];
+        const newest = figs[0] ? figs[0].path + '?' + figs[0].mtime : mv || '';
+        if (newest && newest !== lastFig) {
+          lastFig = newest;
+          const path = newest.split('?')[0];
+          $('#lfig').innerHTML = `<img src="${file(path)}&t=${Date.now()}" alt="newest figure"><figcaption>${esc(path.split('/').pop().replace(/^j\d+_/, '').replace('.png', '').replace(/_/g, ' '))}</figcaption>`;
+          if (tab === 'plots' && figs.length !== $('#pane').querySelectorAll('.fig').length) { j.files = jj.files; renderPane(j); }
+        }
+      }
+    } catch (e) { /* the next tick tries again */ }
+    liveTimer = setTimeout(tick, 3000);
+  };
+  tick();
 }
 async function stageGallery(st, j) {
   st.className = 'stage';
@@ -424,12 +491,22 @@ function stageVolume(st, j, maps) {
 async function openViewer(st, j, maps, localres) {
   st.innerHTML = `<div class="v3"><div style="position:relative"><canvas id="v3c" aria-label="3D map"></canvas><div class="hint">drag to rotate · wheel to zoom · double-click to reset</div></div>
     <div class="ctl">
+      <div><label for="v3q">Detail</label><select id="v3q" title="voxels across the particle's cube; the map is cropped to the particle first, so most maps are shown at their full pixel size">
+        <option value="160">fast (160)</option><option value="256" selected>standard (256)</option><option value="384">full (384, large maps: slower)</option></select></div>
       <div><label for="v3m">Map</label><select id="v3m">${maps.map(m => `<option value="${esc(m.path)}">${esc(m.path.split('/').pop())}</option>`).join('')}</select></div>
       <div><label for="v3l">Threshold <span id="v3lv" class="lvl"></span></label><input type="range" id="v3l" min="0" max="1000" value="500">
         <div class="row" id="v3p" style="margin-top:6px"></div></div>
       <div><label class="tog" style="margin:0" title="small isolated pieces at the clean level (noise) are left out"><input type="checkbox" id="v3d" checked> Hide dust</label>
         <label class="tog" style="margin:6px 0 0" title="a Gaussian of one displayed voxel, for the view only: on by default for rough (sharpened) maps"><input type="checkbox" id="v3g"> Smooth <span class="muted" id="v3gs"></span></label></div>
-      ${localres ? `<div><label class="tog" style="margin:0"><input type="checkbox" id="v3c2"> Colour by local resolution</label><div id="v3r" style="display:none;margin-top:6px"><div class="ramp"></div><div class="row muted" style="justify-content:space-between;font-size:11.5px"><span id="v3r0"></span><span id="v3r1"></span></div></div></div>` : ''}
+      ${localres ? `<div><label class="tog" style="margin:0"><input type="checkbox" id="v3c2"> Colour by local resolution</label>
+        <div id="v3r" style="display:none;margin-top:6px">
+          <div class="ramp" id="v3ramp"></div>
+          <div class="row muted" style="justify-content:space-between;font-size:11.5px;margin-top:3px"><span id="v3r0"></span><span id="v3rm"></span><span id="v3r1"></span></div>
+          <div class="crange"><span class="muted">finest</span><input type="range" id="v3ca" min="0" max="1000"><span id="v3cav"></span>
+            <span class="muted">coarsest</span><input type="range" id="v3cb" min="0" max="1000"><span id="v3cbv"></span></div>
+          <div class="row" style="margin-top:6px"><select id="v3cm" aria-label="colour map"><option value="rdylbu">RdYlBu (blue = better)</option><option value="turbo">Turbo</option></select></div>
+          <div class="muted" style="font-size:11.5px;margin-top:4px">from the values on the surface; outside the range the colour is clipped</div>
+        </div></div>` : ''}
       <div><label>View along</label><div class="row"><button data-ax="z">z</button><button data-ax="y">y</button><button data-ax="x">x</button></div></div>
       <div class="muted" id="v3i" style="font-size:12px"></div>
       <div><button id="v3s">Save image</button></div>
@@ -447,20 +524,35 @@ async function openViewer(st, j, maps, localres) {
     const keep = same && !smoothChanged ? lv() : null;     // dust toggled: same map, same level
     const sm = same ? ($('#v3g').checked ? 1 : 0) : -1;     // a new map: smoothing chosen by the server
     smoothChanged = false;
-    try { head = await viewer.load(`/api/project/volume?path=${encodeURIComponent(path)}&dust=${$('#v3d').checked ? 1 : 0}&smooth=${sm}${sameJob ? '&color=' + encodeURIComponent(localres.path) : ''}`); }
+    try { head = await viewer.load(`/api/project/volume?path=${encodeURIComponent(path)}&size=${$('#v3q').value}&dust=${$('#v3d').checked ? 1 : 0}&smooth=${sm}${sameJob ? '&color=' + encodeURIComponent(localres.path) : ''}`); }
     catch (e) { $('#v3i').textContent = e.message; return; }
     $('#v3p').innerHTML = Object.entries(head.levels).map(([k, v]) => `<button data-lv="${v}" title="${k === 'clean' ? 'the level where the map is one connected body (the default)' : k.endsWith('σ') ? k + ' above the noise at the box edge' : k + ' of the strongest density'}">${k}</button>`).join('');
     document.querySelectorAll('[data-lv]').forEach(b => b.onclick = () => setLv(+b.dataset.lv));
     setLv(keep ?? head.level);
     $('#v3g').checked = !!head.smooth_a; $('#v3gs').textContent = head.smooth_a ? `(${head.smooth_a} Å)` : '';
-    $('#v3i').innerHTML = `${esc(head.name)}<br>${head.box} px at ${head.apix_file.toFixed(3)} Å, shown at ${head.shape[0]} px`;
-    if (head.color && $('#v3r0')) { $('#v3r0').textContent = head.color.min.toFixed(2) + ' Å'; $('#v3r1').textContent = head.color.max.toFixed(2) + ' Å'; }
+    const full = Math.abs(head.apix - head.apix_file) < 1e-3;
+    $('#v3i').innerHTML = `${esc(head.name)}<br>box ${head.box} px at ${head.apix_file.toFixed(3)} Å; the particle's ${head.crop} px shown ` +
+      (full ? 'at full resolution' : `at ${head.shape[0]} px, ${head.apix.toFixed(2)} Å/px`);
+    if (head.color && $('#v3ca')) {
+      const c = head.color, toS = x => Math.round(1000 * (x - c.lo) / Math.max(c.hi - c.lo, 1e-9)), toA = v => c.lo + (c.hi - c.lo) * v / 1000;
+      $('#v3ca').value = toS(c.min); $('#v3cb').value = toS(c.max);
+      const upd = () => {
+        let a = toA(+$('#v3ca').value), b = toA(+$('#v3cb').value);
+        if (b <= a + 0.05) { b = a + 0.05; }
+        viewer.setColorRange(a, b);
+        $('#v3cav').textContent = a.toFixed(1) + ' Å'; $('#v3cbv').textContent = b.toFixed(1) + ' Å';
+        $('#v3r0').textContent = a.toFixed(1) + ' Å'; $('#v3rm').textContent = ((a + b) / 2).toFixed(1); $('#v3r1').textContent = b.toFixed(1) + ' Å';
+      };
+      $('#v3ca').oninput = upd; $('#v3cb').oninput = upd; upd();
+    }
   };
   $('#v3l').oninput = () => { viewer.setLevel(lv()); $('#v3lv').textContent = +lv().toPrecision(3); };
   $('#v3m').onchange = () => { head = null; loadMap(); };
   $('#v3d').onchange = loadMap;
+  $('#v3q').onchange = loadMap;
   $('#v3g').onchange = () => { smoothChanged = true; loadMap(); };
   if ($('#v3c2')) $('#v3c2').onchange = e => { viewer.setColor(e.target.checked); $('#v3r').style.display = e.target.checked ? '' : 'none'; };
+  if ($('#v3cm')) $('#v3cm').onchange = e => { viewer.setColormap(e.target.value); $('#v3ramp').className = 'ramp ' + (e.target.value === 'turbo' ? 'turbo' : ''); };
   document.querySelectorAll('[data-ax]').forEach(b => b.onclick = () => viewer.view(b.dataset.ax));
   $('#v3s').onclick = () => { const a = document.createElement('a'); a.href = viewer.snapshot(); a.download = j.name + '_3d.png'; a.click(); };
   loadMap();
@@ -520,7 +612,7 @@ try { interactive = localStorage.getItem('celeris-interactive') !== '0'; } catch
 function panePlots(p, j) {
   const figs = j.files.filter(f => /\.(png|gif)$/.test(f.path) && !/\.(light|dark)\.png$/.test(f.path));
   const hasJson = f => j.files.some(x => x.path === f.path.replace(/\.png$/, '.plot.json'));
-  if (!figs.length) { p.innerHTML = `<p class="muted">${j.status === 'running' ? 'Figures appear here when the job finishes.' : 'This job has no figures.'}</p>`; return; }
+  if (!figs.length) { p.innerHTML = `<p class="muted">${j.status === 'running' ? 'No figures yet: they appear here as the job writes them (its log is above).' : 'This job has no figures.'}</p>`; return; }
   p.innerHTML = figs.map((f, i) => `<div class="fig"><div class="bar"><span>${esc(f.path.split('/').pop().replace(/^j\d+_/, '').replace(/\.(png|gif)$/, '').replace(/_/g, ' '))}</span>
       ${hasJson(f) ? `<span class="seg"><button data-i="${i}" data-m="live" class="${interactive ? 'on' : ''}">Interactive</button><button data-i="${i}" data-m="img" class="${interactive ? '' : 'on'}">Image</button></span>` : ''}</div>
       <div class="plot" id="fig${i}"></div></div>`).join('');
@@ -609,6 +701,12 @@ $('#open').onclick = async () => {
   if (!root) return;
   try { await api('/api/project/open', {root}); } catch (e) { alert(e.message); return; }
   current = null; $('#main').innerHTML = '<div class="empty"><h1>Choose a job on the left</h1></div>'; load();
+};
+$('#create').onclick = async () => {
+  const root = prompt('Folder for the new project (new or empty). Windows paths such as E:\\linux\\celeris\\new work too:', '');
+  if (!root) return;
+  try { await api('/api/project/open', {root, create: true}); } catch (e) { alert(e.message); return; }
+  current = null; await load(); jobForm('Import');
 };
 
 window.addEventListener('hashchange', () => { const h = decodeURIComponent(location.hash.slice(1)); const m = jobs.find(j => j.name.startsWith(h)); if (m && m.name !== current) showJob(m.name); });

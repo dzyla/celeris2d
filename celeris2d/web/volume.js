@@ -11,11 +11,28 @@
   in vec2 uv; out vec4 o;
   uniform sampler3D vol; uniform sampler3D col; uniform bool useCol;
   uniform mat3 rot; uniform float dist; uniform float iso; uniform vec3 ext; uniform float aspect;
-  uniform vec3 base; uniform vec3 bg; uniform float steps;
-  vec3 ramp(float t) {            // local resolution: blue (finer) -> white -> red (coarser)
-    t = clamp(t, 0.0, 1.0);
-    return t < 0.5 ? mix(vec3(0.16, 0.42, 0.82), vec3(0.93, 0.93, 0.92), t * 2.0)
-                   : mix(vec3(0.93, 0.93, 0.92), vec3(0.85, 0.25, 0.22), t * 2.0 - 1.0);
+  uniform vec3 base; uniform vec3 bg; uniform float steps; uniform vec2 crange; uniform int cmap;
+  vec3 rdylbu(float t) {          // RdYlBu reversed: blue (finer) - yellow - red (coarser)
+    const vec3 c0 = vec3(0.192, 0.212, 0.584), c1 = vec3(0.271, 0.459, 0.706), c2 = vec3(0.671, 0.851, 0.914);
+    const vec3 c3 = vec3(1.0, 1.0, 0.749), c4 = vec3(0.992, 0.682, 0.380), c5 = vec3(0.843, 0.188, 0.153);
+    const vec3 c6 = vec3(0.647, 0.0, 0.149);
+    float x = t * 6.0;
+    if (x < 1.0) return mix(c0, c1, x); if (x < 2.0) return mix(c1, c2, x - 1.0);
+    if (x < 3.0) return mix(c2, c3, x - 2.0); if (x < 4.0) return mix(c3, c4, x - 3.0);
+    if (x < 5.0) return mix(c4, c5, x - 4.0); return mix(c5, c6, x - 5.0);
+  }
+  vec3 turbo(float x) {           // Turbo (Mikhailov 2019, polynomial fit)
+    const vec4 kr4 = vec4(0.13572138, 4.61539260, -42.66032258, 132.13108234);
+    const vec4 kg4 = vec4(0.09140261, 2.19418839, 4.84296658, -14.18503333);
+    const vec4 kb4 = vec4(0.10667330, 12.64194608, -60.58204836, 110.36276771);
+    const vec2 kr2 = vec2(-152.94239396, 59.28637943), kg2 = vec2(4.27729857, 2.82956604);
+    const vec2 kb2 = vec2(-89.90310912, 27.34824973);
+    vec4 v4 = vec4(1.0, x, x * x, x * x * x); vec2 v2 = v4.zw * v4.z;
+    return vec3(dot(v4, kr4) + dot(v2, kr2), dot(v4, kg4) + dot(v2, kg2), dot(v4, kb4) + dot(v2, kb2));
+  }
+  vec3 ramp(float c) {            // c: the colour volume (0..1 of its range) -> the shown range -> the colour map
+    float t = clamp((c - crange.x) / max(crange.y - crange.x, 1e-4), 0.0, 1.0);
+    return cmap == 1 ? turbo(t) : rdylbu(t);
   }
   float d(vec3 q) { return texture(vol, q).r; }
   void main() {
@@ -49,7 +66,7 @@
     vec3 V = -rd;
     float diff = max(dot(n, L), 0.0), fill = max(dot(n, V), 0.0);
     float spec = pow(max(dot(n, normalize(L + V)), 0.0), 40.0);
-    vec3 c = useCol ? ramp(texture(col, q).r) : base;
+    vec3 c = useCol ? ramp(texture(col, clamp(q + n * e * 1.2 * -1.0, 0.0, 1.0)).r) : base;   // just inside the density
     vec3 rgb = c * (0.22 + 0.62 * diff + 0.22 * fill) + vec3(0.35) * spec;
     o = vec4(pow(rgb, vec3(1.0 / 1.1)), 1.0);
   }`;
@@ -91,11 +108,11 @@
       for (const p of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, p, gl.CLAMP_TO_EDGE);
       return t;
     };
-    const st = {q: qaxis([1, 0, 0], -0.35), dist: 1.9, iso: 0.5, useCol: false, head: null, texV: null, texC: null,
+    const st = {q: qaxis([1, 0, 0], -0.35), dist: 1.9, iso: 0.5, useCol: false, crange: [0, 1], cmap: 0, head: null, texV: null, texC: null,
                 base: hexrgb(opts.base || '#b9c7dc'), bg: hexrgb(opts.bg || '#000000'), raf: 0};
     function draw() {
       st.raf = 0;
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const dpr = Math.min(window.devicePixelRatio || 1, 2) * (st.moving ? 0.5 : 1);   // coarse while it moves
       const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
       if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
       gl.viewport(0, 0, w, h);
@@ -107,9 +124,15 @@
       gl.uniform1f(U('steps'), Math.min(900, 3 * m));
       gl.uniform3f(U('base'), ...st.base); gl.uniform3f(U('bg'), ...st.bg);
       gl.uniform1i(U('vol'), 0); gl.uniform1i(U('col'), 1); gl.uniform1i(U('useCol'), st.useCol && !!st.texC);
+      gl.uniform2f(U('crange'), st.crange[0], st.crange[1]); gl.uniform1i(U('cmap'), st.cmap);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
     const redraw = () => { if (!st.raf) st.raf = requestAnimationFrame(draw); };
+    let still = 0;
+    const moving = () => {                        // rotate / zoom at half the pixels, then one sharp frame
+      st.moving = true; clearTimeout(still);
+      still = setTimeout(() => { st.moving = false; redraw(); }, 160);
+    };
     let drag = null;
     canvas.addEventListener('pointerdown', e => { drag = [e.clientX, e.clientY]; canvas.setPointerCapture(e.pointerId); });
     canvas.addEventListener('pointermove', e => {
@@ -118,10 +141,10 @@
       drag = [e.clientX, e.clientY];
       const s = 3.0 / Math.max(canvas.clientWidth, 1);
       st.q = qmul(st.q, qmul(qaxis([0, 1, 0], -dx * s), qaxis([1, 0, 0], -dy * s)));
-      redraw();
+      moving(); redraw();
     });
     canvas.addEventListener('pointerup', () => { drag = null; });
-    canvas.addEventListener('wheel', e => { e.preventDefault(); st.dist = Math.min(6, Math.max(0.6, st.dist * Math.exp(e.deltaY * 0.001))); st.zoomed = true; redraw(); }, {passive: false});
+    canvas.addEventListener('wheel', e => { e.preventDefault(); st.dist = Math.min(6, Math.max(0.6, st.dist * Math.exp(e.deltaY * 0.001))); st.zoomed = true; moving(); redraw(); }, {passive: false});
     canvas.addEventListener('dblclick', () => { st.q = qaxis([1, 0, 0], -0.35); st.dist = st.home || 1.9; st.zoomed = false; redraw(); });
     new ResizeObserver(redraw).observe(canvas);
     return {
@@ -138,17 +161,24 @@
         st.texC = head.color ? tex(1, new Uint8Array(ab, 4 + n + size, size), head.shape) : null;
         if (!st.head && head.extent) st.home = Math.min(1.9, Math.max(0.6, 1.25 * head.extent));   // frame the particle
         st.head = head;
+        if (head.color) this.setColorRange(head.color.min, head.color.max);
         if (st.home && !st.zoomed) st.dist = st.home;
         redraw();
         return head;
       },
       setLevel(v) { if (!st.head) return; st.iso = Math.min(1, Math.max(0, (v - st.head.min) / (st.head.max - st.head.min))); redraw(); },
       setColor(on) { st.useCol = !!on; redraw(); },
+      setColorRange(a, b) {                     // in the colour volume's units (A): its lo..hi were mapped to 0..1
+        const c = st.head && st.head.color; if (!c) return;
+        const f = x => (x - c.lo) / Math.max(c.hi - c.lo, 1e-9);
+        st.crange = [f(a), f(b)]; redraw();
+      },
+      setColormap(name) { st.cmap = name === 'turbo' ? 1 : 0; redraw(); },
       view(axis) {
         st.q = axis === 'z' ? [0, 0, 0, 1] : axis === 'y' ? qaxis([1, 0, 0], -Math.PI / 2) : qaxis([0, 1, 0], Math.PI / 2);
         redraw();
       },
-      snapshot() { draw(); return canvas.toDataURL('image/png'); },
+      snapshot() { st.moving = false; draw(); return canvas.toDataURL('image/png'); },
       get head() { return st.head; },
       dispose() { if (st.texV) gl.deleteTexture(st.texV); if (st.texC) gl.deleteTexture(st.texC); },
     };

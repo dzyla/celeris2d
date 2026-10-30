@@ -29,7 +29,8 @@ def queue_job(project: Project, job_type: str, inputs: dict, settings: dict | No
     """A new job of any registered type, queued (inputs may themselves be queued or waiting)."""
     from .jobs import new_job
     j = new_job(project, job_type, inputs, settings or {}, label)
-    project.set_status(j, "queued")
+    if j.status != "finished":                  # an Import is done when made
+        project.set_status(j, "queued")
     return j
 
 
@@ -95,22 +96,45 @@ def next_job(project: Project) -> Job | None:
     return None
 
 
+def movie_chain(project: Project, job) -> list[Job]:
+    """A movie job and the queued movie jobs right after it (MotionCtf -> Pick -> Extract) whose other inputs have
+    finished: pipeline.run does them together, overlapped, reading each movie once."""
+    j = project.job(job)
+    chain = [j]
+    jobs = project.jobs()
+    status = dict(zip(jobs["id"].astype(int), jobs["status"]))
+    nxt = {"MotionCtf": ("Pick", "micrographs"), "Pick": ("Extract", "picks")}
+    while chain[-1].type in nxt:
+        typ, key = nxt[chain[-1].type]
+        cand = [project.job(int(r.id)) for r in jobs[(jobs["status"] == "queued") & (jobs["type"] == typ)].itertuples()]
+        cand = [c for c in cand if int(c.params.get(key, -1)) == chain[-1].id
+                and all(i == chain[-1].id or status.get(i) in DONE_OK for i in c.inputs)]
+        if not cand:
+            break
+        chain.append(cand[0])
+    return chain
+
+
 def run_job(project: Project, job, log=print, auto_select: bool = True):
     """Run a queued job (on the caller's thread); after a classification, a waiting Select job."""
     from . import pipeline as pl
     from .jobs import registry
     j = project.job(job)
-    project.set_status(j, "running")
+    chain = movie_chain(project, j) if j.type in MOVIE_JOBS else [j]
+    for c in chain:
+        project.set_status(c, "running")
     try:
         if j.type in MOVIE_JOBS:
-            pl.run(project, [j], log=log)
+            pl.run(project, chain, log=log)
         else:
             spec = registry().get(j.type)
             if spec is None:
                 raise ValueError(f"{j.type} jobs cannot run from the queue")
             spec.run(project, j, log=log)
     except BaseException as e:                    # noqa: BLE001 - recorded on the job, re-raised for the caller
-        project.set_status(j, "failed", dict(project.summary_of(j), error=f"{type(e).__name__}: {e}"))
+        for c in chain:
+            if project.job(c.id).status == "running":
+                project.set_status(c, "failed", dict(project.summary_of(c), error=f"{type(e).__name__}: {e}"))
         raise
     j = project.job(j.id)
     if auto_select and j.type in AUTO_SELECT and j.status == "finished":
@@ -136,9 +160,33 @@ def start(project: Project, job, auto_select: bool = True, **popen) -> subproces
     cmd = [sys.executable, "-u", "-m", "celeris2d.scheduler", project.root, str(j.id)]
     if not auto_select:
         cmd.append("--no-auto-select")
-    proc = subprocess.Popen(cmd, env=env, start_new_session=True, **popen)   # its own process group: stop() ends all
+    out = None
+    if "stdout" not in popen:                   # a file, not a pipe: the job outlives a restart of the dashboard
+        out = open(process_log(j), "ab")
+        popen.update(stdout=out, stderr=subprocess.STDOUT)
+    try:
+        proc = subprocess.Popen(cmd, env=env, start_new_session=True, **popen)   # own process group: stop() ends all
+    finally:
+        if out is not None:
+            out.close()
     project.set_status(j, "running", pid=proc.pid)
     return proc
+
+
+def process_log(job: Job) -> str:
+    """Everything the job's process prints (its run log, plus tracebacks)."""
+    return os.path.join(job.path, f"j{job.id:03d}_process.log")
+
+
+def busy(project: Project) -> Job | None:
+    """A job of the project running in a live process (this dashboard's, an earlier one's, a script's): the queue
+    waits for it - one GPU job at a time."""
+    jobs = project.jobs()
+    for r in jobs[jobs["status"] == "running"].itertuples():
+        j = project.job(int(r.id))
+        if project.is_running(j):
+            return j
+    return None
 
 
 def stop(project: Project, job, grace: float = 15.0) -> Job:
@@ -168,6 +216,11 @@ def stop(project: Project, job, grace: float = 15.0) -> Job:
     except ProcessLookupError:
         pass                                                          # already gone: just record it
     project.set_status(j, "cancelled", dict(project.summary_of(j), error="stopped by the user"))
+    for r in project.jobs().itertuples():       # the other jobs of the same process (a movie chain)
+        if r.status == "running" and int(r.id) != j.id:
+            o = project.job(int(r.id))
+            if o.params.get("run_pid") == pid and o.params.get("run_host") == host:
+                project.set_status(o, "cancelled", dict(project.summary_of(o), error=f"stopped with {j.name}"))
 
     def finish():
         t0 = time.time()

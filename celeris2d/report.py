@@ -28,7 +28,7 @@ def _version() -> str:
     return f"{v[0]} (git {v[1]})" if len(v) == 2 else " ".join(v)
 
 # job parameters that are bookkeeping, not settings
-_INTERNAL = {"run_pid", "run_host", "settings_version", "gpus", "seed", "figures"}
+_INTERNAL = {"run_pid", "run_host", "run_started", "settings_version", "gpus", "seed", "figures"}
 # parameters that name another job (shown as the arrow when it is an input)
 _REFS = {"micrographs", "picks", "particles", "poses", "reference", "class2d", "refine", "map", "modes3d",
          "recenter", "mask_job"}
