@@ -327,8 +327,13 @@ def _motion(project: Project, job: Job, mv: dict, frames=None, log=print, keep_f
                             keep_frames=keep_frames, kv=s.kv)
     optics = Optics(s.kv, s.cs_mm, s.amp_contrast)
     fit = pp.estimate_ctf(mic.sum, mic.apix, optics) if ctf else None
+    pz = None
     if fit is not None and s.patch_ctf != "off":
-        pz = pp.patch_defocus(mic.sum, mic.apix, optics, fit, grid=s.patch_ctf_grid)
+        try:
+            pz = pp.patch_defocus(mic.sum, mic.apix, optics, fit, grid=s.patch_ctf_grid)
+        except Exception as e:                       # a local-defocus measurement never fails a job
+            log(f"[{job.name}] {mv['stem']}: patch CTF skipped ({e!r})")
+    if pz is not None:
         apply = s.patch_ctf == "apply" or (s.patch_ctf == "auto" and pz["significant"] and pz["tilt_deg"] >= 5.0)
         fit.patch = dict(plane=[round(v, 6) for v in pz["plane"]], plane_se=[round(v, 6) for v in pz["plane_se"]],
                          tilt_deg=round(pz["tilt_deg"], 3), significant=pz["significant"], applied=bool(apply),

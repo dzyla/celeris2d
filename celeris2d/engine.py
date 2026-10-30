@@ -37,6 +37,15 @@ TWO_PI = 2.0 * math.pi
 # makes Fourier values invariant to the sampling (box) for a fixed field of view,
 # so cropping a spectrum is exactly Fourier down-sampling.
 # --------------------------------------------------------------------------- #
+def release_cache():
+    """Return PyTorch's cached GPU blocks, after every stream has finished: a background stream (the particle loader)
+    may still use blocks the cache holds, and with expandable segments the release unmaps them without waiting (an
+    illegal memory access in the loader's kernels: EMPIAR-10291 ab initio while particles streamed in)."""
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+
+
 def cap_memory(dev):
     """Hard limit for this process on a CUDA device: the card less the headroom gpu_free plans around (and at most
     CELERIS2D_VRAM_GB). Past it PyTorch frees its cache and retries, then raises out-of-memory: the driver never
@@ -990,9 +999,9 @@ class Classifier2D:
         for d in self.devs:
             if d.type != "cuda":
                 return int(np.clip(0.4e9 / (M * T1 * T1 * 4), 4, 1024))
-            torch.cuda.empty_cache()  # cached blocks of the previous (smaller-box) iteration
+            release_cache()  # cached blocks of the previous (smaller-box) iteration
             with torch.cuda.device(d):
-                torch.cuda.empty_cache()
+                release_cache()
             free.append(gpu_free(d))
         avail = 0.75 * min(free) - fixed
         bn = int(np.clip(min(avail / per, 0.4e9 / (M * T1 * T1 * 4)), 4, 1024))

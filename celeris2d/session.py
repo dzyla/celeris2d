@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 from .deep2d import class_table, split_two_clusters
-from .engine import Classifier2D, Params
+from .engine import Classifier2D, Params, release_cache
 from .isac import run_isac
 from .plots import gallery
 from .sources import open_source
@@ -86,7 +86,7 @@ class Session:
         if self.clf is not None:  # replacing a loaded dataset: free its GPU memory first
             self.clf = None
             import torch
-            torch.cuda.empty_cache()
+            release_cache()
         self.src, self.path = src, path
         self.clf = Classifier2D(src, prm, devices=pick_devices(gpus, src.N, src.box, src.apix, max_res), log=self.log)
         self.results.clear()

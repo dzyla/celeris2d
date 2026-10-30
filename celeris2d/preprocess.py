@@ -296,26 +296,35 @@ def motion_correct(frames: np.ndarray, gain: np.ndarray | None, apix: float, dos
     n, NY, NX = frames.shape
     ny, nx = int(round(NY / bin / 2)) * 2, int(round(NX / bin / 2)) * 2
     g = None if gain is None else torch.as_tensor(np.ascontiguousarray(gain), device=dev)
-    if n == 1:      # a micrograph (aligned and summed elsewhere, e.g. a public set): gain and Fourier binning only
-        x = torch.as_tensor(np.asarray(frames[0]), device=dev).float()
-        if g is not None:
-            x = x * g
-        m = torch.fft.irfft2(crop_half(torch.fft.rfft2(x, norm="forward"), ny, nx), s=(ny, nx), norm="forward")
-        return Micrograph(sum=m, sum_dw=m, apix=apix * NY / ny, shifts=np.zeros((1, 2), np.float32),
-                          dose_per_frame=dose_per_frame)
     # hot pixels: far more counts over the movie than the Poisson spread allows -> the frame mean
     tot = torch.zeros(NY, NX, device=dev)
     for i in range(n):
         tot += torch.as_tensor(frames[i], device=dev).float()
-    mu = float(tot.mean())
-    hot = tot > mu + 10 * math.sqrt(max(mu, 1.0)) + 10
-    del tot
+    # robust statistics: a few absurd values (EMPIAR-10291 micrograph 42 holds 1.6e34) wreck a mean; a counting
+    # movie's hot pixels are far above the Poisson spread, a float micrograph's above the median's spread
+    fin = torch.isfinite(tot)
+    smp = tot[fin][torch.randint(0, int(fin.sum()), (min(int(fin.sum()), 2_000_000),), device=dev)]
+    mu = float(smp.median())
+    sd = float(1.4826 * (smp - mu).abs().median())
+    if np.issubdtype(np.asarray(frames[:1]).dtype, np.integer):          # counts: far above the Poisson spread
+        hot = (~fin) | (tot > mu + 10 * math.sqrt(max(mu, 1.0)) + 10)
+    else:                                                                # a float image: far from the median
+        hot = (~fin) | ((tot - mu).abs() > 20 * max(sd, 1e-12))
+    del tot, smp
+    if n == 1:      # a micrograph (aligned and summed elsewhere, e.g. a public set): gain and Fourier binning only
+        x = torch.as_tensor(np.asarray(frames[0]), device=dev).float()
+        if g is not None:
+            x = x * g
+        x = torch.where(hot, x[~hot].mean(), x)          # outliers (corrupt values) -> the mean of the good pixels
+        m = torch.fft.irfft2(crop_half(torch.fft.rfft2(x, norm="forward"), ny, nx), s=(ny, nx), norm="forward")
+        return Micrograph(sum=m, sum_dw=m, apix=apix * NY / ny, shifts=np.zeros((1, 2), np.float32),
+                          dose_per_frame=dose_per_frame)
     F = torch.empty((n, ny, nx // 2 + 1), dtype=torch.complex64, device=dev)
     for i in range(n):
         x = torch.as_tensor(frames[i], device=dev).float()
         if g is not None:
             x = x * g
-        x = torch.where(hot, x.mean(), x)
+        x = torch.where(hot, x[~hot].mean(), x)          # the mean of the good pixels
         F[i] = crop_half(torch.fft.rfft2(x, norm="forward"), ny, nx)
     p = apix * NY / ny
     na = max(64, int(round(ny * p / align_apix / 2)) * 2)
@@ -421,7 +430,7 @@ def _fit_score(y, c2, B):
 
 
 def estimate_ctf(mic: torch.Tensor, apix: float, optics: Optics, res_lo: float = 30.0, res_hi: float = 5.0,
-                 df_range=(3000.0, 50000.0), tile: int = 512, deg: int = 4) -> CTFFit:
+                 df_range=(1000.0, 50000.0), tile: int = 512, deg: int = 4) -> CTFFit:
     """Per-micrograph defocus and astigmatism. The tile power spectrum (sqrt, so Thon-ring amplitude does not
     vanish under the background) is modelled as background(k) + envelope(k) * CTF^2(k, theta) with background and
     envelope low-order polynomials in |k| solved by least squares for every candidate CTF (variable projection);
@@ -505,6 +514,8 @@ def patch_defocus(mic: torch.Tensor, apix: float, optics: Optics, fit: CTFFit, g
                 continue
             ps = power_spectrum(sub, apix, tile).sqrt()
             y = ps[band]
+            if not bool(torch.isfinite(y).all()) or float(y.std()) <= 0:     # empty / saturated region
+                continue
             y = (y - y.mean()) / y.std()
             sc = []
             for i in range(0, len(offs), 24):
@@ -513,6 +524,8 @@ def patch_defocus(mic: torch.Tensor, apix: float, optics: Optics, fit: CTFFit, g
                            box_a)[:, band]
                 sc.append(_fit_score(y, c2, B))
             sc = torch.cat(sc)
+            if not bool(torch.isfinite(sc).all()):
+                continue
             j = int(sc.argmax().clamp(1, len(offs) - 2))
             y0, y1, y2 = float(sc[j - 1]), float(sc[j]), float(sc[j + 1])
             den = y0 - 2 * y1 + y2

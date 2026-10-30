@@ -23,7 +23,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .engine import TWO_PI, ctf_2d, freqs, gpu_free, rot_grid, upsample2
+from .engine import TWO_PI, ctf_2d, freqs, gpu_free, rot_grid, upsample2, release_cache
 
 
 # --------------------------------------------------------------------------- geometry
@@ -589,7 +589,7 @@ def _free(dev) -> float:
     """Free memory on dev (bytes) after releasing PyTorch's cached blocks."""
     if torch.device(dev).type != "cuda":
         return 8e9
-    torch.cuda.empty_cache()
+    release_cache()
     return float(gpu_free(dev))                 # CELERIS2D_VRAM_GB caps it
 
 
@@ -962,7 +962,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     for it in range(n_iter + 1):
         # ---- reconstruct halves, FSC, filter
         refs = r = rm = None        # the last alignment's references (also bound to the loop variables that built them)
-        torch.cuda.empty_cache()    # and cached batch blocks are not needed while the halves are back-projected
+        release_cache()    # and cached batch blocks are not needed while the halves are back-projected
         if it == 0:
             for m in range(M):
                 for v in vols[m]:

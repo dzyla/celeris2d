@@ -27,6 +27,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
+from .engine import release_cache
 from .jobspec import Input, JobSpec, _n, params_of, settings_of, warn_mark
 from .project import PARTICLE_JOBS, Job, Project, logged
 
@@ -162,7 +163,7 @@ def run_class2d(project: Project, job, log=print) -> dict:
                        for k in np.argsort(-r.pops)])
     project.set_status(job, "finished", summ)
     ses.clf = None
-    torch.cuda.empty_cache()
+    release_cache()
     return summ
 
 
@@ -289,7 +290,7 @@ def run_initial_model(project: Project, job, log=print) -> dict:
                 duplicate_distance_a=round(dist, 1))
     project.set_status(job, "finished", keep)
     ses.clf = None
-    torch.cuda.empty_cache()
+    release_cache()
     return keep
 
 
@@ -311,6 +312,8 @@ class Refine3DSettings:
                                     # 15 A, masking.auto_mask), "sphere" (the particle sphere only), or a MaskCreate job
                                     # / .mrc path (fixed)
     grid_correct: bool = False      # gridding correction of the 3D spectra (more accurate projections and maps)
+    reference_map: str = ""         # start from this map (.mrc) instead of the reference job's (low-passed to res_start_a,
+                                    # default 30 A; poses from `poses`, so add global_iters when its frame differs)
     nu: bool = False                # non-uniform regularisation (cryoSPARC NU-refine's idea): each region of the
                                     # references low-passed at its own resolution, chosen by cross-validation
     pad: int = 0                    # padding of the 3D spectra: 0 automatic (2 if it fits the GPU, else 1), 1 or 2
@@ -350,7 +353,7 @@ def _scale_to_data(clf, idx, A, t, vol: torch.Tensor, b: int, res_a: float, n: i
     """Least-squares scale of the map's CTF-modulated projections to particles at their poses (frequencies up to
     res_a): a map from another box or pixel size has other intensity units than these particles."""
     from .abinitio import Volume, _to_box
-    from .engine import TWO_PI, ctf_2d, freqs
+    from .engine import TWO_PI, ctf_2d, freqs, release_cache
     dev, box_a = clf.dev, clf.box_a
     # on the smallest box that holds the band (the data are cropped alike): a pad-2 volume at box 512 is 8.6 GB
     b = min(b, int(math.ceil(2 * box_a / res_a / 2)) * 2 + 8)
@@ -462,6 +465,13 @@ def run_refine3d(project: Project, job, log=print) -> dict:
     rsum = project.summary_of(rj)
     r_ref = rsum.get("resolution_a", 8.0) if rj.type != "HeteroRefine" else \
         next((c["resolution_a"] for c in rsum.get("classes", []) if c["cls"] == ref_cls), None) or 8.0
+    if s.reference_map:                              # an external map (e.g. a deposited one), low-passed to start
+        import mrcfile
+        with mrcfile.open(s.reference_map if os.path.isabs(s.reference_map) else project.abs(s.reference_map),
+                          permissive=True) as f:
+            ref, ref_apix = np.array(f.data, np.float32), float(f.voxel_size.x)
+        r_ref = 30.0
+        log(f"[3d] reference {s.reference_map} ({ref.shape[0]} px at {ref_apix:.3f} A), from {s.res_start_a or 30:g} A")
     res0 = s.res_start_a or max(8.0, float(r_ref))
     vol = map_to_box(ref, ref_apix, b, box_a / b)
     start_sym = str(qj.params.get("sym") or "C1").upper()
@@ -522,7 +532,7 @@ def run_refine3d(project: Project, job, log=print) -> dict:
                 fsc_solvent=[round(float(x), 4) for x in fsc_sol.cpu()], map=project.rel(job.find("map.mrc")))
     project.set_status(job, "finished", summ)
     ses.clf = None
-    torch.cuda.empty_cache()
+    release_cache()
     return summ
 
 
@@ -712,7 +722,7 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
     project.set_status(job, "finished", summ)
     log("[hetero] " + ", ".join(f"class {r['cls']}: {r['particles']} ({r['resolution_solvent_mask_a']} A)" for r in table))
     ses.clf = None
-    torch.cuda.empty_cache()
+    release_cache()
     return summ
 
 

@@ -13,6 +13,8 @@ import numpy as np
 
 import torch
 
+from .engine import release_cache
+
 from .plotstyle import GRAY, STATUS, T, plt, themed
 
 
@@ -393,7 +395,7 @@ def size_survey(path: str, project, mic_job, movie_ids, diameters_a=(80, 120, 16
     fig.suptitle(title or "particle size survey", fontsize=11)
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
-    torch.cuda.empty_cache()
+    release_cache()
     return out
 
 

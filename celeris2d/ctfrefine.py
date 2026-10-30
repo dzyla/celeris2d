@@ -66,7 +66,7 @@ def _plane_fit(xy: np.ndarray, d: np.ndarray, n_iter: int = 5) -> tuple[np.ndarr
 
 def run_ctf_refine(project: Project, job, log=print) -> dict:
     from . import abinitio as ab
-    from .engine import TWO_PI, freqs
+    from .engine import TWO_PI, freqs, release_cache
     from .jobs import _session, particle_source, settings_of
     from .polish import _half_maps
     job = project.job(job)
@@ -244,7 +244,7 @@ def run_ctf_refine(project: Project, job, log=print) -> dict:
             f"{job.name} · {len(use):,} particles of {rj.name} · band {s.res_lo_a:g}-{res_hi:.2f} Å")
     project.set_status(job, "finished", summ)
     ses.clf = None
-    torch.cuda.empty_cache()
+    release_cache()
     log(f"[ctf] {job.name}: {len(use):,} particles, offset median {summ['delta_median_a']:+.0f} A, |offset| median "
         f"{summ['delta_abs_median_a']:.0f} A, scatter about the micrograph planes {summ['per_particle_scatter_about_plane_a']:.0f} A, "
         f"{summ['cc_improved_share'] * 100:.0f}% fit better ({seconds:.0f} s)")

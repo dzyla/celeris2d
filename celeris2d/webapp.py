@@ -21,7 +21,7 @@ import traceback
 
 import numpy as np
 
-from .engine import Params
+from .engine import Params, release_cache
 
 # settings shown in the UI (Params fields); the dataset-level ones are used at load time
 _LOAD_KEYS = ("diameter_a", "max_res_a", "init_res_a", "psi_step_min", "psi_factor", "trans_div", "max_shift_a",
@@ -1049,7 +1049,7 @@ def create(workdir, project_dir=None):
             if old is not None and old.clf is not None:  # free the previous dataset's GPU memory
                 old.clf = None
                 import torch
-                torch.cuda.empty_cache()
+                release_cache()
             st.session = Session(wd, log=st._log)
             info = st.session.load(path, **load_kwargs(body))
             st._log(f"[load] {info}")
