@@ -247,10 +247,11 @@ def process_movies(movies_job: str, apix: float, dose_total: float, diameter_a: 
 def pick_particles(micrographs_job: str, diameter_a: float, templates: str = "", template_classes: list[int] | None = None,
                    threshold: float | None = None, curate: str = "", particle_a: float = 0.0, box_a: float = 0.0,
                    particle_apix: float = 0.0, dark: bool = True, figures: str = "sample", label: str = "",
-                   region_filter: bool = False) -> str:
+                   region_filter: bool = False, template_file: str = "") -> str:
     """Pick (and extract) the micrographs of a MotionCtf job again, in the background: a blob of diameter_a, or
     templates - a Class2D / Select job (class averages; template_classes: only these 1-based classes) or a
-    Refine3D / InitialModel / HeteroRefine job (projections of its map). threshold: score (None: automatic, generous;
+    Refine3D / InitialModel / HeteroRefine job (projections of its map); or template_file - an .mrcs of class averages
+    (white protein, e.g. 2D of another collection of the same sample) or an .mrc map from outside the project. threshold: score (None: automatic, generous;
     template scores separate particles from background around 0.35-0.4 - check the pick figures). curate: a Curate
     job (new_job Curate) - only the micrographs it accepts are picked. region_filter: drop candidates on film /
     thick ice / edges / contamination (regions.py; the map of each micrograph is stored for an overlay, pick column
@@ -260,7 +261,7 @@ def pick_particles(micrographs_job: str, diameter_a: float, templates: str = "",
     mc = prj.job(micrographs_job)
     s = PickSettings(diameter_a, dark=dark, threshold=threshold, figures=figures,
                      templates=prj.job(templates).id if templates else 0, template_classes=tuple(template_classes or ()),
-                     curate=prj.job(curate).id if curate else 0, region_filter=region_filter)
+                     curate=prj.job(curate).id if curate else 0, region_filter=region_filter, template_file=template_file)
     pj = pick_job(prj, mc, s, label=label)
     ej = extract_job(prj, pj, ExtractSettings(particle_a or 1.3 * diameter_a, box_a, particle_apix=particle_apix,
                                               dark=dark))
