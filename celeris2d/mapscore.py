@@ -1,14 +1,17 @@
 """MapScore job: how well each particle fits a 3D map, against a control that has the particle's own power spectrum
 but no structure. Every particle is phase-flipped, low-passed and compared with projections of the map over all
 orientations (normalised correlation inside the particle circle, best over directions x in-plane angles x small
-shifts); the same is done for a phase-randomised copy of it. A particle "fits" when it beats the control's
-quantile `q` (a share 1 - q of structureless images passes by chance).
+shifts); the same is done for a phase-randomised copy of it. Each is also compared with a decoy: the map's envelope
+without its structure (phases random beyond `decoy_res_a`). A particle "fits" when its map score minus its decoy
+score beats the controls' quantile `q` (a share 1 - q of structureless images passes by chance): high-contrast junk
+(carbon edges, ice) correlates with any object of the right size, a particle more with the map than with the decoy.
 
 At single-particle SNR a single score separates poorly (dz_2025_10 at 16 A: 34 % of 2D-selected particles vs 2.5 % of
 the "honeycomb" classes above the 99th percentile of controls), so the job also reports, per 2D class of the
 particles' Class2D job, the share that fits with its binomial interval: a class of real particles sits far above the
 chance rate, a noise-attractor class at it - an objective class selection where class-average scores against map
-projections are fooled by round, textured averages. dz_2025_10 (152,932 template picks, Class2D K100 vs the D2 map at
+projections are fooled by round, textured averages. Measured with the map score alone (before the decoy):
+dz_2025_10 (152,932 template picks, Class2D K100 vs the D2 map at
 20 A, 6 min on one RTX PRO 4000): particles in the classes selected by class-average scores fit at 28.6 %, the rest
 at 2.7 %; classes such as two at 84 % and 70 % fit had been left out. J20 (198k particles, the whole stack, against
 its own ab initio map): particles of clean 2D classes fit at 40 %, of noisy ones at 15 %; the class proposal keeps
@@ -46,15 +49,24 @@ class MapScoreSettings:
     shift_a: float = 10.0           # largest shift searched (A) around the box centre
     diameter_a: float = 0.0         # circle the correlation is taken in (A); 0: the extraction's particle size
     quantile: float = 0.99          # a particle fits when it beats this quantile of the phase-randomised controls
+    decoy_res_a: float = 80.0       # also score against a structureless decoy (the map's phases kept to this
+                                    # resolution - its envelope - random beyond, same power); a particle fits by how
+                                    # much more it correlates with the map than with the decoy (0: by the map score
+                                    # alone). Carbon edges / ice blobs correlate with any envelope of the right size.
+                                    # dz_2025_10 K100 (3,000 movies, 300 per class, classes by my reading of the
+                                    # gallery), share that fits, protein views / edge + ice / other: map score alone
+                                    # 5.9 / 21 / 0.5 % (three edge classes had topped the list at 65-81 %); map - decoy
+                                    # at 40 A 35 / 0.4 / 1.6 %, 60 A 47 / 0.4 / 2.3, 80 A 47 / 0.4 / 2.1, 120 A 27 /
+                                    # 0.1 / 0.7. Synthetic (test_mapscore): 40 A 6 %, 60 A 35 %, 80 A 48 %, 120 A 25 %
     propose_over_chance: float = 10.0   # propose a 2D class when the lower 95 % bound of its share that fits exceeds
                                     # this x the chance rate ...
-    propose_relative: float = 0.5   # ... and this x the median share of the 10 best classes (>= 100 particles): the
-                                    # share of real particles that fits depends on the SNR (dz_2025_10 ~0.45, J20 ~0.45
-                                    # but J20's noisy classes reach 0.29). J20 (198k, K50, my reading of its gallery:
-                                    # 21 noisy classes): 0.4 keeps 100 % of clean particles / removes 70 % of the noisy,
-                                    # 0.5 97 % / 81 %, 0.6 97 % / 96 %; 3D classification at the consensus poses (4
-                                    # models, best two kept) 80 % / 56 %. dz_2025_10: 10x chance alone proposes 25
-                                    # classes / 37k particles, 3x 40 / 58k
+    propose_relative: float = 0.4   # ... and this x the median share of the 10 best classes (>= 100 particles): the
+                                    # share of real particles that fits depends on the SNR. J20 (198k, K50, my reading
+                                    # of its gallery: 21 noisy classes), clean particles kept / noisy removed, map -
+                                    # decoy: 0.4 100 / 91 %, 0.5 94 / 100 %, 0.6 85 / 100 % (map score alone: 0.4 100 /
+                                    # 70, 0.5 97 / 81, 0.6 97 / 96; 3D classification at the consensus poses, 4 models,
+                                    # best two kept: 80 / 56). dz_2025_10 K100 (460k): 19 classes / 100k particles, all
+                                    # protein views; five more views fit at 17-26 % (bar 27 %)
     max_particles: int = 0          # score a random subset of this many (0: all); class shares need ~200 per class
     seed: int = 0                   # control phases and subset
     gpus: str = "auto"              # GPU to use: "auto" or an index
@@ -155,21 +167,33 @@ def run_mapscore(project: Project, job, log=print) -> dict:
     sc = Scorer(vol, vapix, src.box, src.apix, src.optics, diam, s.res_a, s.n_dirs, s.psi_step, s.shift_a, dev)
     log(f"[mapscore] {len(uid):,} particles of {pj.name} vs {mj.name}: {len(sc.Ft):,} projections, working box "
         f"{sc.bw} ({sc.wa:.1f} A/px), {s.res_a:g} A, circle {diam:.0f} A")
+    sd = None
+    if s.decoy_res_a > 0:
+        from .jobs import decoy_map
+        vt = torch.as_tensor(np.asarray(vol), dtype=torch.float32, device=dev)
+        dec = decoy_map(vt, vt.shape[0] * vapix, s.decoy_res_a, 1.2 * diam, s.seed).cpu().numpy()
+        sd = Scorer(dec, vapix, src.box, src.apix, src.optics, diam, s.res_a, s.n_dirs, s.psi_step, s.shift_a, dev)
+        del vt
     gen = torch.Generator().manual_seed(s.seed)
-    score = np.zeros(len(uid), np.float32)
-    ctrl = np.zeros(len(uid), np.float32)
+    score, ctrl, dscore, dctrl = (np.zeros(len(uid), np.float32) for _ in range(4))
     done = 0
     for idx, im in src.chunks():
         x, r = sc.prepare(torch.as_tensor(im), torch.as_tensor(src.ctf[idx]), gen)
         score[idx] = sc.score(x).cpu().numpy()
         ctrl[idx] = sc.score(r).cpu().numpy()
+        if sd is not None:
+            dscore[idx] = sd.score(x).cpu().numpy()
+            dctrl[idx] = sd.score(r).cpu().numpy()
         done += len(idx)
         if done % 20000 < len(idx):
             log(f"[mapscore] {done:,}/{len(uid):,} ({time.time() - t0:.0f} s)")
-    thr = float(np.quantile(ctrl, s.quantile))
-    fits = score > thr
+    val, cval = (score - dscore, ctrl - dctrl) if sd is not None else (score, ctrl)     # what is thresholded
+    thr = float(np.quantile(cval, s.quantile))
+    fits = val > thr
     chance = 1 - s.quantile
     cols = dict(uid=uid, score=score, control=ctrl, fits=fits)
+    if sd is not None:
+        cols.update(decoy=dscore, control_decoy=dctrl)
     shares = []
     cls_job = pj if pj.type == "Class2D" else None
     if cls_job is not None:
@@ -182,10 +206,11 @@ def run_mapscore(project: Project, job, log=print) -> dict:
     top = sorted((c["fit"] for c in shares if c["n"] >= 100), reverse=True)[:10]
     bar = max(s.propose_over_chance * chance, s.propose_relative * float(np.median(top)) if top else 0.0)
     proposed = [c["cls"] for c in shares if c["lo"] > bar]
-    _figure(job.out("mapscore.png"), score, ctrl, thr, shares, bar, f"{job.name}: {fits.mean() * 100:.1f} % of "
+    _figure(job.out("mapscore.png"), val, cval, thr, shares, bar, sd is not None, f"{job.name}: {fits.mean() * 100:.1f} % of "
             f"{len(uid):,} particles fit {mj.name} (chance {chance * 100:.0f} %)")
     summ = dict(particles=len(uid), fit=round(float(fits.mean()), 4), chance=chance, threshold=round(thr, 4),
-                score_median=round(float(np.median(score)), 4), control_median=round(float(np.median(ctrl)), 4),
+                score_median=round(float(np.median(val)), 4), control_median=round(float(np.median(cval)), 4),
+                decoy_res_a=s.decoy_res_a if sd is not None else None,
                 seconds=round(time.time() - t0, 1), classes=shares, proposal_bar=round(bar, 4),
                 proposed_classes=proposed,
                 proposed_particles=int(sum(c["n"] for c in shares if c["cls"] in proposed)))
@@ -196,7 +221,7 @@ def run_mapscore(project: Project, job, log=print) -> dict:
 
 
 @themed
-def _figure(path, score, ctrl, thr, shares, bar, title_):
+def _figure(path, score, ctrl, thr, shares, bar, decoy, title_):
     n = 2 if shares else 1
     fig, axes = plt.subplots(1, n, figsize=(6.2 * n, 3.6), squeeze=False)
     title(fig, "Particles vs map", title_)
@@ -206,7 +231,8 @@ def _figure(path, score, ctrl, thr, shares, bar, title_):
     ax.hist(ctrl, bins=bins, color=T.series[1], alpha=0.7, label="phase-randomised control")
     ax.hist(score, bins=bins, color=T.series[0], alpha=0.7, label="particles")
     ax.axvline(thr, color=STATUS["warning"], lw=1.2, ls="--")
-    ax.set(xlabel="best correlation with a map projection", ylabel="particles")
+    ax.set(xlabel="correlation with the map minus with a structureless decoy" if decoy else
+           "best correlation with a map projection", ylabel="particles")
     ax.legend(loc="upper right", fontsize=8, frameon=False)
     grid_y(ax)
     if shares:

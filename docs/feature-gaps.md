@@ -19,7 +19,7 @@ an agent branch in progress; ordered by what a typical project needs first.
 | per-particle CTF, optics | CtfRefine (defocus, astigmatism, beam tilt, trefoil, 4th order, anisotropic mag) / Global + Local CTF | have per-particle defocus, global optics fit (validated synthetic; differs from RELION on beta-gal); per-particle astigmatism partial |
 | Bayesian polishing / reference-based motion | yes | have (parametric frame weights; cryoSPARC fits free per-frequency weights) |
 | masks, sharpening, local resolution | MaskCreate, PostProcess, LocalRes / Volume tools, Sharpen, Local Res + Local Filter | have; automatic mask ~20 % looser than RELION's, no detector MTF correction |
-| per-particle curation by the map | (cryoSPARC: Remove duplicates, Reference-based curation) | have duplicates and MapScore (per-particle fit vs a phase-randomised control, per-2D-class shares and a class proposal) |
+| per-particle curation by the map | (cryoSPARC: Remove duplicates, Reference-based curation) | have duplicates and MapScore (per-particle fit: map score minus a structureless decoy's, vs phase-randomised controls; per-2D-class shares and a class proposal) |
 | volume tools | align maps, flip hand, resample, map-vs-map FSC, EMDB fetch | **missing** (improvement-ideas #19) |
 | orientation diagnostics | cFAR, angular distribution | have angular statistics; no cFAR / directional FSC |
 | live processing | cryoSPARC Live | partial (pipeline streams movies -> picks -> 2D; no live 3D) |

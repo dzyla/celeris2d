@@ -62,3 +62,42 @@ def test_mapscore_separates_particles_from_junk():
     cls = np.repeat([0, 1, 2], N)
     sh = class_shares(cls, np.concatenate([out[k][0] > thr for k in ("good", "other", "noise")]), 0.01)
     assert sh[0]["lo"] > 0.03 and sh[2]["lo"] < 0.03, sh
+
+
+AMP = 6.0
+
+
+def test_decoy_rejects_junk_blobs():
+    """High-contrast junk of the particle's size (ice / contamination blobs, a quarter of the stack) correlates with
+    projections of any object that size: by the map score alone 23 % of it fits. By the map score minus the score
+    against a structureless decoy (the map's envelope, phases random beyond 80 A) none does, 48 % of the particles do
+    (decoy at 40 A: 6 %, too close to this blobby map)."""
+    from celeris2d.jobs import decoy_map
+    g = torch.Generator().manual_seed(5)
+    vol = _volume(_blobs(7))
+    good = _particles(vol, N, 3.0, g)
+    yy = torch.arange(BOX, dtype=torch.float32)[:, None] - BOX / 2
+    xx = torch.arange(BOX, dtype=torch.float32)[None, :] - BOX / 2
+    NB = N // 4                                                      # junk a minority, as in real stacks
+    c = (torch.rand(NB, 2, generator=g) - 0.5) * 8
+    rad = 10 + 6 * torch.rand(NB, generator=g)                        # 80-128 A across, the particle's size
+    d = ((xx - c[:, 0, None, None]) ** 2 + (yy - c[:, 1, None, None]) ** 2).sqrt()
+    blob = torch.sigmoid((rad[:, None, None] - d) / 1.5) * AMP       # an ice / contamination blob
+    blob = blob.cuda() + 3.0 * torch.randn(NB, BOX, BOX, generator=g).cuda()
+    kw = dict(diameter_a=120, res_a=16, n_dirs=150, psi_step=10, shift_a=8)
+    opt = Optics(300.0, 2.7, 0.1, no_ctf=True)
+    sc = Scorer(vol.numpy(), APIX, BOX, APIX, opt, **kw)
+    sd = Scorer(decoy_map(vol.cuda(), BOX * APIX, 80.0, 144.0).cpu().numpy(), APIX, BOX, APIX, opt, **kw)
+    ctf = torch.zeros(N, 6)
+    out = {}
+    for name, im in (("good", good), ("blob", blob)):
+        x, r = sc.prepare(im, ctf[:len(im)], torch.Generator().manual_seed(1))
+        out[name] = [sc.score(x).cpu().numpy(), sc.score(r).cpu().numpy(), sd.score(x).cpu().numpy(),
+                     sd.score(r).cpu().numpy()]
+    ctrl = np.concatenate([v[1] for v in out.values()])
+    dctrl = ctrl - np.concatenate([v[3] for v in out.values()])
+    t_map, t_dec = np.quantile(ctrl, 0.99), np.quantile(dctrl, 0.99)
+    by_map = {k: float(np.mean(v[0] > t_map)) for k, v in out.items()}
+    by_dec = {k: float(np.mean(v[0] - v[2] > t_dec)) for k, v in out.items()}
+    assert by_map["blob"] > 0.15, by_map                    # the failure the decoy is for
+    assert by_dec["good"] > 0.3 and by_dec["blob"] < 0.02, by_dec
