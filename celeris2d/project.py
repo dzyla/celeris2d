@@ -219,7 +219,7 @@ class Job:
         return os.path.join(self.path, self.prefix + "run.log")
 
 
-_SUBDIR = {".mrc": "maps", ".mrcs": "maps", ".png": "figures", ".json": "data", ".star": "data", ".xml": "data",
+_SUBDIR = {".mrc": "maps", ".mrcs": "maps", ".bild": "maps", ".png": "figures", ".json": "data", ".star": "data", ".xml": "data",
            ".csv": "data", ".cs": "data", ".csg": "data", ".npz": "data", ".txt": "data", ".log": ""}
 
 

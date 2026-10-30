@@ -926,7 +926,8 @@ def refinement_report(job, tag: str, sym: str, box_a: float, apix: float, A_star
                       fsc: dict, resolution_a: float, maps: list, masks: list, cls=None, class_labels=None,
                       class_res=None) -> dict:
     """Diagnostics every 3D refinement writes (Refine3D, HeteroRefine): FSC curves (fsc.png + fsc.json / .star /
-    .xml), angular distribution (views.png + views.json; per class with classes), progress per iteration
+    .xml), angular distribution (views.png + views.json, angdist.bild for ChimeraX; per class with classes), progress
+    per iteration
     (progress.png), per-particle fit / shift / orientation change (particles.png), map projections and sections with
     the mask (map_views.png). job: a Job (files go to job.out(...)) or a folder. Returns the summary entries (SCF,
     coverage, warnings, history)."""
@@ -943,6 +944,8 @@ def refinement_report(job, tag: str, sym: str, box_a: float, apix: float, A_star
     rot, tilt, _ = (x.numpy() for x in matrix_to_euler(A.cpu()))
     stats = dg.angular_stats(A.cpu(), sym)
     dg.write_views(out_("views.json"), rot, tilt, stats)
+    radius = dg.particle_radius(masks[0] if masks else None, apix, box_a)
+    dg.write_angdist_bild(out_("angdist.bild"), rot, tilt, box_a, radius)
     warnings = list(stats["warnings"])
     plots3d.fsc_figure(out_("fsc.png"), curves, box_a, apix, tag)
     plots3d.views_figure(out_("views.png"), rot, tilt, tag, stats)
@@ -954,6 +957,7 @@ def refinement_report(job, tag: str, sym: str, box_a: float, apix: float, A_star
             if sel.sum() >= 10:
                 st = dg.angular_stats(A.cpu()[torch.as_tensor(sel)], sym)
                 groups.append((lab, rot[sel], tilt[sel], st))
+                dg.write_angdist_bild(out_(f"class{i + 1:02d}_angdist.bild"), rot[sel], tilt[sel], box_a, radius)
                 per.append(dict(cls=i + 1, scf=st["scf"], occupied=st["occupied"]))
         plots3d.views_grid_figure(out_("views_classes.png"), groups, tag)
         out["class_views"] = per

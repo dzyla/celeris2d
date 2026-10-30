@@ -1,8 +1,8 @@
 """Curate job: which micrographs of a MotionCtf job go on to picking (cryoSPARC's Curate Exposures, RELION's
 micrograph selection). Each micrograph is judged by its CTF fit (resolution the Thon rings were fitted to, defocus,
 astigmatism, fit score, tilt of the local-defocus plane) and its motion (total drift, local residual): fixed limits
-where a value has a physical meaning, and for drift / local motion a limit from the data (median + outlier_mad x
-MAD), since what is unusual depends on the microscope and the sample.
+where a value has a physical meaning; drift / local motion are limited only when asked (a value, or motion_outliers:
+median + outlier_mad x MAD), since motion that cost resolution already shows in the CTF fit.
 
     cur = curate_job(project, mc, CurateSettings(max_ctf_fit_a=6))
     run_curate(project, cur)                                    # table, figure, summary with the limits used
@@ -33,8 +33,13 @@ class CurateSettings:
     max_astigmatism_a: float = 2000.0   # reject a larger defocus difference (A) between the CTF's axes
     min_ctf_score: float = 0.0          # reject a lower CTF fit score (0: no limit)
     max_ctf_tilt_deg: float = 0.0       # reject a steeper local-defocus plane (patch CTF; deg; 0: no limit)
-    max_drift_a: float = 0.0            # reject a longer total drift (A); 0: automatic (median + outlier_mad x MAD)
-    max_local_rms_a: float = 0.0        # reject a larger local (patch) motion residual (A); 0: automatic
+    max_drift_a: float = 0.0            # reject a longer total drift (A); 0: automatic (with motion_outliers) or none
+    max_local_rms_a: float = 0.0        # reject a larger local (patch) motion residual (A); 0: automatic or none
+    motion_outliers: bool = False       # automatic drift / local-motion limits (median + outlier_mad x MAD). Off by
+                                        # default: motion that cost resolution shows in the CTF fit, which already
+                                        # limits; dz_2025_10 (1,000 movies), the automatic limits (41 A drift) rejected
+                                        # 34 micrographs only for motion although their CTF fit was 5.45 A (median;
+                                        # accepted 4.25 A) - e.g. 411 A of drift, 6.3 A fit, particles plainly visible
     outlier_mad: float = 5.0            # automatic limits: this many MADs above the median
 
 
@@ -70,7 +75,7 @@ def limits(s: CurateSettings, df: pd.DataFrame) -> dict:
     for col, (lo, hi) in _LIMITS.items():
         a = getattr(s, lo) if lo else 0.0
         b = getattr(s, hi) if hi else 0.0
-        if hi in _AUTO and not b:
+        if hi in _AUTO and not b and s.motion_outliers:
             v = df[col].to_numpy(float)
             v = v[np.isfinite(v)]
             if len(v) >= 10:

@@ -1,4 +1,5 @@
-"""Curate: fixed limits, automatic drift limit (median + k MAD), missing values never reject, reasons named."""
+"""Curate: fixed limits, automatic drift limit (median + k MAD) only with motion_outliers, missing values never reject,
+reasons named."""
 import numpy as np
 import pandas as pd
 
@@ -16,7 +17,8 @@ def test_curate_limits():
     df.loc[1, "defocus_a"] = 1500.0               # near focus
     df.loc[2, "drift_a"] = 60.0                   # drift outlier (automatic limit)
     df.loc[3, "astigmatism_a"] = 3000.0
-    lim = limits(CurateSettings(), df)
+    assert limits(CurateSettings(), df)["drift_a"] == [None, None]          # motion limits are opt-in
+    lim = limits(CurateSettings(motion_outliers=True), df)
     assert 10 < lim["drift_a"][1] < 20 and lim["ctf_score"] == [None, None]
     ok, why = judge(df, lim)
     assert not ok[:4].any() and ok[4:].all()

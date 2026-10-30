@@ -8,6 +8,9 @@
     write_fsc         FSC curves as <stem>.json (all curves), <stem>.star (RELION data_fsc labels) and <stem>.xml
                       (EMDB deposition format, the curve the resolution is read from).
     orientation_change  angle between two sets of orientations (smallest over symmetry-equivalent poses).
+    write_angdist_bild  angular distribution as a BILD file (RELION's run_angdist.bild): one cylinder per direction
+                      bin, out from the particle's surface, length and colour (blue -> red) by its particle count; it
+                      opens in ChimeraX / Chimera on top of the job's map (same box, centred).
 """
 from __future__ import annotations
 
@@ -90,6 +93,47 @@ def angular_histogram(rot: np.ndarray, tilt: np.ndarray, nlon: int = 72, nlat: i
     z = np.cos(np.deg2rad(np.asarray(tilt)))
     H, le, ze = np.histogram2d(lon, z, bins=[np.linspace(-180, 180, nlon + 1), np.linspace(-1, 1, nlat + 1)])
     return dict(rot_edges_deg=le.round(2).tolist(), cos_tilt_edges=ze.round(4).tolist(), counts=H.astype(int).tolist())
+
+
+def write_angdist_bild(path: str, rot, tilt, box_a: float, radius_a: float, n_bins: int = 3000,
+                       max_len_frac: float = 0.3, width_frac: float = 0.02) -> int:
+    """RELION-style angular distribution (BILD) for ChimeraX / Chimera: the viewing directions (RELION rot / tilt,
+    direction (cos rot sin tilt, sin rot sin tilt, cos tilt)) counted in n_bins near-equal-area bins (Fibonacci
+    sphere, ~3.7 deg apart for 3000); per occupied bin a cylinder from radius_a to radius_a (1 + max_len_frac x
+    count / max count), coloured blue (few) -> red (most), centred on a box of box_a A (the map's, origin at its
+    corner, as ChimeraX places the .mrc). Returns the number of occupied bins."""
+    rt, tt = np.deg2rad(np.asarray(rot, float)), np.deg2rad(np.asarray(tilt, float))
+    d = np.stack([np.cos(rt) * np.sin(tt), np.sin(rt) * np.sin(tt), np.cos(tt)], 1).astype(np.float32)
+    bins = _fibonacci(n_bins).astype(np.float32)
+    idx = np.concatenate([np.argmax(d[i:i + 20000] @ bins.T, 1) for i in range(0, len(d), 20000)]) if len(d) else \
+        np.zeros(0, int)
+    cnt = np.bincount(idx, minlength=n_bins)
+    occ = np.flatnonzero(cnt)
+    c = box_a / 2
+    top = max(int(cnt.max()) if len(occ) else 1, 1)
+    width = max(width_frac * radius_a, 0.5)
+    with open(path, "w") as f:
+        for b in occ:
+            w = cnt[b] / top
+            r0, r1 = radius_a, radius_a * (1 + max_len_frac * w)
+            x0, y0, z0 = c + r0 * bins[b]
+            x1, y1, z1 = c + r1 * bins[b]
+            f.write(f".color {w:.3f} 0 {1 - w:.3f}\n"
+                    f".cylinder {x0:.2f} {y0:.2f} {z0:.2f} {x1:.2f} {y1:.2f} {z1:.2f} {width:.2f}\n")
+    return len(occ)
+
+
+def particle_radius(mask, apix: float, box_a: float) -> float:
+    """Radius (A) for the angular-distribution cylinders: the farthest voxel of a (solvent) mask > 0.5 from the box
+    centre, else 0.35 x the box."""
+    if mask is not None:
+        m = torch.as_tensor(np.array(mask.cpu() if torch.is_tensor(mask) else mask, dtype=np.float32)) > 0.5
+        if m.any():
+            n = m.shape[0]
+            z, y, x = torch.nonzero(m, as_tuple=True)
+            c = (n - 1) / 2
+            return float(torch.sqrt((x - c) ** 2 + (y - c) ** 2 + (z - c) ** 2).max()) * apix
+    return 0.35 * box_a
 
 
 def write_views(path: str, rot, tilt, stats: dict):

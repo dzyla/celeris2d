@@ -737,12 +737,16 @@ def class3d_report(job, tag, sym, box_a, apix, r: Class3DResult, z, post, maps, 
                            heading="Half-map FSC per class (solvent mask, corrected)")
         dg.write_fsc(out_("fsc.json")[:-5], fsc_all, box_a, title=tag)
     rot, tilt, _ = (x.numpy() for x in matrix_to_euler(r.A))
+    big = next((m for m in (maps[k] for k in order) if m is not None), None)      # cylinders start at its surface
+    radius = dg.particle_radius(None if big is None else (big > 0.2 * big.max()), apix, box_a)
+    dg.write_angdist_bild(out_("angdist.bild"), rot, tilt, box_a, radius)        # ChimeraX, RELION's format
     groups, per = [], {}
     for k in order:
         sel = z == k
         if sel.sum() >= 10:
             st = dg.angular_stats(r.A[torch.as_tensor(sel)], sym)
             groups.append((labels[k], rot[sel], tilt[sel], st))
+            dg.write_angdist_bild(out_(f"class{k + 1:02d}_angdist.bild"), rot[sel], tilt[sel], box_a, radius)
             per[k + 1] = st["scf"]
     if groups:
         plots3d.views_grid_figure(out_("views_classes.png"), groups, tag)

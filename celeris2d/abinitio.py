@@ -1711,6 +1711,14 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
     from . import diagnostics
     vstats = diagnostics.angular_stats(A, relaxed_from or prm.sym)
     diagnostics.write_views(os.path.join(outdir, "views.json"), rot.numpy(), tilt.numpy(), vstats)
+    radius = diagnostics.particle_radius(solvent[0], apix, box_a)       # angular distribution for ChimeraX
+    diagnostics.write_angdist_bild(os.path.join(outdir, "angdist.bild"), rot.numpy(), tilt.numpy(), box_a, radius)
+    if M > 1:
+        mdl_all = rank[z.cpu()].numpy()
+        for r_ in range(M):
+            sel = mdl_all == r_
+            diagnostics.write_angdist_bild(os.path.join(outdir, f"angdist_{r_ + 1}.bild"), rot.numpy()[sel],
+                                           tilt.numpy()[sel], box_a, radius)
     fsc_data = dict(corrected=fsc_solvent.cpu().numpy(), unmasked=fsc_unmasked.cpu().numpy(),
                     sphere_masked=fs[order[0]].cpu().numpy())
     for r_, m in enumerate(order if M > 1 else []):

@@ -222,7 +222,8 @@ orientation change from the start); `map_views.png` (projections and sections wi
 adds `views_classes.png` (one map per class, shared scale). The summary repeats the numbers (`scf`,
 `view_coverage`, `history`, `orientation_change_*`) and lists `warnings` (narrow views, uneven Fourier sampling,
 start poses that did not fit), shown at the top of the job in the dashboard. InitialModel writes the same FSC and
-views files. Sharpen adds `fsc.{json,star,xml}`, `guinier.json` and, with `local_res` (default on), local
+views files, and `angdist.bild` (RELION's angular-distribution cylinders, per class `classNN_angdist.bild`; open
+with the map in ChimeraX). Sharpen adds `fsc.{json,star,xml}`, `guinier.json` and, with `local_res` (default on), local
 resolution (`localres.py`): FSC 0.143 of the two half maps in a Hann-windowed cube (~7x the resolution, >= 20 px)
 around grid points in the mask, interpolated to every voxel -> `localres.mrc` (A), `localres_filtered.mrc` (the
 B-sharpened map low-passed at every voxel to its local resolution), `localres.png`, `localres.json`. On synthetic
