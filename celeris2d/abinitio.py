@@ -1008,6 +1008,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
         f" (unmasked {' / '.join(f'{r:.1f}' if r == r else '-' for r in unmasked)} A), {time.time() - t0:.1f}s")
     refine_particles.last_weights = wpart.cpu()   # read by run(): which particles the final maps used
     refine_particles.last_score = score.cpu()
+    refine_particles.last_half = half.cpu()          # gold-standard half set of every particle (0 / 1)
     return torch.stack(maps), A[ar_n, z], t[ar_n, z], z, torch.stack(fscs), res, vols
 
 

@@ -15,7 +15,7 @@ import os
 import numpy as np
 import pandas as pd
 
-from .project import Job, Project, _atomic
+from .project import PARTICLE_JOBS, Job, Project, _atomic
 from .star import write_star
 
 
@@ -46,10 +46,10 @@ def export(project: Project, job, fmt: str) -> str:
     fmt = fmt.lower()
     if fmt == "relion":
         return dict(Import=_relion_movies, MotionCtf=_relion_micrographs, Pick=_relion_picks,
-                    Extract=_relion_particles)[job.type](project, job)
+                    Extract=_relion_particles, Polish=_relion_particles)[job.type](project, job)
     if fmt == "cryosparc":
-        if job.type != "Extract":
-            raise ValueError("cryoSPARC export is for Extract jobs (cryoSPARC imports movies / micrographs itself)")
+        if job.type not in PARTICLE_JOBS:
+            raise ValueError("cryoSPARC export is for Extract / Polish jobs (cryoSPARC imports movies / micrographs itself)")
         return _cryosparc_particles(project, job)
     raise ValueError(fmt)
 
@@ -102,27 +102,33 @@ def relion_particle_blocks(project, job) -> dict:
         "rlnDefocusU": p["defocus_u"], "rlnDefocusV": p["defocus_v"], "rlnDefocusAngle": p["defocus_angle"],
         "rlnCtfMaxResolution": p["ctf_fit_res"], "rlnAutopickFigureOfMerit": p["score"]})
     part["celUid"] = p["uid"].to_numpy()
+    part["celMovie"] = p["movie_id"].to_numpy()
     return {"optics": _optics(project, job, float(p["apix"].iloc[0]), int(p["box"].iloc[0])), "particles": part}
 
 
 def _relion_particles(project, job):
     b = relion_particle_blocks(project, job)
-    b["particles"] = b["particles"].drop(columns=["celUid"])
+    b["particles"] = b["particles"].drop(columns=["celUid", "celMovie"])
     return _star(os.path.join(job.path, "particles.star"), b)
 
 
-def job_source(job_dir: str, **kw):
+def job_source(job_dir: str, uids=None, **kw):
     """Particles of an Extract job folder as a particle source (RelionSource over the project's own table; no
-    file is written). Its parts carry celUid, the Celeris2D particle uid."""
+    file is written). Its parts carry celUid (the Celeris2D particle uid) and celMovie. uids: only these particles
+    (e.g. a Select job's)."""
     from .sources import RelionSource
     job_dir = os.path.abspath(job_dir).rstrip("/")
     root = os.path.dirname(os.path.dirname(job_dir))
     project = Project(root)
     job = project.job(os.path.relpath(job_dir, root))
-    if job.type != "Extract":
-        raise SystemExit(f"{job.dir} is not an Extract job")
+    if job.type not in PARTICLE_JOBS:
+        raise SystemExit(f"{job.dir} is not an Extract or Polish job")
     src = RelionSource(relion_particle_blocks(project, job), project_dir=root, **kw)
     src.kind = "celeris2d"
+    src.path = job_dir
+    if uids is not None:
+        keep = np.flatnonzero(np.isin(src.parts["celUid"].to_numpy(), np.asarray(uids, np.int64)))
+        src.subset(keep)
     # mask: the particle (longest dimension) plus 25 %, so its ends stay clear of the soft edge
     src.mask_diameter_a = min(1.25 * job.params["particle_a"], 0.95 * job.params["box_a_used"])
     return src

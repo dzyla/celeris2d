@@ -282,3 +282,103 @@ def picks_figure(path: str, cand, keep: np.ndarray, diameter_a: float, threshold
     fig.tight_layout()
     fig.savefig(path, dpi=100)
     plt.close(fig)
+
+
+def size_survey(path: str, project, mic_job, movie_ids, diameters_a=(80, 120, 160, 220, 300), n_gallery: int = 24,
+                title: str = ""):
+    """Particle size from the first micrographs, for an unknown sample, as one figure an agent or a person can read:
+    top, each micrograph phase-flipped and low-passed (~15 A) with a 500 A scale bar and circles of the candidate
+    diameters; then per candidate diameter, the best blob picks of all these micrographs (box 2 diameters) and their
+    rotational average with its radial profile (where the profile meets the background is the particle's edge).
+    A diameter that is right shows whole, separated particles in the gallery and an average whose edge sits near
+    the drawn circle. Returns a dict per diameter: picks per micrograph, median score, edge of the average (A)."""
+    import torch
+    from . import picking as pk
+    from .pipeline import _load_mic, optics_of
+    optics = optics_of(project, mic_job)
+    movie_ids = list(movie_ids)
+    mics = [_load_mic(project, mic_job, int(m)) for m in movie_ids]
+    nd = len(diameters_a)
+    fig = plt.figure(figsize=(16, 3.4 + 2.3 * nd), dpi=100)
+    gs = fig.add_gridspec(1 + nd, max(len(mics), 1) * 2, height_ratios=[1.5] + [1] * nd, hspace=0.35, wspace=0.08)
+    colors = plt.cm.viridis(np.linspace(0.1, 0.9, nd))
+    for i, (img, apix, ctf) in enumerate(mics):
+        v, wa = pk.prepare(img, apix, 120.0, ctf, optics, dark=True, work_apix=max(apix, 5.0))
+        v = v.cpu().numpy()
+        h, w = v.shape
+        s = int(min(h, w, 2000 / wa))                                   # central ~2000 A
+        y0, x0 = (h - s) // 2, (w - s) // 2
+        crop = v[y0:y0 + s, x0:x0 + s]
+        ax = fig.add_subplot(gs[0, 2 * i:2 * i + 2])
+        lo, hi = np.percentile(crop, [1, 99.5])
+        ax.imshow(crop, cmap="gray", vmin=lo, vmax=hi)
+        ax.plot([s * 0.05, s * 0.05 + 500 / wa], [s * 0.95] * 2, color="w", lw=3)
+        ax.text(s * 0.05, s * 0.92, "500 A", color="w", fontsize=8)
+        x = s * 0.03
+        for d, c in zip(diameters_a, colors):                          # the candidate sizes side by side, top left
+            r = d / 2 / wa
+            ax.add_patch(plt.Circle((x + r, s * 0.03 + r), r, fill=False, color=c, lw=1.5))
+            x += 2 * r + s * 0.015
+        ax.set_title(f"micrograph {movie_ids[i]} (defocus {(ctf.defocus_u + ctf.defocus_v) / 2 / 1e4:.2f} um)",
+                     fontsize=8)
+        ax.axis("off")
+    out = {}
+    for j, d in enumerate(diameters_a):
+        box = int(np.ceil(2 * d / 4.0 / 2)) * 2                          # gallery at ~4 A/px
+        ims, scores, per_mic = [], [], []
+        for img, apix, ctf in mics:
+            c = pk.blob_candidates(img, apix, d, ctf, optics, True)
+            k = pk.select(c)                                              # indices, best first
+            per_mic.append(len(k))
+            top = k[: max(1, 4 * n_gallery // len(mics))]
+            if len(top):
+                ims.append(pk.extract(img, apix, c.xy_a[top], box, out_apix=max(apix, 2 * d / box), dark=True,
+                                      diameter_a=d))
+                scores.append(c.score[top])
+        ims = np.concatenate(ims) if ims else np.zeros((0, box, box))
+        sc = np.concatenate(scores) if scores else np.zeros(0)
+        o = np.argsort(-sc)
+        ims = ims[o]
+        # gallery
+        ng = min(n_gallery, len(ims))
+        sub = gs[1 + j, :-2].subgridspec(2, max(1, (n_gallery + 1) // 2), wspace=0.03, hspace=0.03)
+        for g in range(ng):
+            ax = fig.add_subplot(sub[g % 2, g // 2])
+            im = ims[g]
+            lo, hi = np.percentile(im, [1, 99])
+            ax.imshow(im, cmap="gray", vmin=lo, vmax=hi)
+            ax.add_patch(plt.Circle((box / 2, box / 2), box / 4, fill=False, color=colors[j], lw=0.8))
+            ax.axis("off")
+        # rotational average and radial profile
+        avg = ims[: max(1, len(ims))].mean(0) if len(ims) else np.zeros((box, box))
+        yy, xx = np.indices(avg.shape) - box / 2
+        rr = np.hypot(yy, xx) * (2 * d / box)                           # A
+        rb = np.arange(0, d, 2 * d / box)
+        prof = np.array([avg[(rr >= a) & (rr < a + 2 * d / box)].mean() for a in rb])
+        bgv = prof[-max(2, len(prof) // 6):].mean()
+        pk_ = prof.max() - bgv
+        edge = float(rb[np.flatnonzero(prof - bgv > 0.15 * pk_)[-1]] * 2) if pk_ > 0 else float("nan")
+        ax = fig.add_subplot(gs[1 + j, -2])
+        ax.imshow(avg, cmap="gray")
+        ax.add_patch(plt.Circle((box / 2, box / 2), box / 4, fill=False, color=colors[j], lw=1))
+        ax.axis("off")
+        ax.set_title(f"average of {len(ims)}", fontsize=8)
+        ax = fig.add_subplot(gs[1 + j, -1])
+        ax.plot(rb, prof, color=colors[j])
+        ax.axhline(bgv, color="0.6", lw=0.8)
+        ax.axvline(d / 2, color=colors[j], ls="--", lw=0.8)
+        if edge == edge:
+            ax.axvline(edge / 2, color="#c8372d", lw=0.8)
+        ax.set_xlabel("radius (A)", fontsize=8)
+        ax.tick_params(labelsize=7)
+        ax.set_title(f"d={d:.0f} A: {np.mean(per_mic):.0f} picks/mic, edge ~{edge:.0f} A", fontsize=8)
+        fig.text(0.005, 1 - (1.5 + j + 0.5) / (1.5 + nd) * 0.93 - 0.04, f"{d:.0f} A", fontsize=10, color=colors[j],
+                 rotation=90, va="center")
+        out[float(d)] = dict(picks_per_micrograph=float(np.mean(per_mic)),
+                             median_score=round(float(np.median(sc)), 3) if len(sc) else None,
+                             average_edge_a=round(edge, 1) if edge == edge else None)
+    fig.suptitle(title or "particle size survey", fontsize=11)
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+    torch.cuda.empty_cache()
+    return out

@@ -80,6 +80,36 @@ joined when read; a particle's key is computed from its stem and pick position. 
 estimated on a local HDD, one seek per file). Particle stacks stay one `.mrcs` per micrograph (MBs each: the seek
 is small next to the read).
 
+## Particle jobs (2D -> 3D -> polishing)
+
+`celeris2d/jobs.py` and `celeris2d/polish.py`; every result is a sharded table keyed by uid, shifts in A in the
+engine's model convention (the particle's centre is at +shift from the box centre; RELION origin = -shift).
+
+- **Class2D** (on an Extract, Polish or Select job): `classes.mrcs`, `gallery.png`, table `particles` = uid, cls
+  (0-based), psi, shift_x_a, shift_y_a, maxprob; the 2D session (results restored by later jobs) in `session/`.
+- **Select** from classes (`jobs.select_classes`, 1-based class numbers): table `particles` (kept) and table
+  `rejected` (the other particles of that Class2D job), params `classes` / `rejected_classes`,
+  `selected_classes.mrcs`, `rejected_classes.mrcs` and `selection.png` (kept framed green, rejected red). A Select
+  job made by an agent says so in its label / note.
+- **InitialModel** (ab initio from a Class2D job's classes and particles; symmetry is the user's choice): maps,
+  half maps, figures, table `particles` = uid, rot, tilt, psi (RELION Euler), shifts, used, model.
+- **Extract with `recenter=<job>`**: the aligned particles of a Class2D / InitialModel / Refine3D job cut at their
+  aligned centre (centre in the extraction they were aligned on + shift), uid kept, pick position kept as dx_a /
+  dy_a; particles whose new centres are closer than particle_a / 4 are merged (best maxprob / fit kept).
+- **Refine3D** (particles, starting poses by uid, reference map): the map is resampled to the particles' pixel
+  size and box and scaled to the data; shifts start at zero when the particles were re-centred on that job's
+  shifts. Writes map.mrc (solvent-masked), map_nomask, mask, half maps, fsc.png, table `particles` = uid, rot, tilt,
+  psi, shifts, fit, half. `global_iters` adds exhaustive orientation searches to the first iterations.
+- **Polish** (on a Refine3D job): per-particle tracks and per-frame weights from the movies (method in
+  `polish.py`'s docstring); a particle job like an extraction, same uids, centred at the refined centre.
+
+EMPIAR-10025 (20 movies, all jobs from movies, one RTX 5090): motion/CTF/picks/64 px extraction 56 s; Class2D K40
+45 s; Class2D K30 on the selection 18 s; ab initio 10 s (C1) / 38 s (D7); re-centred 288 px extraction 12-16 s;
+Refine3D D7 3.29 A (3.24 A solvent mask, 10,113 particles, 288 s). Polish 164 s; the same refinement from the same
+start on unpolished / polished particles: 3.32 / 3.24 A (solvent mask 3.13 / 3.05 A, unmasked 3.64 / 3.47 A).
+C1: refined from the D7 solution 4.26 A; from the C1 ab initio model 6.3 A - that model is distorted (correlation
+with its own D7 average 0.62 vs 0.90 for the D7 map), so a reliable C1 ab initio is still open.
+
 ## Compatibility (on request)
 
 RELION / cryoSPARC files are not written by default. An extract job's `export` option (`relion`, `cryosparc`)

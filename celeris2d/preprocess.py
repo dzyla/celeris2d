@@ -97,6 +97,8 @@ class Micrograph:
                                 # aligned signal with independent noise (an alignment quality check)
     local: dict | None = None   # local motion: fit rms, patch centres, measured and modelled patch shifts (A)
     dose_per_frame: float = 0.0
+    frames_ft: torch.Tensor | None = None   # keep_frames: gain-corrected, binned frame spectra (n, ny, nx//2+1)
+    model: "MotionModel | None" = None      # local motion model (frame shift at a position = shifts + model)
 
 
 def dose_weights(n: int, dose_per_frame: float, k: torch.Tensor, pre_dose: float = 0.0) -> torch.Tensor:
@@ -242,7 +244,8 @@ def _local_sums(F, sh_g, model, w, apix, tile=512):
 
 
 def motion_correct(frames: np.ndarray, gain: np.ndarray | None, apix: float, dose_per_frame: float, bin: float = 1,
-                   align_apix: float = 4.0, pre_dose: float = 0.0, patches: int = 5, device=None) -> Micrograph:
+                   align_apix: float = 4.0, pre_dose: float = 0.0, patches: int = 5, device=None,
+                   keep_frames: bool = False) -> Micrograph:
     """Gain, Fourier binning by `bin` (any factor >= 1: 2 for super-resolution -> physical pixels, more to save
     space and time; the pixel size becomes apix * NY / ny, x within one pixel of the same), whole-frame alignment on a copy
     binned to ~align_apix, then the aligned sums (plain and dose-weighted) at apix * bin. patches > 0: local
@@ -285,7 +288,7 @@ def motion_correct(frames: np.ndarray, gain: np.ndarray | None, apix: float, dos
         model = MotionModel(cen, torch.linspace(0, 1, n, device=dev), rs)
         out = _local_sums(F, sh, model, dose_per_frame, p)
         return Micrograph(sum=out[0], sum_dw=out[1], apix=p, shifts=sh.cpu().numpy(), halves=(out[2], out[3]),
-                          dose_per_frame=dose_per_frame,
+                          dose_per_frame=dose_per_frame, frames_ft=F if keep_frames else None, model=model,
                           local=dict(rms_a=model.rms, used=model.n_used, measured=rs.cpu().numpy(),
                                      centres=cen.cpu().numpy(),
                                      model=model(cen, torch.linspace(0, 1, n, device=dev)).cpu().numpy()))
@@ -301,7 +304,7 @@ def motion_correct(frames: np.ndarray, gain: np.ndarray | None, apix: float, dos
         Ho += Fw[1::2].sum(0)
     inv = lambda X: torch.fft.irfft2(X, s=(ny, nx), norm="forward")
     return Micrograph(sum=inv(S), sum_dw=inv(Sw), apix=p, shifts=sh.cpu().numpy(), halves=(inv(He), inv(Ho)),
-                      dose_per_frame=dose_per_frame)
+                      dose_per_frame=dose_per_frame, frames_ft=F if keep_frames else None)
 
 
 def frc(a: torch.Tensor, b: torch.Tensor, apix: float, n_shell: int = 40):

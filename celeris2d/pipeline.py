@@ -31,7 +31,7 @@ import torch
 from . import picking as pk
 from . import preprocess as pp
 from .engine import Optics
-from .project import Job, Project, particle_uids
+from .project import PARTICLE_JOBS, Job, Project, particle_uids
 
 
 @dataclass
@@ -68,6 +68,10 @@ class ExtractSettings:
     dtype: str = "float16"
     dark: bool = True
     select: int = 0                     # a Select job: extract only its particles (by uid)
+    recenter: int = 0                   # a Class2D / InitialModel / Refine3D job: extract its particles, each centred
+                                        # at its aligned centre (centre in that job's extraction + its shift)
+    dedup_a: float = -1.0               # with recenter: of particles whose new centres are closer than this (A) only
+                                        # the best-scoring is kept (-1: particle_a / 4; 0: keep all)
     export: tuple = ()                  # ("relion", "cryosparc"): write particles.star / particles.cs at the end
 
 
@@ -101,10 +105,53 @@ def extract_job(project: Project, picks: Job, s: ExtractSettings, label: str = "
                                   optics_of(project, mic_job).wavelength)
     box = pk.suggest_box(box_a, out_apix)
     label = label or (f"{box * out_apix:.0f}A_{out_apix:.3g}apx_{'f16' if s.dtype == 'float16' else 'f32'}"
-                      + (f"_sel{s.select:03d}" if s.select else ""))
+                      + (f"_sel{s.select:03d}" if s.select else "") + (f"_rc{s.recenter:03d}" if s.recenter else ""))
     return project.new_job("Extract", dict(asdict(s), picks=picks.id, micrographs=mic_job.id, box=box,
                                            out_apix=out_apix, box_a_used=round(box * out_apix, 1)),
-                           [picks] + ([s.select] if s.select else []), label)
+                           [picks] + ([s.select] if s.select else []) + ([s.recenter] if s.recenter else []), label)
+
+
+def _recentred(project: Project, job: Job) -> dict:
+    """movie id -> (uid, new centre (n, 2), pick position (n, 2), score) of a re-centring extraction: the
+    alignment job's particles (used ones), centre = centre in the extraction they were aligned on + shift."""
+    rj = project.job(job.params["recenter"])
+    al = project.table(rj, "particles").read()
+    if "used" in al:
+        al = {k: v[al["used"]] for k, v in al.items()}
+    ex0 = project.ancestor(rj, PARTICLE_JOBS)
+    e = project.table(ex0, "particles").read()
+    o = np.argsort(e["uid"])
+    pos = np.searchsorted(e["uid"][o], al["uid"])
+    ok = pos < len(o)
+    ok[ok] = e["uid"][o[pos[ok]]] == al["uid"][ok]
+    r = o[pos[ok]]
+    cx, cy = e["x_a"][r].astype(np.float64), e["y_a"][r].astype(np.float64)
+    px = cx - (e["dx_a"][r] if "dx_a" in e else 0)
+    py = cy - (e["dy_a"][r] if "dy_a" in e else 0)
+    centre = np.stack([cx + al["shift_x_a"][ok], cy + al["shift_y_a"][ok]], 1)
+    score = al["maxprob"][ok] if "maxprob" in al else (al["fit"][ok] if "fit" in al else e["score"][r])
+    mv, uid = e["movie"][r], al["uid"][ok]
+    out = {}
+    for m in np.unique(mv):
+        i = np.flatnonzero(mv == m)
+        out[int(m)] = (uid[i], centre[i], np.stack([px[i], py[i]], 1), score[i])
+    return out
+
+
+def _dedup(xy: np.ndarray, score: np.ndarray, dist: float) -> np.ndarray:
+    """Mask of particles kept: greedy, best score first, none closer than dist to a kept one."""
+    from scipy.spatial import cKDTree
+    keep = np.ones(len(xy), bool)
+    if dist <= 0 or len(xy) < 2:
+        return keep
+    tree = cKDTree(xy)
+    for i in np.argsort(-score):
+        if keep[i]:
+            nb = tree.query_ball_point(xy[i], dist)
+            for j in nb:
+                if j != i:
+                    keep[j] = False if keep[i] else keep[j]
+    return keep
 
 
 # ------------------------------------------------------------------------------- one movie of one job
@@ -112,6 +159,7 @@ _gain_cache: dict = {}
 _mem: dict = {}           # movie_id -> (micrograph on the GPU, apix, CTF): stages of one movie in one run
 _mem_picks: dict = {}     # (pick job id, movie_id) -> picks
 _sel_cache: dict = {}     # Select job id -> uids
+_rc_cache: dict = {}      # re-centring Extract job id -> per-movie particles
 
 
 def _io(executor, fn, *args, **kw):
@@ -139,7 +187,7 @@ def _cpu(mic):
     return m
 
 
-def _motion(project: Project, job: Job, mv: dict, frames=None, log=print):
+def _motion(project: Project, job: Job, mv: dict, frames=None, log=print, keep_frames: bool = False, ctf: bool = True):
     s = MotionSettings(**{k: v for k, v in job.params.items() if k in MotionSettings.__dataclass_fields__})
     t = {}
     t0 = time.time()
@@ -152,9 +200,10 @@ def _motion(project: Project, job: Job, mv: dict, frames=None, log=print):
             project.update_params(job, gain_orientation=_gain_cache[s.gain][1])
         gain = _gain_cache[s.gain][0]
     t0 = time.time()
-    mic = pp.motion_correct(fr, gain, s.apix, s.dose_total / len(fr), bin=s.bin, patches=s.patches)
+    mic = pp.motion_correct(fr, gain, s.apix, s.dose_total / len(fr), bin=s.bin, patches=s.patches,
+                            keep_frames=keep_frames)
     optics = Optics(s.kv, s.cs_mm, s.amp_contrast)
-    fit = pp.estimate_ctf(mic.sum, mic.apix, optics)
+    fit = pp.estimate_ctf(mic.sum, mic.apix, optics) if ctf else None
     torch.cuda.synchronize()
     t["motion_ctf"] = time.time() - t0
     return s, fr, mic, fit, t
@@ -226,6 +275,26 @@ def process_movie_extract(project: Project, job: Job, movie_id: int, io: ThreadP
     p = job.params
     pick_job_ = project.job(p["picks"])
     img, apix, ctf = _load_mic(project, project.job(p["micrographs"]), movie_id)
+    out_apix = p["out_apix"]
+    if p.get("recenter"):                            # the aligned particles at their aligned centres
+        if job.id not in _rc_cache:
+            _rc_cache.clear()
+            _rc_cache[job.id] = _recentred(project, job)
+        if movie_id not in _rc_cache[job.id]:
+            imgs = np.zeros((0, p["box"], p["box"]), np.float32)
+            _io(io, project.add_particles, job, movie_id, np.zeros((0, 2)), imgs, out_apix, dtype=p["dtype"],
+                uid=np.zeros(0, np.int64), pick_xy_a=np.zeros((0, 2)), columns=dict(score=np.zeros(0)))
+            return dict(particles=0)
+        uid, xy, pick, score = _rc_cache[job.id][movie_id]
+        d = p.get("dedup_a", -1.0)
+        k = _dedup(xy, score, p["particle_a"] / 4 if d < 0 else d)
+        ny, nx = img.shape
+        k &= (xy[:, 0] >= 0) & (xy[:, 1] >= 0) & (xy[:, 0] < nx * apix) & (xy[:, 1] < ny * apix)
+        imgs = pk.extract(img, apix, xy[k], p["box"], out_apix=out_apix if out_apix > apix * 1.001 else None,
+                          dark=p["dark"], diameter_a=pick_job_.params["diameter_a"])
+        _io(io, project.add_particles, job, movie_id, xy[k], imgs, out_apix, columns=dict(score=score[k]),
+            dtype=p["dtype"], uid=uid[k], pick_xy_a=pick[k])
+        return dict(particles=int(k.sum()), duplicates=int((~k).sum()))
     z = _mem_picks.get((pick_job_.id, movie_id)) or project.picks(pick_job_, movie_id)
     k = z["keep"].copy()
     if p.get("select"):                              # only the selected particles (by uid)
@@ -234,7 +303,6 @@ def process_movie_extract(project: Project, job: Job, movie_id: int, io: ThreadP
             _sel_cache[p["select"]] = project.selected_uids(p["select"])
         uid = particle_uids(project.movie(movie_id)["fingerprint"], z["xy_a"])
         k &= np.isin(uid, _sel_cache[p["select"]])
-    out_apix = p["out_apix"]
     imgs = pk.extract(img, apix, z["xy_a"][k], p["box"], out_apix=out_apix if out_apix > apix * 1.001 else None,
                       dark=p["dark"], diameter_a=pick_job_.params["diameter_a"])
     _io(io, project.add_particles, job, movie_id, z["xy_a"][k], imgs, out_apix,
@@ -332,6 +400,33 @@ def _decode_shm(path: str):
     return res
 
 
+def _noop():
+    return None
+
+
+def _decode_pool(n: int):
+    """Worker processes for movie decoding (spawn: no CUDA or thread state is inherited). Spawned workers would
+    import the caller's main script again (running a script without a __main__ guard a second time, or failing
+    for stdin / python -c); they only need this module, so the script is hidden from them while they start, and
+    they are all started here."""
+    import multiprocessing as mp
+    import sys
+    from concurrent.futures import ProcessPoolExecutor
+    main = sys.modules["__main__"]
+    f = getattr(main, "__file__", None)
+    hide = f is not None
+    if hide:
+        del main.__file__
+    try:
+        pool = ProcessPoolExecutor(n, mp_context=mp.get_context("spawn"))
+        for fu in [pool.submit(_noop) for _ in range(n)]:
+            fu.result()
+    finally:
+        if hide:
+            main.__file__ = f
+    return pool
+
+
 def run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: threading.Event | None = None,
         progress=None, finish_jobs: bool = True) -> dict:
     """A chain of jobs (MotionCtf [-> Pick [-> Extract]]) over movies (default: all movies of the MotionCtf job's
@@ -347,23 +442,26 @@ def run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thre
     todo = [i for i in movie_ids if not all(project.done(j, i) for j in jobs)]
     paths = project.movies().set_index("id")["path"]
     q: queue.Queue = queue.Queue(maxsize=2)
-    pool = ProcessPoolExecutor(2, mp_context=mp.get_context("spawn"))
+    pool = _decode_pool(2) if mc is not None else None
 
     def reader():                                    # keeps two movies decoding ahead, in order
-        futs = {}
-        for n, i in enumerate(todo):
-            for k in todo[n:n + 2]:
-                if k not in futs and mc is not None and not project.done(mc, k):
-                    futs[k] = pool.submit(_decode_shm, paths[k])
-            if stop is not None and stop.is_set():
-                break
-            if i in futs:
-                name, shape, dt = futs.pop(i).result()
-                shm = shared_memory.SharedMemory(name=name)
-                q.put((i, (shm, np.ndarray(shape, np.dtype(dt), buffer=shm.buf))))
-            else:
-                q.put((i, None))
-        q.put(None)
+        try:
+            futs = {}
+            for n, i in enumerate(todo):
+                for k in todo[n:n + 2]:
+                    if k not in futs and mc is not None and not project.done(mc, k):
+                        futs[k] = pool.submit(_decode_shm, paths[k])
+                if stop is not None and stop.is_set():
+                    break
+                if i in futs:
+                    name, shape, dt = futs.pop(i).result()
+                    shm = shared_memory.SharedMemory(name=name)
+                    q.put((i, (shm, np.ndarray(shape, np.dtype(dt), buffer=shm.buf))))
+                else:
+                    q.put((i, None))
+            q.put(None)
+        except BaseException as e:                   # the GPU loop raises it instead of waiting forever
+            q.put(e)
 
     threading.Thread(target=reader, daemon=True).start()
     t0, n = time.time(), 0
@@ -381,6 +479,8 @@ def run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thre
                 t = lap("wait_for_reader", t)
                 if item is None:
                     break
+                if isinstance(item, BaseException):
+                    raise RuntimeError("reading movies failed") from item
                 i, sf = item
                 if mc is not None:
                     process_movie_motion(project, mc, i, frames=None if sf is None else sf[1], log=log,
@@ -406,7 +506,9 @@ def run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thre
         _mem.clear()
         _mem_picks.clear()
         _sel_cache.clear()
-        pool.shutdown()
+        _rc_cache.clear()
+        if pool is not None:
+            pool.shutdown(cancel_futures=True)
     if finish_jobs:
         for j in jobs:
             finish(project, j)

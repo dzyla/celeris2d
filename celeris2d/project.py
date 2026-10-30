@@ -55,9 +55,10 @@ CREATE TABLE IF NOT EXISTS chunks (
     created REAL, PRIMARY KEY (job_id, movie_id));
 """
 
-JOB_TYPES = ("Import", "MotionCtf", "Pick", "Extract", "Select", "Class2D", "InitialModel")
-PER_MOVIE = dict(MotionCtf="micrographs", Pick="picks", Extract="chunks")
-HEAVY = dict(MotionCtf=(".mrc",), Extract=(".mrcs",))       # purgeable files of a job's data folder
+JOB_TYPES = ("Import", "MotionCtf", "Pick", "Extract", "Select", "Class2D", "InitialModel", "Refine3D", "Polish")
+PER_MOVIE = dict(MotionCtf="micrographs", Pick="picks", Extract="chunks", Polish="chunks")
+HEAVY = dict(MotionCtf=(".mrc",), Extract=(".mrcs",), Polish=(".mrcs",))   # purgeable files of a job's data folder
+PARTICLE_JOBS = ("Extract", "Polish")          # jobs that hold particle images (a "particles" table + stacks)
 
 
 def movie_fingerprint(path: str, chunk: int = 1 << 20) -> str:
@@ -322,9 +323,10 @@ class Project:
                 todo += j.inputs
         return out
 
-    def ancestor(self, ref, type: str) -> Job | None:
-        """The nearest job of this type the job descends from (or the job itself)."""
-        return next((self.job(n) for n in self.lineage(ref) if self.job(n).type == type), None)
+    def ancestor(self, ref, type) -> Job | None:
+        """The nearest job of this type (or of one of these types) the job descends from (or the job itself)."""
+        types = (type,) if isinstance(type, str) else tuple(type)
+        return next((self.job(n) for n in self.lineage(ref) if self.job(n).type in types), None)
 
     def dependents(self, ref) -> list[str]:
         i = self.job(ref).id
@@ -541,30 +543,37 @@ class Project:
         return np.array([f"{s}:{a:.1f}:{b:.1f}" for s, a, b in zip(df["stem"], np.round(x, 1), np.round(y, 1))])
 
     # ------------------------------------------------------------------ selections (Select jobs)
-    def select(self, source, uids, label: str = "", note: str = "", inputs=()) -> Job:
+    def select(self, source, uids, label: str = "", note: str = "", inputs=(), rejected=None) -> Job:
         """A Select job: a set of particle uids (e.g. the good classes of a 2D run on a binned extraction). It
-        applies to any extraction of the same picks (extract with select=<this job>)."""
+        applies to any extraction of the same picks (extract with select=<this job>). rejected: the uids that were
+        considered and left out, kept as the table "rejected" (selected_uids(job, rejected=True))."""
         uids = np.unique(np.asarray(uids, dtype=np.int64))
-        job = self.new_job("Select", dict(source=self.job(source).id, particles=len(uids), note=note),
-                           [source, *inputs], label)
         src = self.job(source)
-        name = "particles" if src.type in ("Extract", "Select") else None
-        if name is None:
-            src = self.job(self.ancestor(src, "Extract"))
-        p = self.table(src, "particles").read(["uid"])
-        mv = np.zeros(len(uids), np.uint32)
-        pos = np.searchsorted(np.sort(p["uid"]), uids)
+        job = self.new_job("Select", dict(source=src.id, particles=len(uids), note=note), [source, *inputs], label)
+        ex = src if src.type in ("Select", *PARTICLE_JOBS) else self.job(self.ancestor(src, PARTICLE_JOBS))
+        p = self.table(ex, "particles").read(["uid"])
         o = np.argsort(p["uid"])
-        ok = pos < len(o)
-        hit = ok.copy()
-        hit[ok] = p["uid"][o[pos[ok]]] == uids[ok]
-        mv[hit] = p["movie"][o[pos[hit]]]           # grouped by micrograph like every particle table
-        self.table(job, "particles").write(dict(uid=uids), mv)
-        self.set_status(job, "finished", dict(particles=len(uids), source=self.job(source).name, note=note))
+        su = p["uid"][o]
+
+        def write(name, u):
+            pos = np.searchsorted(su, u)
+            hit = pos < len(o)
+            hit[hit] = su[pos[hit]] == u[hit]
+            mv = np.zeros(len(u), np.uint32)
+            mv[hit] = p["movie"][o[pos[hit]]]       # grouped by micrograph like every particle table
+            self.table(job, name).write(dict(uid=u), mv)
+
+        write("particles", uids)
+        summ = dict(particles=len(uids), source=src.name, note=note)
+        if rejected is not None:
+            rej = np.setdiff1d(np.asarray(rejected, dtype=np.int64), uids)
+            write("rejected", rej)
+            summ["rejected"] = len(rej)
+        self.set_status(job, "finished", summ)
         return job
 
-    def selected_uids(self, ref) -> np.ndarray:
-        return self.table(ref, "particles").read(["uid"])["uid"]
+    def selected_uids(self, ref, rejected: bool = False) -> np.ndarray:
+        return self.table(ref, "rejected" if rejected else "particles").read(["uid"])["uid"]
 
     def consolidate(self, job) -> str:
         """End of a job: per-particle tables merge their remaining staged micrographs into shards; a MotionCtf job
@@ -574,7 +583,7 @@ class Project:
             path = os.path.join(job.path, "micrographs.npz")
             _save_table(path, self.micrographs(job).drop(columns=["meta"]))
             return path
-        name = dict(Pick="picks", Extract="particles")[job.type]
+        name = "picks" if job.type == "Pick" else "particles"
         self.table(job, name).close()
         return os.path.join(job.path, name)
 
@@ -616,7 +625,9 @@ class Project:
             uid = int(particle_uids(mv["fingerprint"].iloc[0], np.array([[x, y]]))[0])
         else:
             uid = int(key_or_uid)
-        for r in self.jobs("Extract").itertuples():
+        for r in self.jobs().itertuples():
+            if r.type not in PARTICLE_JOBS:
+                continue
             t = self.table(int(r.id), "particles")
             u = t.read(["uid"])
             i = np.flatnonzero(u["uid"] == uid)

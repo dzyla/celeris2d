@@ -140,3 +140,68 @@ def test_jobs_picking_extraction_exports(tmp_path):
     assert os.path.isdir(os.path.join(prj.root, "Trash", es.name, "data"))
     assert not os.path.exists(es.data_path)
     assert pl.extract_job(prj, pj, pl.ExtractSettings(particle_a=DIAM)).id == 9
+
+
+def _synthetic_project(tmp_path, rng):
+    movies = []
+    for i in range(2):
+        f = tmp_path / "raw" / f"mov_{i:03d}.tif"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(rng.bytes(4096))
+        movies.append(str(f))
+    prj = Project(str(tmp_path / "prj"))
+    imp = prj.import_movies(movies)
+    mc = pl.motion_job(prj, imp, pl.MotionSettings(apix=APIX, dose_total=40, figures="none"))
+    ctf = pp.CTFFit(15000.0, 15000.0, 0.0, 6.0, 1.0, {})
+    for mid in prj.movies()["id"]:
+        img, _ = _micrograph(rng)
+        path = mc.per_movie("Micrographs", prj.movie(mid), ".mrc")
+        prj.write_mrc(path, img, APIX, "float16")
+        prj.add_micrograph(mc, mid, path, APIX, img.shape, ctf)
+    pl.finish(prj, mc)
+    pj = pl.pick_job(prj, mc, pl.PickSettings(diameter_a=DIAM, figures="none"))
+    ex = pl.extract_job(prj, pj, pl.ExtractSettings(particle_a=DIAM, box_a=1.5 * DIAM, particle_apix=2 * APIX))
+    pl.run(prj, [pj, ex])
+    return prj, pj, ex
+
+
+def test_class2d_selection_recentre(tmp_path):
+    """Class2D on an extraction, a class selection that keeps the rejected particles too, and a re-centring
+    extraction from known shifts (centre = old centre + shift, uid kept, near-duplicates merged)."""
+    from celeris2d import jobs
+    rng = np.random.default_rng(1)
+    prj, pj, ex = _synthetic_project(tmp_path, rng)
+    c = jobs.class2d_job(prj, ex, jobs.Class2DSettings(n_classes=3, max_res_a=12))
+    s = jobs.run_class2d(prj, c, log=lambda *a: None)
+    assert c.name == "005_class2d_K3_on004" and s["particles"] == len(prj.particles(ex))
+    t = prj.table(c, "particles").read()
+    assert set(t) >= {"uid", "cls", "psi", "shift_x_a", "shift_y_a", "maxprob"} and t["cls"].max() < 3
+    assert os.path.exists(os.path.join(c.path, "classes.mrcs")) and os.path.exists(os.path.join(c.path, "gallery.png"))
+    k = int(np.bincount(t["cls"]).argmax()) + 1
+    sel = jobs.select_classes(prj, c, [k])
+    kept, rej = prj.selected_uids(sel), prj.selected_uids(sel, rejected=True)
+    assert len(np.intersect1d(kept, rej)) == 0 and len(kept) + len(rej) == len(t["uid"])
+    assert sel.params["classes"] == [k] and sel.params["rejected_classes"] == [i for i in (1, 2, 3) if i != k]
+    for f in ("selection.png", "selected_classes.mrcs", "rejected_classes.mrcs"):
+        assert os.path.exists(os.path.join(sel.path, f)), f
+
+    # an alignment job with known shifts: particle 1 is moved onto particle 0 (a duplicate after re-centring)
+    e = prj.particles(ex)
+    al = prj.new_job("Class2D", dict(particles=ex.id), [ex], "known_shifts")
+    sx, sy = np.full(len(e), 6.0, np.float32), np.full(len(e), -4.0, np.float32)
+    sx[1] = e["x_a"].iloc[0] - e["x_a"].iloc[1] + 6.0
+    sy[1] = e["y_a"].iloc[0] - e["y_a"].iloc[1] - 4.0
+    prj.table(al, "particles").write(dict(uid=e["uid"].to_numpy(), cls=np.zeros(len(e), np.int16), psi=np.zeros(len(e), np.float32),
+                                          shift_x_a=sx, shift_y_a=sy, maxprob=np.linspace(1, 0.5, len(e)).astype(np.float32)),
+                                     e["movie_id"].to_numpy())
+    prj.set_status(al, "finished", {})
+    rc = pl.extract_job(prj, pj, pl.ExtractSettings(particle_a=DIAM, box_a=1.5 * DIAM, recenter=al.id))
+    pl.run(prj, [rc])
+    assert rc.name.endswith("_rc007")
+    r = prj.particles(rc).set_index("uid")
+    old = e.set_index("uid")
+    assert len(r) == len(e) - 1 and e["uid"].iloc[1] not in r.index        # the lower-scoring duplicate is gone
+    u = r.index.intersection(old.index)
+    assert np.allclose(r.loc[u, "x_a"], old.loc[u, "x_a"] + 6.0, atol=0.01)
+    assert np.allclose(r.loc[u, "y_a"], old.loc[u, "y_a"] - 4.0, atol=0.01)
+    assert np.allclose(r.loc[u, "dx_a"], 6.0, atol=0.01) and np.allclose(r.loc[u, "dy_a"], -4.0, atol=0.01)

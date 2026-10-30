@@ -73,7 +73,10 @@ class Session:
         """diameter: mask diameter in A (None: 200, or 1.25 x the particle size of a Celeris2D Extract job)."""
         from .cli import pick_devices
         t0 = time.time()
-        src = open_source(path, project_dir)
+        if isinstance(path, str):
+            src = open_source(path, project_dir)
+        else:                                        # a source object (e.g. a project job's particles, subsetted)
+            src, path = path, getattr(path, "path", "<source>")
         diameter = diameter or getattr(src, "mask_diameter_a", 200.0)
         if 0 < subset < src.N:
             src.subset(np.sort(np.random.default_rng(seed).choice(src.N, subset, replace=False)))
