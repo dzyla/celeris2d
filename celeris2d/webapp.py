@@ -1070,20 +1070,47 @@ def create(workdir, project_dir=None):
     def _kick():
         wake.set()
 
+    def _run_stream(prj, j, proc):
+        """A streaming Class2D beside the running movie chain: its own process, outside the one-job slot."""
+        from .scheduler import process_log
+        try:
+            code = proc.wait()
+            if prj.job(j.id).status == "running":
+                try:
+                    with open(process_log(prj.job(j.id)), errors="replace") as fh:
+                        tail = " | ".join(x.rstrip() for x in fh.readlines()[-5:])
+                except OSError:
+                    tail = ""
+                prj.set_status(prj.job(j.id), "failed", dict(prj.summary_of(j),
+                               error=f"the job's process ended (exit code {code}): {tail}"))
+        except Exception as e:                        # noqa: BLE001 - the scheduler must keep running
+            st._log(f"[queue] {j.name}: {type(e).__name__}: {e}")
+        finally:
+            wake.set()
+
     def _scheduler():
         """Runs the open project's queued jobs one at a time, when the GPU is free."""
         from .project import Project
-        from .scheduler import busy, next_job, process_log, start
+        from .scheduler import busy, next_job, process_log, start, streaming
         while True:
             wake.wait(3.0)
             wake.clear()
             try:
                 root = proj_state.get("root")
-                if not root or (st.job and not st.job.get("done")):
+                if not root:
                     continue
                 prj = Project(root)
                 prj.reap_stale()                      # crashed "running" jobs: failed, not blocking the queue
-                if busy(prj) is not None:             # a job still running from before a restart, or a script's
+                gpu_busy = (st.job and not st.job.get("done")) or busy(prj) is not None
+                if gpu_busy:                          # only a streaming Class2D may join the running movie chain
+                    running = prj.jobs()
+                    running = [prj.job(int(r.id)) for r in running[running["status"] == "running"].itertuples()]
+                    s2 = None if any(streaming(x) for x in running) else next_job(prj, stream_only=True)
+                    if s2 is not None:                # started here (status running at once), waited for on a thread
+                        proc = start(prj, s2, auto_select=proj_state["auto_select"])
+                        st._log(f"[queue] {s2.name} started beside the running jobs (streaming 2D, process {proc.pid})")
+                        threading.Thread(target=_run_stream, args=(prj, s2, proc), daemon=True,
+                                         name=f"stream-{s2.id}").start()
                     continue
                 j = next_job(prj)
                 if j is None:
@@ -1163,6 +1190,52 @@ def create(workdir, project_dir=None):
             raise HTTPException(400, str(e))
         _kick()
         return dict(job=j.name)
+
+    @app.get("/api/project/mics")
+    def project_mics(job: str):
+        """The micrographs of a movie job done so far (micview.mic_rows: CTF, motion, picks / particles), and how
+        many its movies are - the dashboard's live statistics."""
+        from .micview import family, mic_rows
+        prj = _prj()
+        j = prj.job(job)
+        imp = prj.ancestor(j, "Import")
+        total = int(len(prj.movies(imp))) if imp is not None else None
+        fam = {k: (dict(name=v.name, status=v.status) if v is not None else None) for k, v in family(prj, j).items()}
+        from .figjson import _clean
+        return _clean(dict(job=j.name, status=j.status, total=total, rows=mic_rows(prj, j), family=fam))
+
+    @app.get("/api/project/mic.png")
+    def project_mic_png(job: str, stem: str, size: int = 1024, picks: int = 1):
+        """One micrograph, low-passed (a Pick / Extract job: with its picks)."""
+        from .micview import mic_png
+        prj = _prj()
+        try:
+            data = mic_png(prj.root, prj.job(job).id, os.path.basename(stem), max(256, min(int(size), 2048)), bool(picks))
+        except (OSError, KeyError, ValueError) as e:
+            raise HTTPException(404, str(e))
+        return Response(data, media_type="image/png", headers={"Cache-Control": "max-age=600"})
+
+    @app.get("/api/project/micdetail")
+    def project_micdetail(job: str, stem: str):
+        """One micrograph's 1D CTF fit and motion, as data for the page's plots (micview.mic_detail)."""
+        from .figjson import _clean
+        from .micview import mic_detail
+        prj = _prj()
+        try:
+            return _clean(mic_detail(prj.root, prj.job(job).id, os.path.basename(stem)))
+        except (OSError, KeyError, ValueError) as e:
+            raise HTTPException(404, str(e))
+
+    @app.get("/api/project/ps.png")
+    def project_ps_png(job: str, stem: str):
+        """A micrograph's power spectrum beside its fitted CTF."""
+        from .micview import ps_png
+        prj = _prj()
+        try:
+            data = ps_png(prj.root, prj.job(job).id, os.path.basename(stem))
+        except (OSError, KeyError, ValueError) as e:
+            raise HTTPException(404, str(e))
+        return Response(data, media_type="image/png", headers={"Cache-Control": "max-age=600"})
 
     @app.get("/api/project/live")
     def project_live(job: str):

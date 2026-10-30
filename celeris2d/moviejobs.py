@@ -43,11 +43,41 @@ def movie_paths(movies: str) -> list[str]:
     return out
 
 
+def truncated(path: str) -> bool:
+    """An MRC movie shorter than its header says (an interrupted download: EMPIAR-10291 had 9 of 300); other
+    formats are not checked here (the movie pipeline skips any movie it cannot read)."""
+    if not path.lower().endswith((".mrc", ".mrcs")):
+        return False
+    import warnings
+    import mrcfile
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with mrcfile.open(path, header_only=True, permissive=True) as m:
+                h = m.header
+                bpp = {0: 1, 1: 2, 2: 4, 6: 2, 12: 2}.get(int(h.mode), 4)
+                need = 1024 + int(h.nsymbt) + int(h.nx) * int(h.ny) * int(h.nz) * bpp
+    except (OSError, ValueError):
+        return True
+    return os.path.getsize(path) < need
+
+
 def import_job(project: Project, s: ImportSettings, label: str = "") -> Job:
-    """Registers the movies at once: the job is finished when made (nothing to queue)."""
+    """Registers the movies at once: the job is finished when made (nothing to queue). Truncated MRC files are left
+    out, named in the job's warnings."""
     paths = movie_paths(s.movies)
-    return project.import_movies(paths, root=_wsl(s.root) if s.root else "", params=dict(movies=s.movies),
-                                 label=label)
+    bad = [p for p in paths if truncated(p)]
+    paths = [p for p in paths if p not in bad]
+    if not paths:
+        raise ValueError(f"every movie at {s.movies} is truncated or unreadable")
+    j = project.import_movies(paths, root=_wsl(s.root) if s.root else "", params=dict(movies=s.movies),
+                              label=label)
+    if bad:
+        summ = dict(project.summary_of(j), skipped=[os.path.basename(p) for p in bad],
+                    warnings=[f"{len(bad)} movie files are truncated or unreadable and were left out: "
+                              + ", ".join(os.path.basename(p) for p in bad[:12]) + (" ..." if len(bad) > 12 else "")])
+        project.write_summary(j, summ)
+    return j
 
 
 def _run_movies(project: Project, job, log=print):

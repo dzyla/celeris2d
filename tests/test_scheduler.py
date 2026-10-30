@@ -91,3 +91,18 @@ def test_movie_jobs_from_the_dashboard(tmp_path):
     with pytest.raises(ValueError, match="apix is required"):
         coerce(MotionSettings, {"apix": "", "dose_total": "50"})
     assert coerce(PickSettings, {"threshold": "0.3"})["threshold"] == 0.3
+
+
+def test_streaming_class2d_starts_beside_its_running_extraction(tmp_path):
+    p = Project(str(tmp_path / "prj"))
+    ex = _job(p, "Extract", status="running", label="ex")
+    plain = p.new_job("Class2D", {}, [ex], "plain")
+    p.set_status(plain, "queued", {})
+    live = p.new_job("Class2D", {"stream": True}, [ex], "live")
+    p.set_status(live, "queued", {})
+    assert next_job(p).id == live.id                        # the streaming one may start; the plain one waits
+    assert next_job(p, stream_only=True).id == live.id
+    p.set_status(p.job(live.id), "running", {})
+    assert next_job(p) is None
+    p.set_status(p.job(ex.id), "finished", {})
+    assert next_job(p).id == plain.id and next_job(p, stream_only=True) is None

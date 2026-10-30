@@ -172,6 +172,9 @@ class Class2DSettings:
     diameter_a: float = 0.0         # mask (0: 1.25 x the extraction's particle size)
     seeds: int = 1                  # > 1: independent repeats, per-particle P(good) after selection
     gpus: str = "auto"              # GPUs to use: "auto" (all free ones) or a list like "0,2"
+    stream: bool = False            # classify while the Extract job still runs: rounds on the particles so far (from
+                                    # 5,000 or 100 per class; again at +50 % or after 10 min), each starting from the
+                                    # last round's classes; the final round on all particles when extraction ends
 
 
 def class2d_job(project: Project, particles, s: Class2DSettings, label: str = "") -> Job:
@@ -183,31 +186,39 @@ def class2d_job(project: Project, particles, s: Class2DSettings, label: str = ""
 def run_class2d(project: Project, job, log=print) -> dict:
     job = project.job(job)
     s = settings_of(job, Class2DSettings)
-    src = particle_source(project, job.params["particles"])
-    max_res = s.max_res_a or max(6.0, 2 * src.apix)
     t0 = time.time()
-    ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log)
     live = os.path.join(job.path, "live.json")
     done = threading.Event()
+    cur: dict = {}                                   # the session classifying now, and the streaming round
 
     def snapshot():                                  # the classes as they form, for the dashboard (gallery.live_classes)
         from .gallery import live_classes
-        last = -1
+        last = None
         while not done.wait(2.0):
-            c = ses.clf
-            if c is None or not c.history or getattr(c, "pop_live", None) is None or len(c.history) == last:
+            ses = cur.get("ses")
+            c = ses.clf if ses is not None else None
+            if c is None or not c.history or getattr(c, "pop_live", None) is None or (id(c), len(c.history)) == last:
                 continue
             try:
                 d = live_classes(c, job, t0)
+                if s.stream:
+                    d.update(round=cur.get("round"), particles=cur.get("n"), streaming=not cur.get("final"))
                 with open(live + ".tmp", "w") as fh:
                     json.dump(d, fh)
                 os.replace(live + ".tmp", live)
-                last = len(c.history)
+                last = (id(c), len(c.history))
             except Exception:                        # noqa: BLE001 - a missed snapshot is retried next time
                 pass
     threading.Thread(target=snapshot, daemon=True, name="class2d-live").start()
     try:
-        ses.classify("2d", K=s.n_classes, seeds=s.seeds)
+        if s.stream:
+            ses, src, max_res = _stream_class2d(project, job, s, cur, log)
+        else:
+            src = particle_source(project, job.params["particles"])
+            max_res = s.max_res_a or max(6.0, 2 * src.apix)
+            ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log)
+            cur["ses"] = ses
+            ses.classify("2d", K=s.n_classes, seeds=s.seeds)
     finally:
         done.set()
         if os.path.exists(live):
@@ -217,16 +228,14 @@ def run_class2d(project: Project, job, log=print) -> dict:
                                                   shift_x_a=r.offsets[:, 0].astype(np.float32),
                                                   shift_y_a=r.offsets[:, 1].astype(np.float32),
                                                   maxprob=r.maxprob.astype(np.float32)))
-    project.write_mrc(job.out("classes.mrcs"), r.images, ses.clf.box_a / r.images.shape[-1])
-    shutil.copy(r.gallery_path, job.out("gallery.png"))
-    light = os.path.splitext(r.gallery_path)[0] + ".light.png"
-    if os.path.exists(light):
-        shutil.copy(light, job.out("gallery.light.png"))
+    _class2d_outputs(project, job, ses, r)
     summ = dict(particles=int(len(r.idx)), classes=int(len(r.pops)), mask_a=round(ses.clf.p.diameter_a, 1),
                 max_res_a=round(max_res, 2), seconds=round(time.time() - t0, 1),
                 table=[dict(cls=k + 1, particles=int(r.pops[k]), conf=round(float(r.conf[k]), 3),
                             res_a=round(float(r.res_a[k]), 1) if np.isfinite(r.res_a[k]) else None)
                        for k in np.argsort(-r.pops)])
+    if s.stream:
+        summ["rounds"] = cur.get("rounds", [])
     bad = sum(len(x) for x in ses.clf.nonfinite)
     if bad:                                          # blanked on load: say so (they sit in some class as empty images)
         summ["nonfinite_particles"] = int(bad)
@@ -236,6 +245,64 @@ def run_class2d(project: Project, job, log=print) -> dict:
     ses.clf = None
     release_cache()
     return summ
+
+
+def _class2d_outputs(project: Project, job: Job, ses, r):
+    project.write_mrc(job.out("classes.mrcs"), r.images, ses.clf.box_a / r.images.shape[-1])
+    shutil.copy(r.gallery_path, job.out("gallery.png"))
+    light = os.path.splitext(r.gallery_path)[0] + ".light.png"
+    if os.path.exists(light):
+        shutil.copy(light, job.out("gallery.light.png"))
+
+
+def _stream_class2d(project: Project, job: Job, s: Class2DSettings, cur: dict, log=print):
+    """Streaming 2D (Class2D stream=True): rounds of classification while the particle job (an Extract job of a
+    running movie chain) still grows. A round starts once there are max(5,000, 100 K) particles, then whenever there
+    are 50 % more or 10 minutes have passed with new ones; each round starts from the classes of the last (no new
+    random start); the final round runs on all particles after extraction ended. Between rounds the gallery and
+    summary show the last round. Returns the final (session, source, max_res)."""
+    pid = job.params["particles"]
+    first = max(5000, 100 * s.n_classes)
+    prev, n_prev, t_prev, rnd = None, 0, 0.0, 0
+    cur["rounds"] = []
+    waiting_logged = False
+    while True:
+        st = project.job(pid).status
+        if st in ("failed", "cancelled", "deleted"):
+            raise RuntimeError(f"{project.job(pid).name} did not finish ({st})")
+        final = st == "finished"
+        src = particle_source(project, pid)
+        n = int(src.N)
+        due = final or (n >= first and (not n_prev or n >= 1.5 * n_prev or (n > n_prev and time.time() - t_prev > 600)))
+        if not due:
+            if not waiting_logged:
+                log(f"[stream] waiting for particles: {n:,} so far, the first round starts at {first:,}")
+                waiting_logged = True
+            time.sleep(15)
+            continue
+        waiting_logged = False
+        rnd += 1
+        max_res = s.max_res_a or max(6.0, 2 * src.apix)
+        log(f"[stream] round {rnd}: {n:,} particles" + (" (extraction finished: final round)" if final
+                                                         else " (extraction still running)"))
+        if cur.get("ses") is not None:
+            cur["ses"].clf = None
+            release_cache()
+        t_round = time.time()
+        ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log)
+        cur.update(ses=ses, round=rnd, n=n, final=final)
+        ses.classify("2d", K=s.n_classes, seeds=s.seeds if final else 1, init_from=prev)
+        prev = ses.clf.class_images()               # the next round starts here
+        n_prev, t_prev = n, time.time()
+        cur["rounds"].append(dict(round=rnd, particles=n, seconds=round(t_prev - t_round, 1), final=final))
+        if final:
+            return ses, src, max_res
+        try:                                         # the last round's classes to look at while the next one waits
+            _class2d_outputs(project, job, ses, ses.results["2d"])
+            project.write_summary(job, dict(project.summary_of(job), streaming=True, rounds=cur["rounds"],
+                                            particles=n, classes=s.n_classes))
+        except Exception as e:                       # noqa: BLE001 - a figure never stops the stream
+            log(f"[stream] round outputs: {e!r}")
 
 
 def select_classes(project: Project, class2d, classes: list[int], label: str = "", note: str = "", job=None) -> Job:

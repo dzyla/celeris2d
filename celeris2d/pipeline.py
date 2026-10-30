@@ -813,7 +813,12 @@ def _run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thr
                 if (stop is not None and stop.is_set()) or halt.is_set():
                     break
                 if i in futs:
-                    name, shape, dt = futs.pop(i).result()
+                    try:
+                        name, shape, dt = futs.pop(i).result()
+                    except (OSError, ValueError, EOFError) as e:      # an unreadable movie: skipped by the GPU loop
+                        if not put((i, e)):
+                            return
+                        continue
                     shm = shared_memory.SharedMemory(name=name)
                     if not put((i, (shm, np.ndarray(shape, np.dtype(dt), buffer=shm.buf)))):
                         return
@@ -832,6 +837,7 @@ def _run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thr
         return time.time()
 
     cur: list = [None]
+    skipped: list = []                               # movies that could not be read (logged, not fatal)
     t_start, last_log, last_refresh = time.time(), [time.time()], [time.time()]
     log(f"{len(todo)} of {len(movie_ids)} movies to do")
     try:
@@ -846,10 +852,22 @@ def _run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thr
                 if isinstance(item, BaseException):
                     raise RuntimeError("reading movies failed") from item
                 i, sf = item
+                if isinstance(sf, BaseException):
+                    skipped.append(project.movie(i)["stem"])
+                    log(f"skipped {skipped[-1]}: cannot read it ({type(sf).__name__}: {sf})")
+                    continue
                 cur[0] = None if sf is None else sf[0]
                 if mc is not None:
-                    process_movie_motion(project, mc, i, frames=None if sf is None else sf[1], log=log,
-                                         figures=figs, io=io)
+                    try:
+                        process_movie_motion(project, mc, i, frames=None if sf is None else sf[1], log=log,
+                                             figures=figs, io=io)
+                    except (OSError, ValueError, TypeError, EOFError) as e:   # e.g. a truncated download
+                        skipped.append(project.movie(i)["stem"])
+                        log(f"skipped {skipped[-1]}: {type(e).__name__}: {e}")
+                        del sf, item
+                        _release(cur[0])
+                        cur[0] = None
+                        continue
                     t = lap("motion_ctf", t)
                 del sf, item                             # frames are on the GPU by now: free the shared block
                 _release(cur[0])

@@ -79,8 +79,15 @@ def cancel(project: Project, job) -> Job:
     return j
 
 
-def next_job(project: Project) -> Job | None:
-    """The oldest queued job whose inputs have all finished; queued jobs with a failed / cancelled input fail."""
+def streaming(j: Job) -> bool:
+    """A Class2D job that classifies while its particles are still being extracted (Class2D stream=True)."""
+    return j.type == "Class2D" and bool(j.params.get("stream"))
+
+
+def next_job(project: Project, stream_only: bool = False) -> Job | None:
+    """The oldest queued job whose inputs have all finished - or, for a streaming Class2D, whose Extract job is
+    running (it runs beside that job; stream_only: only such jobs, for when another job holds the GPU); queued jobs
+    with a failed / cancelled input fail."""
     jobs = project.jobs(include_deleted=True)
     status = dict(zip(jobs["id"].astype(int), jobs["status"]))
     for r in jobs[jobs["status"] == "queued"].itertuples():
@@ -91,7 +98,10 @@ def next_job(project: Project) -> Job | None:
             project.set_status(j, "failed", dict(error=f"input {names or bad} did not finish"))
             status[j.id] = "failed"
             continue
-        if all(status.get(i) in DONE_OK for i in j.inputs):
+        if streaming(j) and all(status.get(i) in ("running", "finished") for i in j.inputs) \
+                and any(status.get(i) == "running" for i in j.inputs):
+            return j
+        if not stream_only and all(status.get(i) in DONE_OK for i in j.inputs):
             return j
     return None
 

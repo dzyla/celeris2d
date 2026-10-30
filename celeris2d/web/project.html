@@ -160,7 +160,23 @@
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
   .chip { background: var(--well); border: 1px solid var(--line); border-radius: 14px; padding: 3px 10px; font-size: 12.5px; cursor: pointer; }
   .chip:hover { border-color: var(--data); }
-  .live { padding: 14px 16px; }
+  .live, .mp { padding: 14px 16px; }
+  .mpkpi { display: flex; flex-wrap: wrap; gap: 8px 30px; margin: 4px 0 14px; }
+  .mpkpi .v { font-size: 20px; font-weight: 600; } .mpkpi .c { font-size: 12px; color: var(--ink3); }
+  .mpview { display: grid; grid-template-columns: auto auto minmax(220px, 1fr); gap: 14px; align-items: start; justify-content: start; }
+  .mpmic, .mpps { margin: 0; background: #000; border-radius: 8px; overflow: hidden; }
+  .mpmic img { display: block; height: min(54vh, 34vw); width: auto; max-width: 100%; object-fit: contain; }
+  .mpps img { display: block; height: min(54vh, 34vw); aspect-ratio: 1; width: auto; }
+  .mpmic figcaption, .mpps figcaption { font-size: 12px; color: var(--ink3); padding: 6px 10px; background: var(--surface); }
+  .mpside { display: flex; flex-direction: column; gap: 10px; }
+  .mpnav { display: flex; gap: 8px; align-items: center; } .mpnav input { flex: 1; }
+  .mpt { border-collapse: collapse; font-size: 13px; } .mpt td { padding: 3px 14px 3px 0; } .mpt td:first-child { color: var(--ink3); }
+  .mpcharts { margin-top: 16px; min-height: 60px; }
+  .mpplots { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; margin-top: 14px; }
+  .mpplots > div { background: var(--surface); border-radius: 8px; min-height: 120px; overflow: hidden; }
+  @media (max-width: 1100px) { .mpplots { grid-template-columns: 1fr; } }
+  @media (max-width: 1300px) { .mpview { grid-template-columns: auto auto; } .mpside { grid-column: 1 / -1; } }
+  @media (max-width: 900px) { .mpview { grid-template-columns: 1fr; } .mpmic img, .mpps img { height: auto; width: 100%; } }
   .lhead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; min-width: 0; }
   .lastline { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; text-align: right; font-size: 12px; }
   .lbody { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
@@ -215,6 +231,11 @@ const THEME = () => ({surface: css('--surface'), well: css('--well'), line: css(
                       ink: css('--ink'), ink2: css('--ink2'), ink3: css('--ink3'), font: css('--font')});
 const MAPJOBS = ['Refine3D', 'LocalRefine', 'InitialModel', 'Sharpen', 'Subtract', 'ModeMaps', 'MaskCreate', 'Polish', 'CtfRefine'];
 const CLASSJOBS = ['Class2D', 'HeteroRefine', 'Class3D', 'Select'];
+const MOVIEJOBS = ['MotionCtf', 'Pick', 'Extract'];
+// per-micrograph statistics of a MotionCtf -> Pick -> Extract chain, shown together: [key, label, unit, digits]
+const MICSTATS = [['defocus_a', 'Defocus', 'Å', 0], ['astigmatism_a', 'Astigmatism', 'Å', 0], ['ctf_fit_a', 'CTF fit resolution', 'Å', 2],
+  ['ctf_score', 'CTF fit score', '', 3], ['drift_a', 'Total drift', 'Å', 1], ['local_rms_a', 'Local motion (rms)', 'Å', 2], ['tilt_deg', 'Ice tilt', '°', 1],
+  ['picks', 'Picks', '', 0], ['candidates', 'Pick candidates', '', 0], ['particles', 'Particles', '', 0]];
 let jobs = [], queue = {running: [], queued: [], waiting: []}, autoSelect = true, current = null, tab = 'plots', types = {};
 let pollTimer = null, logTimer = null, liveTimer = null, viewer = null;
 
@@ -364,6 +385,7 @@ async function showJob(name, scroll = true) {
 function renderStage(j) {
   const st = $('#stage');
   if (viewer) { viewer.dispose(); viewer = null; }
+  if (MOVIEJOBS.includes(j.type) && j.status !== 'queued') return stageMicPanel(st, j);
   if (j.status === 'running') return stageLive(st, j);
   if (CLASSJOBS.includes(j.type) && !['running', 'queued', 'cancelled', 'failed'].includes(j.status)) return stageGallery(st, j);
   const maps = j.files.filter(f => /\.mrc$/.test(f.path) && !/half[12]|(^|_)mask\.mrc$|localres|nu_cutoff|_frames/.test(f.path.split('/').pop()));
@@ -386,7 +408,8 @@ function stageLive(st, j) {
     const d = await api('/api/project/live?job=' + encodeURIComponent(name));
     if (!d.classes || d.updated === liveAt || current !== name || !$('#lgal')) return;
     liveAt = d.updated;
-    $('#lgal').innerHTML = `<div class="gal-tools"><div class="sum">Iteration <b>${d.it}</b> of ${d.n_iter} · ${d.res} Å · ${d.changed}% changed class · ${d.classes.length} classes</div></div>
+    const rnd = d.round ? `Round <b>${d.round}</b> on ${fmt(d.particles)} particles${d.streaming ? ' (extraction still running)' : ' (all particles: final round)'} · ` : '';
+    $('#lgal').innerHTML = `<div class="gal-tools"><div class="sum">${rnd}Iteration <b>${d.it}</b> of ${d.n_iter} · ${d.res} Å · ${d.changed}% changed class · ${d.classes.length} classes</div></div>
       <div class="gal" style="max-height:52vh">${d.classes.map(c => `<div class="cls" style="cursor:default"><img src="${c.images[0]}" alt="class ${c.cls}">
         <div class="lab"><span>${c.cls}</span><span>${fmt(c.n)} · ${(100 * c.share).toFixed(1)}%</span></div></div>`).join('')}</div>`;
   };
@@ -420,6 +443,161 @@ function stageLive(st, j) {
     } catch (e) { /* the next tick tries again */ }
     liveTimer = setTimeout(tick, 3000);
   };
+  tick();
+}
+// movie jobs, while they run and after: counters, one micrograph (render, power spectrum vs CTF, its numbers) and every
+// micrograph's numbers as charts; click a point to open that micrograph (cryoSPARC Live-like)
+function stageMicPanel(st, j) {
+  st.className = 'stage';
+  const name = j.name;
+  let running = j.status === 'running', fam = null;
+  st.innerHTML = `<div class="mp">
+    <div class="lhead"><span id="mpstate"></span> <span id="mpn" class="muted"></span>
+      <span id="llast" class="muted lastline"></span></div>
+    <div class="mpkpi" id="mpkpi"></div>
+    <div class="mpview">
+      <figure class="mpmic"><img id="mpmic" alt="micrograph"><figcaption id="mpcap"></figcaption></figure>
+      <figure class="mpps"><img id="mpps" alt="power spectrum and CTF fit"><figcaption>spectrum (left) · fitted CTF (right) · ring: fit resolution</figcaption></figure>
+      <div class="mpside">
+        <div class="mpnav"><button id="mpp" aria-label="previous micrograph">‹</button><input type="range" id="mpr" min="1" max="1" value="1" aria-label="micrograph"><button id="mpx" aria-label="next micrograph">›</button></div>
+        <label class="tog"><input type="checkbox" id="mpf" ${running ? 'checked' : ''}> Follow the newest micrograph</label>
+        <label class="tog" id="mpkl" style="display:none"><input type="checkbox" id="mpk" checked> Show picks</label>
+        <table class="mpt" id="mpt"></table>
+        <div id="mpdet"></div>
+      </div>
+    </div>
+    <div class="mpplots"><div id="mpctf"></div><div id="mpmot"></div></div>
+    <div class="mpcharts" id="mpcharts"></div></div>`;
+  const defs = MICSTATS;
+  let rows = [], sel = null, lastN = -1, offset = 0;
+  const med = a => { const b = a.filter(v => v != null).sort((x, y) => x - y); return b.length ? b[Math.floor(b.length / 2)] : null; };
+  const fv = (v, d) => v == null ? '–' : Number(v).toLocaleString(undefined, {maximumFractionDigits: d, minimumFractionDigits: d});
+  const show = (i, fromUser) => {
+    if (!rows.length) return;
+    i = Math.max(1, Math.min(rows.length, i));
+    if (fromUser && $('#mpf')) $('#mpf').checked = i === rows.length && running;
+    sel = i; const r = rows[i - 1];
+    $('#mpr').max = rows.length; $('#mpr').value = i;
+    const k = $('#mpk') && $('#mpk').checked ? 1 : 0;
+    $('#mpmic').src = `/api/project/mic.png?job=${encodeURIComponent(name)}&stem=${encodeURIComponent(r.stem)}&size=1400&picks=${k}`;
+    $('#mpps').src = `/api/project/ps.png?job=${encodeURIComponent(name)}&stem=${encodeURIComponent(r.stem)}`;
+    $('#mpcap').textContent = `${i} of ${rows.length} · ${r.stem}`;
+    $('#mpt').innerHTML = defs.filter(([key]) => r[key] != null).map(([key, lab, u, d]) => `<tr><td>${lab}</td><td>${fv(r[key], d)} ${u}</td></tr>`).join('');
+    detail(r.stem);
+    const det = (j.movie_files || []).find(f => f.includes(r.stem));
+    $('#mpdet').innerHTML = det ? `<a href="${file(det)}" target="_blank" rel="noopener">detailed figure of this micrograph</a>` : '';
+    charts();
+  };
+  let detailFor = '';
+  const detail = async stem => {                    // this micrograph's 1D CTF fit and motion (drawn here, data from the server)
+    detailFor = stem;
+    let d;
+    try { d = await api(`/api/project/micdetail?job=${encodeURIComponent(name)}&stem=${encodeURIComponent(stem)}`); } catch (e) { return; }
+    if (detailFor !== stem || !$('#mpctf')) return;
+    const T = THEME(), P = await CelerisPlots.plotly();
+    const base = {paper_bgcolor: T.surface, plot_bgcolor: T.surface, font: {family: T.font, size: 11, color: T.ink2}, height: 250,
+      margin: {l: 48, r: 14, t: 30, b: 40}, showlegend: true, legend: {orientation: 'h', x: 1, xanchor: 'right', y: 1.12, font: {size: 11}},
+      hoverlabel: {bgcolor: T.well, bordercolor: T.line, font: {color: T.ink, family: T.font}}};
+    const ax = {gridcolor: T.line, zeroline: false, linecolor: T.axis};
+    const k = d.res_a.map(x => 1 / x), keep = k.map(x => x >= 1 / 40);
+    const sel = a => a.filter((_, i) => keep[i]);
+    const ticks = [20, 10, 7, 5, 4, 3, 2.5].filter(x => x >= d.res_a[d.res_a.length - 1]);
+    const tr = [{type: 'scatter', mode: 'lines', name: 'spectrum', x: sel(k), y: sel(d.measured), line: {color: T.ink2, width: 1.2},
+                 customdata: sel(d.res_a), hovertemplate: '%{customdata:.2f} Å<extra></extra>'}];
+    if (d.fit) tr.push({type: 'scatter', mode: 'lines', name: 'fitted CTF', x: sel(k), y: sel(d.fit), line: {color: css('--data'), width: 1.6}, hoverinfo: 'skip'});
+    const shapes = d.fit_res_a ? [{type: 'line', x0: 1 / d.fit_res_a, x1: 1 / d.fit_res_a, yref: 'paper', y0: 0, y1: 1, line: {color: css('--you'), width: 1, dash: 'dot'}}] : [];
+    P.react($('#mpctf'), tr, Object.assign({}, base, {shapes,
+      title: {text: `<b>CTF fit</b> · defocus ${fmt(Math.round((d.defocus_u + d.defocus_v) / 2))} Å · fit ${d.fit_res_a ? d.fit_res_a.toFixed(2) + ' Å' : '–'}`, x: 0.01, xanchor: 'left', font: {size: 12, color: T.ink}},
+      xaxis: Object.assign({title: {text: 'resolution (Å)', font: {size: 11}}, tickvals: ticks.map(x => 1 / x), ticktext: ticks.map(String)}, ax),
+      yaxis: Object.assign({showticklabels: false}, ax)}), {displaylogo: false, responsive: true});
+    const sh = d.shifts || [];
+    if (sh.length > 1) {
+      P.react($('#mpmot'), [{type: 'scatter', mode: 'lines+markers', x: sh.map(q => q[0]), y: sh.map(q => q[1]), name: 'frame shifts',
+          marker: {color: sh.map((_, i) => i), colorscale: 'Blues', size: 6}, line: {color: T.ink3, width: 1},
+          customdata: sh.map((_, i) => i + 1), hovertemplate: 'frame %{customdata}: %{x:.2f}, %{y:.2f} Å<extra></extra>'}],
+        Object.assign({}, base, {showlegend: false, title: {text: `<b>Motion</b> · ${sh.length} frames`, x: 0.01, xanchor: 'left', font: {size: 12, color: T.ink}},
+          xaxis: Object.assign({title: {text: 'x shift (Å)', font: {size: 11}}}, ax), yaxis: Object.assign({title: {text: 'y shift (Å)', font: {size: 11}}, scaleanchor: 'x'}, ax)}),
+        {displaylogo: false, responsive: true});
+    } else {
+      $('#mpmot').innerHTML = `<div class="muted" style="padding:24px 16px">Motion: ${sh.length === 1 ? 'a single-frame micrograph (no frames to align)' : 'no motion recorded'}.</div>`;
+    }
+  };
+  const charts = async () => {
+    const box = $('#mpcharts'); if (!box || !rows.length) return;
+    const T = THEME(), have = defs.filter(([key]) => new Set(rows.map(r => r[key]).filter(v => v != null)).size > 1);   // not constant
+    const cols = 3, nr = Math.ceil(have.length / cols), traces = [], lay = {
+      height: 200 * nr + 20, margin: {l: 52, r: 12, t: 28, b: 24}, paper_bgcolor: T.surface, plot_bgcolor: T.surface, showlegend: false,
+      font: {family: T.font, size: 11, color: T.ink2}, hovermode: 'closest', annotations: [],
+      hoverlabel: {bgcolor: T.well, bordercolor: T.line, font: {color: T.ink, family: T.font}}};
+    have.forEach(([key, lab, u, d], n) => {
+      const c = n % cols, r = Math.floor(n / cols), ax = n * 2 + 1, xs = 'x' + (ax > 1 ? ax : ''), ys = 'y' + (ax > 1 ? ax : ''), xh = 'x' + (ax + 1), yh = 'y' + (ax + 1);
+      const x0 = c / cols + 0.045, x1 = (c + 1) / cols - 0.075, y1 = 1 - r / nr - 0.13 / nr, y0 = 1 - (r + 1) / nr + 0.09 / nr;
+      const pts = rows.filter(q => q[key] != null);
+      const axis = {gridcolor: T.line, zeroline: false, linecolor: T.axis, tickfont: {size: 10}};
+      lay['xaxis' + (ax > 1 ? ax : '')] = Object.assign({domain: [x0, x1], anchor: ys}, axis);
+      lay['yaxis' + (ax > 1 ? ax : '')] = Object.assign({domain: [y0, y1], anchor: xs}, axis);
+      lay['xaxis' + (ax + 1)] = Object.assign({domain: [x1 + 0.005, (c + 1) / cols - 0.01], anchor: yh, showticklabels: false, showgrid: false}, axis);
+      lay['yaxis' + (ax + 1)] = Object.assign({domain: [y0, y1], anchor: xh, matches: ys, showticklabels: false}, axis);
+      const m = med(pts.map(q => q[key]));
+      lay.annotations.push({text: `<b>${lab}</b>${u ? ' (' + u + ')' : ''} · median ${fv(m, d)}`, xref: 'paper', yref: 'paper', x: x0, y: y1, xanchor: 'left', yanchor: 'bottom', showarrow: false, font: {size: 12, color: T.ink}});
+      traces.push({type: pts.length > 2000 ? 'scattergl' : 'scatter', mode: 'markers', x: pts.map(q => q.i), y: pts.map(q => q[key]), xaxis: xs, yaxis: ys,
+        marker: {color: css('--data'), size: 5, opacity: 0.8}, customdata: pts.map(q => q.i), text: pts.map(q => q.stem),
+        hovertemplate: `%{text}<br>${lab} %{y:.${d}f} ${u}<extra></extra>`});
+      const s = rows[(sel || 1) - 1];
+      if (s && s[key] != null) traces.push({type: 'scatter', mode: 'markers', x: [s.i], y: [s[key]], xaxis: xs, yaxis: ys, hoverinfo: 'skip',
+        marker: {color: css('--you'), size: 11, line: {color: T.surface, width: 2}}});
+      traces.push({type: 'histogram', y: pts.map(q => q[key]), xaxis: xh, yaxis: yh, marker: {color: css('--data-dim')}, hoverinfo: 'skip', nbinsy: 30});
+      if (m != null) traces.push({type: 'scatter', mode: 'lines', x: [1, rows.length], y: [m, m], xaxis: xs, yaxis: ys, hoverinfo: 'skip', line: {color: T.ink3, width: 1, dash: 'dot'}});
+    });
+    const P = await CelerisPlots.plotly();
+    if (!$('#mpcharts')) return;
+    await P.react(box, traces, lay, {displaylogo: false, responsive: true, modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d', 'toggleSpikelines']});
+    if (!box._wired) { box._wired = true; box.on('plotly_click', e => { const p = e.points.find(q => q.customdata); if (p) show(p.customdata, true); }); }
+  };
+  const kpis = d => {
+    const n = rows.length, k = [[`${n.toLocaleString()}${d.total ? ' / ' + d.total.toLocaleString() : ''}`, 'micrographs']];
+    if (n > 1 && running) { const dt = (rows[n - 1].t - rows[0].t) / (n - 1); if (dt > 0) k.push([`${(60 / dt).toFixed(1)}`, 'per minute' + (d.total ? ` · ~${Math.ceil((d.total - n) * dt / 60)} min left` : '')]); }
+    const m = key => med(rows.map(r => r[key]));
+    k.push([fv(m('defocus_a') / 1e4, 2) + ' µm', 'median defocus'], [fv(m('ctf_fit_a'), 2) + ' Å', 'median CTF fit'], [fv(m('astigmatism_a'), 0) + ' Å', 'median astigmatism']);
+    const good = rows.filter(r => r.ctf_fit_a != null && r.ctf_fit_a <= 5).length;
+    k.push([`${n ? Math.round(100 * good / n) : 0}%`, 'CTF fit ≤ 5 Å']);
+    if (rows.some(r => r.frames > 1)) k.push([fv(m('drift_a'), 1) + ' Å', 'median drift']);
+    const sum = key => rows.reduce((a, r) => a + (r[key] || 0), 0);
+    if (rows.some(r => r.picks != null)) k.push([sum('picks').toLocaleString(), `picks · ${fv(m('picks'), 0)} per micrograph`]);
+    if (rows.some(r => r.particles != null)) k.push([sum('particles').toLocaleString(), 'particles extracted']);
+    $('#mpkpi').innerHTML = k.map(([v, c]) => `<div class="num"><div class="v">${v}</div><div class="c">${esc(c)}</div></div>`).join('');
+  };
+  const tick = async () => {
+    clearTimeout(liveTimer);
+    if (current !== name || !$('#mpkpi')) return;
+    try {
+      const d = await api('/api/project/mics?job=' + encodeURIComponent(name));
+      if (current !== name) return;
+      rows = d.rows; fam = d.family || {};
+      const members = ['mc', 'pick', 'extract'].map(k => fam[k]).filter(Boolean);
+      running = members.some(x => x.status === 'running');
+      $('#mpstate').innerHTML = (running ? '<span class="dot running pulse"></span><b>Running</b> ' : '<b>Micrographs</b> ') +
+        members.map(x => `<a href="#${x.name.slice(0, 3)}" class="muted" style="margin-left:6px"><span class="dot ${esc(x.status)}"></span>${esc(x.name.split('_')[1])} ${esc(x.name.slice(0, 3))}</a>`).join('');
+      $('#mpkl').style.display = fam.pick ? '' : 'none';
+      $('#mpn').textContent = d.total ? `· ${rows.length} of ${d.total} micrographs` : `· ${rows.length} micrographs`;
+      if (rows.length !== lastN) {
+        lastN = rows.length; kpis(d);
+        if (!sel || ($('#mpf') && $('#mpf').checked)) show(rows.length); else charts();
+      }
+      if (running) {
+        const lg = await api(`/api/project/log?job=${encodeURIComponent((fam.mc || {}).name || name)}&offset=${offset}`);
+        if (lg.text) { offset = lg.offset; const ls = lg.text.trimEnd().split('\n'); $('#llast').textContent = ls[ls.length - 1].replace(/^\S+ \S+ /, ''); }
+        if (d.status !== 'running' && j.status === 'running') { await load(); return showJob(name, false); }
+      }
+    } catch (e) { /* next tick */ }
+    if (running || j.status === 'running') liveTimer = setTimeout(tick, 5000);
+  };
+  $('#mpr').oninput = e => show(+e.target.value, true);
+  $('#mpp').onclick = () => show((sel || 1) - 1, true);
+  $('#mpx').onclick = () => show((sel || 1) + 1, true);
+  if ($('#mpk')) $('#mpk').onchange = () => show(sel || 1, false);
+  st.tabIndex = 0;
+  st.onkeydown = e => { if (e.key === 'ArrowLeft') show((sel || 1) - 1, true); if (e.key === 'ArrowRight') show((sel || 1) + 1, true); };
   tick();
 }
 async function stageGallery(st, j) {
