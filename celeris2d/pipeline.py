@@ -250,15 +250,23 @@ def rethreshold(project: Project, picks: Job, threshold: float | None = None, ma
                     + (f"_std{max_std:g}" if max_std != 2.0 else "") + (f"_mean{max_mean:g}" if max_mean != 3.0 else ""))
     new = project.new_job("Pick", dict(picks.params, threshold=threshold, max_std=max_std, max_mean=max_mean,
                                        rethreshold_of=picks.id, figures="none"), [picks], lab)
-    kept = 0
-    for r in project.pick_table(picks).itertuples():
-        z = project.picks(picks, r.movie_id)
-        c = pk.Candidates(z["xy_a"], z["score"], z["local_std"], z["local_mean"])
+    z = project.table(picks, "picks").read()         # all candidates at once (rows grouped by micrograph)
+    keep = np.zeros(len(z["score"]), bool)
+    ids, start = np.unique(z["movie"], return_index=True)
+    order = np.argsort(start)
+    ids, start = ids[order], start[order]
+    end = np.append(start[1:], len(keep))
+    rows = []
+    for m, a, b in zip(ids, start, end):
+        c = pk.Candidates(np.stack([z["x_a"][a:b], z["y_a"][a:b]], 1), z["score"][a:b], z["local_std"][a:b],
+                          z["local_mean"][a:b])
         th = pk.auto_threshold(c.score) if threshold is None else threshold
-        keep = np.zeros(len(c.score), bool)
-        keep[pk.select(c, th, max_std, max_mean)] = True
-        project.add_picks(new, r.movie_id, {k: z[k] for k in ("xy_a", "score", "local_std", "local_mean")}, keep, th)
-        kept += int(keep.sum())
+        keep[a + pk.select(c, th, max_std, max_mean)] = True
+        rows.append((new.id, int(m), "picks", int(b - a), int(keep[a:b].sum()), float(th), time.time()))
+    project.table(new, "picks").write({k: (keep if k == "keep" else v) for k, v in z.items() if k != "movie"},
+                                      z["movie"])
+    with project._db() as c:
+        c.executemany("INSERT OR REPLACE INTO picks VALUES (?,?,?,?,?,?,?)", rows)
     finish(project, new)
     return new
 

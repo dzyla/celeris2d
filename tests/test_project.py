@@ -87,6 +87,7 @@ def test_jobs_picking_extraction_exports(tmp_path):
     # identity: keys decode, the same particle has the same uid in both extractions
     a, b = prj.particles(ex), prj.particles(eb)
     assert len(a) == len(b) and set(a["uid"]) == set(b["uid"])
+    a["key"] = prj.particle_keys(a)
     stem, x, y = parse_key(a["key"].iloc[0])
     assert stem == a["stem"].iloc[0] and abs(x - a["x_a"].iloc[0]) < 0.06 and abs(y - a["y_a"].iloc[0]) < 0.06
     assert prj.find(int(a["uid"].iloc[0]))["key"] == a["key"].iloc[0]
@@ -104,10 +105,17 @@ def test_jobs_picking_extraction_exports(tmp_path):
     sb = open_source(eb.path)
     assert sb.box == eb.params["box"] and abs(sb.apix - 4 * APIX) < 1e-6
 
+    # tables are sharded and hold numbers only; rethreshold reads them in one pass
+    assert os.path.exists(os.path.join(ex.path, "particles", "index.json"))
+    assert not any(v.startswith(("<U", "|O")) for v in prj.table(ex, "particles").index["columns"].values())
+    th = pl.rethreshold(prj, pj, threshold=0.99, label="strict")
+    assert prj.summary_of(th)["picks"] < prj.summary_of(pj)["picks"]
+    prj.delete_job(th)
+
     # a selection (uids, e.g. good classes of a 2D run on the binned extraction) extracts only its particles
     sel = prj.select(eb, b["uid"].to_numpy()[::3], label="every3rd")
     es = pl.extract_job(prj, pj, pl.ExtractSettings(particle_a=DIAM, box_a=1.5 * DIAM, select=sel.id))
-    assert es.name == "007_extract_180A_2apx_f16_sel006" and sel.name == "006_select_every3rd"
+    assert es.name == "008_extract_180A_2apx_f16_sel007" and sel.name == "007_select_every3rd"
     pl.run(prj, [es])
     assert set(prj.particles(es)["uid"]) == set(prj.selected_uids(sel))
     assert prj.find(int(prj.selected_uids(sel)[0]))["selected_in"] == [sel.name]
@@ -115,7 +123,7 @@ def test_jobs_picking_extraction_exports(tmp_path):
     # rename (references are by number), purge + rebuild the stacks, summaries for people and agents
     ex = prj.rename(ex, "full")
     assert ex.name == "004_extract_full" and prj.dependents(pj) == ["004_extract_full", "005_extract_bin4",
-                                                                    "007_extract_180A_2apx_f16_sel006"]
+                                                                    "008_extract_180A_2apx_f16_sel007"]
     before = open_source(ex.path).read_all()
     assert prj.purge(ex) > 0 and prj.disk().set_index("job").loc[ex.name, "purgeable_gb"] == 0
     pl.rebuild(prj, ex)
@@ -131,4 +139,4 @@ def test_jobs_picking_extraction_exports(tmp_path):
     prj.delete_job(es)
     assert os.path.isdir(os.path.join(prj.root, "Trash", es.name, "data"))
     assert not os.path.exists(es.data_path)
-    assert pl.extract_job(prj, pj, pl.ExtractSettings(particle_a=DIAM)).id == 8
+    assert pl.extract_job(prj, pj, pl.ExtractSettings(particle_a=DIAM)).id == 9

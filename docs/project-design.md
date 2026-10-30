@@ -70,15 +70,15 @@ memory between stages, decodes the next movies in worker processes into shared m
 figures on background threads (EMPIAR-10025, 20 K2 super-resolution movies, one RTX 5090: 2.45 s per movie for
 motion, CTF, picking and extraction, decoding included).
 
-Particle tables: one `.npz` per micrograph in `data/NNN` while a job runs (append-only, cheap). The code currently
-also consolidates them into one `particles.npz` per job at the end; that does not scale and has to be replaced
-before 5,000-10,000-movie projects (millions of particles, live jobs that keep growing). A single file is rewritten
-whole on every update and read whole for any subset. The replacement must be sharded and append-friendly
-(shards of a fixed number of micrographs, or an indexed store), so reading by uid, micrograph or subset stays
-cheap. It must be tested at that size with synthetic tables, not only on 20 movies. The same holds for
-`micrographs.npz` and `picks.npz`.
-An extract job folder is itself a particle input (`celeris2d -i jobs/004_...`, `Session.load`, MCP
-`load_particles`): no star file needed; the mask defaults to 1.25 x the job's particle size.
+Particle tables (picks, particles, selections, per-particle results) are sharded (`celeris2d/tables.py`):
+`jobs/NNN/<table>/index.json` plus `shard_00000.npz ...`, each shard holding the rows of 250 micrographs, numbers
+only, uncompressed, never rewritten; micrographs that arrive while a job runs are staged as small files and merged
+when 250 have arrived (or when the job finishes). Names, paths and CTF live once per micrograph (catalog) and are
+joined when read; a particle's key is computed from its stem and pick position. Measured, 10,000 micrographs x
+500 particles: 40 shards, 120 MB; cold read 0.12 s (NVMe); one micrograph's rows 1 ms; 5 M result rows written in
+0.5 s. The same layout read over NFS on 1 GbE takes 1.6 s, against 7.3 s for one file per micrograph (and ~2 min
+estimated on a local HDD, one seek per file). Particle stacks stay one `.mrcs` per micrograph (MBs each: the seek
+is small next to the read).
 
 ## Compatibility (on request)
 

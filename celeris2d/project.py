@@ -34,6 +34,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from .tables import ShardedTable
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY, type TEXT, name TEXT UNIQUE, label TEXT, params TEXT, inputs TEXT, status TEXT,
@@ -460,21 +462,30 @@ class Project:
                                params=(job.id,))
 
     # ------------------------------------------------------------------ picks (Pick jobs)
+    def table(self, job, name: str) -> ShardedTable:
+        """A job's sharded per-particle table (picks, particles, results) in its folder."""
+        return ShardedTable(os.path.join(self.job(job).path, name))
+
     def add_picks(self, job: Job, movie_id: int, columns: dict, keep: np.ndarray, threshold: float):
-        """All candidates of one micrograph (xy_a and features) and which are kept."""
-        path = job.per_movie("Candidates", self.movie(movie_id), ".npz")
-        _atomic(path, lambda t: np.savez(t, keep=np.asarray(keep, bool), threshold=threshold,
-                                         **{k: np.asarray(v) for k, v in columns.items()}))
+        """All candidates of one micrograph (xy_a (n, 2) and per-candidate features) and which are kept."""
+        cols = {k: np.asarray(v) for k, v in columns.items() if k != "xy_a"}
+        xy = np.asarray(columns["xy_a"], np.float32).reshape(-1, 2)
+        self.table(job, "picks").append(movie_id, dict(x_a=xy[:, 0], y_a=xy[:, 1], keep=np.asarray(keep, bool),
+                                                       **{k: v.astype(np.float32) for k, v in cols.items()}))
         with self._db() as c:
             c.execute("INSERT OR REPLACE INTO picks VALUES (?,?,?,?,?,?,?)",
-                      (job.id, int(movie_id), self.rel(path), len(keep), int(np.sum(keep)), threshold, time.time()))
+                      (job.id, int(movie_id), "picks", len(keep), int(np.sum(keep)), threshold, time.time()))
 
     def picks(self, job, movie_id: int) -> dict:
+        """Candidates of one micrograph: xy_a (n, 2), features, keep, threshold."""
         job = self.job(job)
+        z = self.table(job, "picks").read(movies=[movie_id])
         with self._db() as c:
-            r = c.execute("SELECT path FROM picks WHERE job_id=? AND movie_id=?", (job.id, int(movie_id))).fetchone()
-        z = np.load(self.abs(r[0]))
-        return {k: z[k] for k in z.files}
+            th = c.execute("SELECT threshold FROM picks WHERE job_id=? AND movie_id=?", (job.id, int(movie_id))).fetchone()
+        out = {k: v for k, v in z.items() if k not in ("x_a", "y_a", "movie")}
+        out["xy_a"] = np.stack([z["x_a"], z["y_a"]], 1)
+        out["threshold"] = np.float32(th[0] if th else np.nan)
+        return out
 
     def pick_table(self, job) -> pd.DataFrame:
         job = self.job(job)
@@ -484,42 +495,50 @@ class Project:
 
     # ------------------------------------------------------------------ particles (Extract jobs)
     def add_particles(self, job: Job, movie_id: int, xy_a: np.ndarray, images: np.ndarray, apix: float,
-                      columns: dict | None = None, dtype: str = "float32") -> np.ndarray:
-        """Particles of one micrograph: positions (n, 2) in A, images (n, b, b) (white protein), extra columns
-        (pick score, ...), stored as float32 or float16. Returns their uids."""
+                      columns: dict | None = None, dtype: str = "float32", uid: np.ndarray | None = None,
+                      pick_xy_a: np.ndarray | None = None) -> np.ndarray:
+        """Particles of one micrograph: centres (n, 2) in A, images (n, b, b) (white protein), extra numeric columns
+        (pick score, ...), stored as float32 or float16. uid / pick_xy_a: identity of re-centred particles (the
+        uid and key of their original pick; default: from xy_a). Returns their uids."""
         mv = self.movie(movie_id)
-        uid = particle_uids(mv["fingerprint"], xy_a)
+        xy = np.asarray(xy_a, np.float64).reshape(-1, 2)
+        pick = xy if pick_xy_a is None else np.asarray(pick_xy_a, np.float64).reshape(-1, 2)
+        uid = particle_uids(mv["fingerprint"], pick) if uid is None else np.asarray(uid, np.int64)
         stack = job.per_movie("Particles", mv, ".mrcs")
         self.write_mrc(stack, images, apix, dtype)
-        table = job.per_movie("Particles", mv, ".npz")
-        _atomic(table, lambda t: np.savez(t, uid=uid, key=particle_keys(mv["stem"], xy_a), x_a=np.asarray(xy_a)[:, 0],
-                                          y_a=np.asarray(xy_a)[:, 1],
-                                          **{k: np.asarray(v) for k, v in (columns or {}).items()}))
+        cols = dict(uid=uid, x_a=xy[:, 0].astype(np.float32), y_a=xy[:, 1].astype(np.float32),
+                    slice=np.arange(len(uid), dtype=np.uint32))
+        if pick_xy_a is not None:                    # re-centred: offset from the pick (key = stem:pick position)
+            cols.update(dx_a=(xy[:, 0] - pick[:, 0]).astype(np.float32), dy_a=(xy[:, 1] - pick[:, 1]).astype(np.float32))
+        cols.update({k: np.asarray(v, np.float32) for k, v in (columns or {}).items()})
+        self.table(job, "particles").append(movie_id, cols)
         with self._db() as c:
             c.execute("INSERT OR REPLACE INTO chunks VALUES (?,?,?,?,?,?,?,?)",
-                      (job.id, int(movie_id), self.rel(table), self.rel(stack), len(uid), int(images.shape[-1]),
+                      (job.id, int(movie_id), "particles", self.rel(stack), len(uid), int(images.shape[-1]),
                        apix, time.time()))
         return uid
 
-    def particles(self, job) -> pd.DataFrame:
-        """All particles of an Extract job, one row each: uid, key, position, extra columns, stack + slice, and the
-        CTF of its micrograph (from the MotionCtf job the extraction used)."""
+    def particles(self, job, columns=None, movies=None) -> pd.DataFrame:
+        """Particles of an Extract job (all, or of some movie ids), one row each: the job's per-particle columns
+        (uid, x_a, y_a, slice, score, ...) and, joined from the micrograph and movie tables: movie_id, stem,
+        stack (path of its .mrcs), box, apix, CTF, micrograph path / pixel size / shape. key: particle_keys()."""
         job = self.job(job)
+        t = self.table(job, "particles").read(columns, movies)
+        df = pd.DataFrame({k: v for k, v in t.items() if k != "movie"})
+        df["movie_id"] = t["movie"].astype(np.int64)
         with self._db() as c:
-            ch = pd.read_sql("SELECT * FROM chunks WHERE job_id=? ORDER BY movie_id", c, params=(job.id,))
-        mics = self.micrographs(job.params["micrographs"]).set_index("movie_id")
-        parts = []
-        for r in ch.itertuples():
-            z = np.load(self.abs(r.table_path))
-            df = pd.DataFrame({k: z[k] for k in z.files})
-            df["movie_id"], df["stack"], df["slice"] = r.movie_id, r.stack_path, np.arange(len(df))
-            df["box"], df["apix"] = r.box, r.apix
-            m = mics.loc[r.movie_id]
-            for k in ("defocus_u", "defocus_v", "defocus_angle", "ctf_fit_res", "stem"):
-                df[k] = m[k]
-            df["mic_path"], df["mic_apix"], df["mic_ny"], df["mic_nx"] = m["path"], m["apix"], m["ny"], m["nx"]
-            parts.append(df)
-        return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+            ch = pd.read_sql("SELECT movie_id, stack_path AS stack, box, apix FROM chunks WHERE job_id=?", c,
+                             params=(job.id,))
+        mics = self.micrographs(job.params["micrographs"])[
+            ["movie_id", "stem", "subdir", "defocus_u", "defocus_v", "defocus_angle", "ctf_fit_res", "path", "apix",
+             "ny", "nx"]].rename(columns=dict(path="mic_path", apix="mic_apix", ny="mic_ny", nx="mic_nx"))
+        return df.merge(ch, on="movie_id", how="left").merge(mics, on="movie_id", how="left")
+
+    def particle_keys(self, df: pd.DataFrame) -> np.ndarray:
+        """Keys (stem:x:y of the original pick) of particle rows from particles()."""
+        x = df["x_a"].to_numpy(np.float64) - (df["dx_a"].to_numpy(np.float64) if "dx_a" in df else 0)
+        y = df["y_a"].to_numpy(np.float64) - (df["dy_a"].to_numpy(np.float64) if "dy_a" in df else 0)
+        return np.array([f"{s}:{a:.1f}:{b:.1f}" for s, a, b in zip(df["stem"], np.round(x, 1), np.round(y, 1))])
 
     # ------------------------------------------------------------------ selections (Select jobs)
     def select(self, source, uids, label: str = "", note: str = "", inputs=()) -> Job:
@@ -528,34 +547,36 @@ class Project:
         uids = np.unique(np.asarray(uids, dtype=np.int64))
         job = self.new_job("Select", dict(source=self.job(source).id, particles=len(uids), note=note),
                            [source, *inputs], label)
-        _save_table(os.path.join(job.path, "particles.npz"), pd.DataFrame(dict(uid=uids)))
+        src = self.job(source)
+        name = "particles" if src.type in ("Extract", "Select") else None
+        if name is None:
+            src = self.job(self.ancestor(src, "Extract"))
+        p = self.table(src, "particles").read(["uid"])
+        mv = np.zeros(len(uids), np.uint32)
+        pos = np.searchsorted(np.sort(p["uid"]), uids)
+        o = np.argsort(p["uid"])
+        ok = pos < len(o)
+        hit = ok.copy()
+        hit[ok] = p["uid"][o[pos[ok]]] == uids[ok]
+        mv[hit] = p["movie"][o[pos[hit]]]           # grouped by micrograph like every particle table
+        self.table(job, "particles").write(dict(uid=uids), mv)
         self.set_status(job, "finished", dict(particles=len(uids), source=self.job(source).name, note=note))
         return job
 
     def selected_uids(self, ref) -> np.ndarray:
-        return np.load(os.path.join(self.job(ref).path, "particles.npz"))["uid"]
+        return self.table(ref, "particles").read(["uid"])["uid"]
 
     def consolidate(self, job) -> str:
-        """One table for the whole job in its folder (micrographs.npz / picks.npz / particles.npz): fast to load at
-        any size, and what other programs or agents read without the catalog."""
+        """End of a job: per-particle tables merge their remaining staged micrographs into shards; a MotionCtf job
+        writes micrographs.npz (one row per micrograph: what other programs or agents read without the catalog)."""
         job = self.job(job)
         if job.type == "MotionCtf":
-            df, name = self.micrographs(job).drop(columns=["meta"]), "micrographs.npz"
-        elif job.type == "Pick":
-            rows = []
-            for r in self.pick_table(job).itertuples():
-                z = self.picks(job, r.movie_id)
-                k = z["keep"]
-                rows.append(pd.DataFrame(dict(movie_id=r.movie_id, stem=r.stem, x_a=z["xy_a"][k, 0], y_a=z["xy_a"][k, 1],
-                                              score=z["score"][k])))
-            df, name = (pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()), "picks.npz"
-        elif job.type == "Extract":
-            df, name = self.particles(job), "particles.npz"
-        else:
-            raise ValueError(job.type)
-        path = os.path.join(job.path, name)
-        _save_table(path, df)
-        return path
+            path = os.path.join(job.path, "micrographs.npz")
+            _save_table(path, self.micrographs(job).drop(columns=["meta"]))
+            return path
+        name = dict(Pick="picks", Extract="particles")[job.type]
+        self.table(job, name).close()
+        return os.path.join(job.path, name)
 
     # ------------------------------------------------------------------ overview (for people and agents)
     def summary(self) -> dict:
@@ -586,16 +607,26 @@ class Project:
     def find(self, key_or_uid) -> dict:
         """Everything about one particle, by key (stem:x:y) or uid: every extraction and selection holding it."""
         hits, sel = [], []
-        for r in self.jobs().itertuples():
-            if r.type == "Extract":
-                p = self.particles(int(r.id))
-                if not len(p):
-                    continue
-                h = p[p["key"] == key_or_uid] if isinstance(key_or_uid, str) else p[p["uid"] == int(key_or_uid)]
-                hits += [dict(row, job=r.name) for row in h.to_dict("records")]
+        if isinstance(key_or_uid, str):                  # key -> its movie, then the uid of that pick
+            stem, x, y = parse_key(key_or_uid)
+            mv = self.movies()
+            mv = mv[mv["stem"] == stem]
+            if not len(mv):
+                return {}
+            uid = int(particle_uids(mv["fingerprint"].iloc[0], np.array([[x, y]]))[0])
+        else:
+            uid = int(key_or_uid)
+        for r in self.jobs("Extract").itertuples():
+            t = self.table(int(r.id), "particles")
+            u = t.read(["uid"])
+            i = np.flatnonzero(u["uid"] == uid)
+            if len(i):
+                p = self.particles(int(r.id), movies=[int(u["movie"][i[0]])])
+                p = p[p["uid"] == uid]
+                p["key"] = self.particle_keys(p)
+                hits += [dict(row, job=r.name) for row in p.to_dict("records")]
         if not hits:
             return {}
-        uid = int(hits[0]["uid"])
         for r in self.jobs("Select").itertuples():
             if uid in set(self.selected_uids(int(r.id)).tolist()):
                 sel.append(r.name)
