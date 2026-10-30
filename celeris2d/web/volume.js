@@ -121,8 +121,8 @@
       redraw();
     });
     canvas.addEventListener('pointerup', () => { drag = null; });
-    canvas.addEventListener('wheel', e => { e.preventDefault(); st.dist = Math.min(6, Math.max(0.6, st.dist * Math.exp(e.deltaY * 0.001))); redraw(); }, {passive: false});
-    canvas.addEventListener('dblclick', () => { st.q = qaxis([1, 0, 0], -0.35); st.dist = 1.9; redraw(); });
+    canvas.addEventListener('wheel', e => { e.preventDefault(); st.dist = Math.min(6, Math.max(0.6, st.dist * Math.exp(e.deltaY * 0.001))); st.zoomed = true; redraw(); }, {passive: false});
+    canvas.addEventListener('dblclick', () => { st.q = qaxis([1, 0, 0], -0.35); st.dist = st.home || 1.9; st.zoomed = false; redraw(); });
     new ResizeObserver(redraw).observe(canvas);
     return {
       async load(url) {
@@ -136,7 +136,9 @@
         if (st.texC) gl.deleteTexture(st.texC);
         st.texV = tex(0, new Uint8Array(ab, 4 + n, size), head.shape);
         st.texC = head.color ? tex(1, new Uint8Array(ab, 4 + n + size, size), head.shape) : null;
+        if (!st.head && head.extent) st.home = Math.min(1.9, Math.max(0.6, 1.25 * head.extent));   // frame the particle
         st.head = head;
+        if (st.home && !st.zoomed) st.dist = st.home;
         redraw();
         return head;
       },

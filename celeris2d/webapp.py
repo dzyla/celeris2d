@@ -936,11 +936,12 @@ def create(workdir, project_dir=None):
         movie_files = sorted(prj.rel(os.path.join(movies, f)) for f in os.listdir(movies)
                              if f.endswith(".png") and ".light." not in f) if os.path.isdir(movies) else []
         run = proj_state["runs"].get(j.name)
-        return dict(name=j.name, type=j.type, status=j.status, params=j.params, summary=prj.summary_of(j),
+        from .figjson import _clean                  # summaries may hold NaN (FSC past the half maps): JSON null
+        return _clean(dict(name=j.name, type=j.type, status=j.status, params=j.params, summary=prj.summary_of(j),
                     lineage=prj.lineage(j), dependents=prj.dependents(j), files=files,
                     movie_figures=len(movie_files), movie_files=movie_files, final=j.id in prj.final_marks(),
                     log=prj.rel(j.log_path) if os.path.exists(j.log_path) else None,
-                    error=run["error"] if run else None)
+                    error=run["error"] if run else None))
 
     @app.get("/api/project/log")
     def project_log(job: str, offset: int = 0):
@@ -1181,7 +1182,7 @@ def create(workdir, project_dir=None):
         return _views_cache[key]
 
     @app.get("/api/project/volume")
-    def project_volume(path: str, size: int = 160, color: str = ""):
+    def project_volume(path: str, size: int = 160, color: str = "", dust: int = 1, smooth: int = -1):
         """A map of the project for the 3D viewer: binary (JSON header length, header, uint8 voxels[, uint8 colour
         volume]) - see gallery.volume_payload."""
         from .gallery import volume_payload
@@ -1194,7 +1195,8 @@ def create(workdir, project_dir=None):
             cfull = os.path.realpath(os.path.join(prj.root, color))
             if not cfull.startswith(os.path.realpath(prj.root) + os.sep) or not os.path.isfile(cfull):
                 raise HTTPException(404, color)
-        return Response(volume_payload(full, max(48, min(int(size), 256)), cfull),
+        return Response(volume_payload(full, max(48, min(int(size), 256)), cfull, bool(dust),
+                                       None if smooth < 0 else bool(smooth)),
                         media_type="application/octet-stream", headers={"Cache-Control": "no-cache"})
 
     def _start_job(make, what):

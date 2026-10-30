@@ -427,6 +427,8 @@ async function openViewer(st, j, maps, localres) {
       <div><label for="v3m">Map</label><select id="v3m">${maps.map(m => `<option value="${esc(m.path)}">${esc(m.path.split('/').pop())}</option>`).join('')}</select></div>
       <div><label for="v3l">Threshold <span id="v3lv" class="lvl"></span></label><input type="range" id="v3l" min="0" max="1000" value="500">
         <div class="row" id="v3p" style="margin-top:6px"></div></div>
+      <div><label class="tog" style="margin:0" title="small isolated pieces at the clean level (noise) are left out"><input type="checkbox" id="v3d" checked> Hide dust</label>
+        <label class="tog" style="margin:6px 0 0" title="a Gaussian of one displayed voxel, for the view only: on by default for rough (sharpened) maps"><input type="checkbox" id="v3g"> Smooth <span class="muted" id="v3gs"></span></label></div>
       ${localres ? `<div><label class="tog" style="margin:0"><input type="checkbox" id="v3c2"> Colour by local resolution</label><div id="v3r" style="display:none;margin-top:6px"><div class="ramp"></div><div class="row muted" style="justify-content:space-between;font-size:11.5px"><span id="v3r0"></span><span id="v3r1"></span></div></div></div>` : ''}
       <div><label>View along</label><div class="row"><button data-ax="z">z</button><button data-ax="y">y</button><button data-ax="x">x</button></div></div>
       <div class="muted" id="v3i" style="font-size:12px"></div>
@@ -434,23 +436,30 @@ async function openViewer(st, j, maps, localres) {
     </div></div>`;
   try { viewer = CelerisVolume.create($('#v3c'), {bg: '#000000'}); }
   catch (e) { st.innerHTML = `<div class="launch err">${esc(e.message)}</div>`; return; }
-  let head = null;
+  let head = null, smoothChanged = false;
   const lv = () => head ? head.min + (head.max - head.min) * $('#v3l').value / 1000 : 0;
   const setLv = v => { $('#v3l').value = Math.round(1000 * (v - head.min) / (head.max - head.min)); viewer.setLevel(v); $('#v3lv').textContent = (+v.toPrecision(3)); };
   const loadMap = async () => {
     $('#v3i').textContent = 'loading…';
     const path = $('#v3m').value;
     const sameJob = localres && path.split('/').slice(0, 2).join('/') === localres.path.split('/').slice(0, 2).join('/');
-    try { head = await viewer.load(`/api/project/volume?path=${encodeURIComponent(path)}${sameJob ? '&color=' + encodeURIComponent(localres.path) : ''}`); }
+    const same = head && head.name === path.split('/').pop();
+    const keep = same && !smoothChanged ? lv() : null;     // dust toggled: same map, same level
+    const sm = same ? ($('#v3g').checked ? 1 : 0) : -1;     // a new map: smoothing chosen by the server
+    smoothChanged = false;
+    try { head = await viewer.load(`/api/project/volume?path=${encodeURIComponent(path)}&dust=${$('#v3d').checked ? 1 : 0}&smooth=${sm}${sameJob ? '&color=' + encodeURIComponent(localres.path) : ''}`); }
     catch (e) { $('#v3i').textContent = e.message; return; }
-    $('#v3p').innerHTML = Object.entries(head.levels).map(([k, v]) => `<button data-lv="${v}" title="${k.endsWith('σ') ? k + ' above the noise at the box edge' : k + ' of the strongest density'}">${k}</button>`).join('');
+    $('#v3p').innerHTML = Object.entries(head.levels).map(([k, v]) => `<button data-lv="${v}" title="${k === 'clean' ? 'the level where the map is one connected body (the default)' : k.endsWith('σ') ? k + ' above the noise at the box edge' : k + ' of the strongest density'}">${k}</button>`).join('');
     document.querySelectorAll('[data-lv]').forEach(b => b.onclick = () => setLv(+b.dataset.lv));
-    setLv(head.level);
+    setLv(keep ?? head.level);
+    $('#v3g').checked = !!head.smooth_a; $('#v3gs').textContent = head.smooth_a ? `(${head.smooth_a} Å)` : '';
     $('#v3i').innerHTML = `${esc(head.name)}<br>${head.box} px at ${head.apix_file.toFixed(3)} Å, shown at ${head.shape[0]} px`;
     if (head.color && $('#v3r0')) { $('#v3r0').textContent = head.color.min.toFixed(2) + ' Å'; $('#v3r1').textContent = head.color.max.toFixed(2) + ' Å'; }
   };
   $('#v3l').oninput = () => { viewer.setLevel(lv()); $('#v3lv').textContent = +lv().toPrecision(3); };
-  $('#v3m').onchange = loadMap;
+  $('#v3m').onchange = () => { head = null; loadMap(); };
+  $('#v3d').onchange = loadMap;
+  $('#v3g').onchange = () => { smoothChanged = true; loadMap(); };
   if ($('#v3c2')) $('#v3c2').onchange = e => { viewer.setColor(e.target.checked); $('#v3r').style.display = e.target.checked ? '' : 'none'; };
   document.querySelectorAll('[data-ax]').forEach(b => b.onclick = () => viewer.view(b.dataset.ax));
   $('#v3s').onclick = () => { const a = document.createElement('a'); a.href = viewer.snapshot(); a.download = j.name + '_3d.png'; a.click(); };

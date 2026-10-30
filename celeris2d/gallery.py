@@ -8,7 +8,8 @@ classes of its source and which it keeps.
 map_views(path): projections and central sections of a map, as pictures for the job page.
 
 volume_payload(path, size, color): a map downsampled to <= size^3 as 8-bit voxels for the browser's raymarcher -
-bytes: uint32 header length, JSON header (shape, apix, value range, suggested isosurface levels, colour range),
+bytes: uint32 header length, JSON header (shape, apix, value range, suggested isosurface levels - "clean" the
+default, _clean_level - colour range), with dust (small isolated pieces of noise at that level) hidden unless dust=False;
 the voxels (z, y, x order, uint8), then optionally a colour volume (e.g. local resolution) on the same grid.
 """
 from __future__ import annotations
@@ -127,11 +128,62 @@ def _downsample(v: np.ndarray, size: int) -> np.ndarray:
     return out[0, 0].numpy()
 
 
-def volume_payload(path: str, size: int = 160, color: str | None = None) -> bytes:
+def _pieces(m: np.ndarray):
+    from scipy import ndimage
+    lab, k = ndimage.label(m)
+    return lab, (np.bincount(lab.ravel())[1:] if k else np.zeros(0, int))
+
+
+def _clean_level(v: np.ndarray, default: float, floor: float, peak: float):
+    """The isosurface level that shows the map in one piece: the usual default (5 sigma, 20 % of the peak) when its
+    surface is >= 98 % one connected body, else the level where the largest body holds the largest share of the
+    surface (a sharpened map: INX-6 at 6 % of the peak, the volume of the unsharpened map at 20 %, instead of 1,600
+    speckles at 20 %). Also the region to keep when dust is hidden: pieces >= 1 % of the largest, dilated by 2
+    voxels (so lowering the level a little still shows their edges), less the small pieces."""
+    from scipy import ndimage
+
+    def share(t):
+        lab, sz = _pieces(v >= t)
+        return (float(sz.max() / sz.sum()) if sz.size else 0.0), lab, sz
+    best, lab, sz = share(default)
+    level = default
+    if best < 0.98:
+        for t in np.linspace(floor, floor + 0.5 * (peak - floor), 24):
+            f, l2, s2 = share(t)
+            if f > best + 1e-3:
+                best, level, lab, sz = f, float(t), l2, s2
+    if not sz.size:
+        return level, np.ones(v.shape, bool)
+    keep = np.isin(lab, np.flatnonzero(sz >= max(0.01 * sz.max(), 8)) + 1)
+    body = ndimage.binary_dilation(keep, iterations=2) & ~((lab > 0) & ~keep)    # without the small pieces themselves
+    return level, body
+
+
+def _roughness(v: np.ndarray, level: float) -> float:
+    """Surface area / volume^(2/3) of the large pieces above `level` (voxel faces): ~20 for a refined map on the
+    viewer's grid, ~80 for an over-sharpened one (INX-6, B -220), whose surface is noise at any level."""
+    lab, sz = _pieces(v >= level)
+    if not sz.size:
+        return 0.0
+    m = np.isin(lab, np.flatnonzero(sz >= 0.01 * sz.max()) + 1).astype(np.int8)
+    area = sum(np.count_nonzero(np.diff(m, axis=a)) for a in range(3))
+    return float(area / max(m.sum(), 1) ** (2 / 3))
+
+
+def volume_payload(path: str, size: int = 160, color: str | None = None, dust: bool = True,
+                   smooth: bool | None = None) -> bytes:
+    """smooth: Gaussian of one display voxel, for the view only (None: when the surface is rough, _roughness > 40 -
+    sharpened maps; the INX-6 sharpened map goes from 1,600 pieces to one)."""
+    from scipy import ndimage
     v, apix = _read_mrc(path)
     n0 = max(v.shape)
     v = _downsample(v, size)
     apix_d = apix * n0 / max(v.shape)
+    if smooth is None:
+        pk = float(np.percentile(v, 99.9))
+        smooth = _roughness(v, 0.2 * pk) > 40 if pk > 0 else False
+    if smooth:
+        v = ndimage.gaussian_filter(v, 1.0)
     lo = float(min(np.percentile(v, 1), 0.0))
     hi = float(np.percentile(v, 99.995))
     q = np.clip((v - lo) / max(hi - lo, 1e-12), 0, 1)
@@ -145,12 +197,20 @@ def volume_payload(path: str, size: int = 160, color: str | None = None) -> byte
     if sd > 1e-4 * max(abs(peak), 1e-12):
         mu = float(edge.mean())
         levels = {f"{k}σ": mu + k * sd for k in (3, 5, 8)}
-        default = "5σ"
+        default, floor = "5σ", mu + 3 * sd
     else:
         levels = {f"{int(f * 100)}%": f * peak for f in (0.1, 0.2, 0.35)}
-        default = "20%"
+        default, floor = "20%", 0.02 * peak
+    level, body = _clean_level(v, levels[default], floor, peak)
+    levels = {"clean": level, **levels}
     head = dict(shape=list(data.shape), apix=apix_d, apix_file=apix, box=n0, min=lo, max=hi, levels=levels,
-                level=levels[default], name=os.path.basename(path))
+                level=level, name=os.path.basename(path), dust=bool(dust), smooth_a=round(apix_d, 2) if smooth else 0)
+    if dust:                                    # hide dust: only the density near the surface's large pieces
+        data[~body] = 0
+    on = np.argwhere(body & (v >= level))       # the particle's radius / half the box: the viewer's first zoom
+    if len(on):
+        c = (np.array(v.shape) - 1) / 2
+        head["extent"] = round(float(np.sqrt((((on - c) / (max(v.shape) / 2)) ** 2).sum(1)).max()), 3)
     payload = [data.tobytes(order="C")]
     if color:
         c, _ = _read_mrc(color)
