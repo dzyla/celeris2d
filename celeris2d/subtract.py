@@ -24,7 +24,8 @@ the particle's uid (lineage, selections, its half: all copies of a particle stay
 inflated); the table adds `copy` (0..S-1) and (uid, copy) is the row's key (jobs.match_rows). Copies share the
 particle's centre, so duplicates are judged per uid and a particle's copies are kept or dropped together. Poses of
 expanded particles must come from the Subtract job itself (or a refinement of it): a poses job with one pose per uid
-cannot tell the copies apart (refused).
+cannot tell the copies apart (refused). Expansion without new images is the SymExpand job (symexpand.py): Subtract
+takes it as poses and subtracts per copy, LocalRefine refines its copies on the original images.
 
 LocalRefine (a 3D job): local refinement of the region in a focus mask, in the frame centred on the mask's centre
 (the reference map and the mask are moved by -c, each pose's shift by +(A c)_xy), so orientations turn about the
@@ -49,7 +50,7 @@ import numpy as np
 import torch
 
 from .jobspec import params_of, settings_of
-from .project import PARTICLE_JOBS, Job, Project, logged
+from .project import CLASS_JOBS, PARTICLE_JOBS, Job, Project, logged
 
 
 # --------------------------------------------------------------------------------------------- geometry
@@ -93,7 +94,7 @@ def _refinement_halves(project: Project, rj: Job, cls: int = 0):
     refinement: Refine3D / LocalRefine, or class cls (1-based) of a HeteroRefine."""
     import json
     import mrcfile
-    pre = f"class{cls:02d}_" if rj.type == "HeteroRefine" else ""
+    pre = f"class{cls:02d}_" if rj.type in CLASS_JOBS else ""
     out = []
     for name in ("half1_unfil.mrc", "half2_unfil.mrc", "mask.mrc"):
         p = rj.find(pre + name)
@@ -103,7 +104,7 @@ def _refinement_halves(project: Project, rj: Job, cls: int = 0):
             out.append(np.asarray(f.data, np.float32))
             apix = float(f.voxel_size.x)
     summ = project.summary_of(rj)
-    if rj.type == "HeteroRefine":
+    if rj.type in CLASS_JOBS:
         d = json.load(open(rj.find(f"class{cls:02d}_fsc.json")))
         fsc = np.asarray([0.0 if x is None else x for x in d["curves"]["corrected"]], np.float64)
         box_a = float(d["box_a"])
@@ -147,13 +148,17 @@ class SubtractSettings:
 
 
 def subtract_job(project: Project, particles, poses, mask, s: SubtractSettings, label: str = "") -> Job:
-    """particles: an Extract / Polish / CtfRefine / Select / Subtract job; poses: the refinement whose poses and map
-    are used (Refine3D, HeteroRefine, LocalRefine); mask: a MaskCreate job, the region to keep."""
+    """particles: an Extract / Polish / CtfRefine / Select / Subtract / SymExpand job; poses: the job whose poses and
+    map are used (Refine3D, HeteroRefine, Class3D, LocalRefine; or a SymExpand job: every copy, subtracted per copy);
+    mask: a MaskCreate job, the region to keep."""
     p, q, m = project.job(particles), project.job(poses), project.job(mask)
-    if q.type not in ("Refine3D", "HeteroRefine", "LocalRefine"):
-        raise ValueError(f"{q.name}: the poses and map come from a Refine3D, HeteroRefine or LocalRefine job")
+    if q.type not in ("Refine3D", "HeteroRefine", "Class3D", "LocalRefine", "SymExpand"):
+        raise ValueError(f"{q.name}: the poses and map come from a Refine3D, HeteroRefine, Class3D, LocalRefine or "
+                         f"SymExpand job")
     if m.type != "MaskCreate":
         raise ValueError(f"{m.name} is not a MaskCreate job")
+    if q.type == "SymExpand" and s.sym_expand.upper() != "C1":
+        raise ValueError(f"{q.name} is already symmetry-expanded ({q.params.get('sym')}): set sym_expand to C1")
     ex = p if p.type in PARTICLE_JOBS else project.ancestor(p, PARTICLE_JOBS)
     if ex is None:
         raise ValueError(f"{p.name} holds no particles")
@@ -165,10 +170,11 @@ def subtract_job(project: Project, particles, poses, mask, s: SubtractSettings, 
     keep = {k: e[k] for k in ("picks", "micrographs", "box", "out_apix", "box_a_used", "particle_a", "dark") if k in e}
     if s.box:
         keep.update(box=s.box, box_a_used=round(s.box * float(e.get("out_apix", 1.0)), 2))
-    tag = ("sub" if s.subtract else "rebox") + (f"_{s.sym_expand.upper()}x" if s.sym_expand.upper() != "C1" else "") \
-        + (f"_{s.box}px" if s.box else "")
+    xs = str(q.params.get("sym")).upper() if q.type == "SymExpand" else s.sym_expand.upper()
+    tag = ("sub" if s.subtract else "rebox") + (f"_{xs}x" if xs != "C1" else "") + (f"_{s.box}px" if s.box else "")
     return project.new_job("Subtract", dict(params_of(s), particles=p.id, poses=q.id, mask=m.id, source=ex.id, **keep),
-                           [p, q, m], label or f"{tag}_mask{m.id:03d}_on{q.id:03d}")
+                           [x for i, x in enumerate([p, q, m]) if x.id not in [y.id for y in [p, q, m][:i]]],
+                           label or f"{tag}_mask{m.id:03d}_on{q.id:03d}")
 
 
 def _band_volumes(project: Project, rj: Job, cls_list, keep_mask_ref, b: int, apix: float, res_a: float | None,
@@ -203,12 +209,15 @@ def _band_volumes(project: Project, rj: Job, cls_list, keep_mask_ref, b: int, ap
 
 
 def _rows(project: Project, job: Job):
-    """The particles to subtract, one row each (the particle job's, those with poses in the refinement): DataFrame
-    (stack, slice, centre, CTF, uid, copy ...) and their poses: A (n, 3, 3), t (n, 2) A relative to their box centre,
-    half (n,), cls (n,) 1-based (0: not a HeteroRefine)."""
+    """The images to subtract and the rows made from them. Returns P (DataFrame, one row per image: stack, slice,
+    centre, CTF, uid ...; sorted by micrograph and stack slice) and per row (the rows of an image next to each other, in
+    image order): img (index into P), A (n, 3, 3), t (n, 2) A relative to the image's box centre, half, cls (1-based;
+    0: not a class job), fit, copy (or None). One row per image, except for poses with several copies per particle
+    (a SymExpand job): a row per copy, the image shared."""
     from .abinitio import euler_to_matrix
-    from .jobs import _centres, match_rows
+    from .jobs import _centres, map_job, match_rows
     pj, qj = project.job(job.params["particles"]), project.job(job.params["poses"])
+    rj = map_job(project, qj)
     ex = project.job(job.params["source"])
     P = project.particles(ex)
     if pj.type not in PARTICLE_JOBS:
@@ -218,24 +227,41 @@ def _rows(project: Project, job: Job):
     if "half" not in poses:
         raise ValueError(f"{qj.name} has no half sets (made by an older version: run the refinement again)")
     cp = P["copy"].to_numpy(np.int64) if "copy" in P else None
-    rows = match_rows(poses["uid"], poses.get("copy"), P["uid"].to_numpy(np.int64), cp)
-    ok = rows >= 0
+    pc = poses.get("copy")
+    pu = np.asarray(poses["uid"], np.int64)
+    if cp is None and pc is not None and (np.asarray(pc) > 0).any():      # expanded poses: every copy of an image
+        o = np.lexsort((np.asarray(pc, np.int64), pu))
+        uid = P["uid"].to_numpy(np.int64)
+        lo, hi = np.searchsorted(pu[o], uid, "left"), np.searchsorted(pu[o], uid, "right")
+        ok = hi > lo
+        lo, cnt = lo[ok], (hi - lo)[ok]
+        img = np.repeat(np.arange(len(lo)), cnt)
+        r = o[np.repeat(lo, cnt) + np.arange(len(img)) - np.repeat(np.cumsum(cnt) - cnt, cnt)]
+        copy = np.asarray(pc, np.int64)[r]
+    else:
+        rows = match_rows(pu, pc, P["uid"].to_numpy(np.int64), cp)
+        ok = rows >= 0
+        r = rows[ok]
+        img = np.arange(len(r))
+        copy = None if cp is None else cp[ok]
     if not ok.any():
         raise ValueError(f"none of the particles of {pj.name} have poses in {qj.name}")
     P = P[ok].reset_index(drop=True)
-    r = rows[ok]
-    cp = None if cp is None else cp[ok]
-    c_box = P[["x_a", "y_a"]].to_numpy(np.float64)
-    c_al = _centres(project, project.aligned_particles(qj), poses["uid"][r], poses["copy"][r] if "copy" in poses else None) \
+    c_box = P[["x_a", "y_a"]].to_numpy(np.float64)[img]
+    c_al = _centres(project, project.aligned_particles(qj), pu[r], None if pc is None else np.asarray(pc)[r]) \
         + np.stack([poses["shift_x_a"][r], poses["shift_y_a"][r]], 1)
     A = euler_to_matrix(torch.as_tensor(poses["rot"][r]), torch.as_tensor(poses["tilt"][r]),
                         torch.as_tensor(poses["psi"][r])).float()
-    cls = (poses["cls"][r].astype(np.int64) + 1) if (qj.type == "HeteroRefine" and "cls" in poses) else np.zeros(len(r), np.int64)
+    cls = (poses["cls"][r].astype(np.int64) + 1) if (rj.type in CLASS_JOBS and "cls" in poses) else np.zeros(len(r), np.int64)
     fit = poses["fit"][r].astype(np.float32) if "fit" in poses else np.ones(len(r), np.float32)
     o = np.lexsort((P["slice"].to_numpy(), P["movie_id"].to_numpy()))              # by micrograph, then stack slice
     P = P.iloc[o].reset_index(drop=True)
-    return P, A[torch.as_tensor(o)], (c_al - c_box)[o].astype(np.float32), poses["half"][r][o].astype(np.int64), \
-        cls[o], fit[o]
+    inv = np.empty(len(o), np.int64)
+    inv[o] = np.arange(len(o))
+    img = inv[img]
+    ro = np.argsort(img, kind="stable")                                            # rows follow their images
+    return P, img[ro], A[torch.as_tensor(ro)], (c_al - c_box)[ro].astype(np.float32), \
+        poses["half"][r][ro].astype(np.int64), cls[ro], fit[ro], None if copy is None else copy[ro]
 
 
 @logged
@@ -251,17 +277,16 @@ def run_subtract(project: Project, job, log=print) -> dict:
     t_start = time.time()
     qj, mj = project.job(job.params["poses"]), project.job(job.params["mask"])
     rj = map_job(project, qj)
-    P, A0, t0_, half0, cls0, fit0 = _rows(project, job)
-    n0 = len(P)
+    P, img0, A0, t0_, half0, cls0, fit0, copy0 = _rows(project, job)
+    n0 = len(P)                                           # images read (particles, or images of expanded particles)
     b = int(P["box"].iloc[0])
     apix = float(P["apix"].iloc[0])
     if (P["box"] != b).any():
         raise ValueError("particles of different box sizes")
     box_a = b * apix
     nb_out = int(s.box or b)
-    copies_in = "copy" in P and (P["copy"] > 0).any()
-    ops = ab.symmetry_ops(s.sym_expand).float()
-    S = len(ops)
+    copies_in = copy0 is not None and bool((copy0 > 0).any())
+    S = len(ab.symmetry_ops(s.sym_expand))
     if S > 1 and copies_in:
         raise ValueError(f"{project.job(job.params['particles']).name} is already symmetry-expanded")
     dev = torch.device(pick_devices(s.gpus, 1)[0] if s.gpus != "auto" else
@@ -272,14 +297,18 @@ def run_subtract(project: Project, job, log=print) -> dict:
         n_r, ap_r = f.data.shape[0], float(f.voxel_size.x)
     keep_r = load_mask(project, mj.id, n_r, ap_r)
     c_mask, radius = mask_geometry(keep_r, ap_r)
-    log(f"[subtract] {n0:,} particles of {project.job(job.params['particles']).name} with poses in {qj.name}; mask "
+    log(f"[subtract] {n0:,} images of {project.job(job.params['particles']).name} with poses in {qj.name}; mask "
         f"{mj.name}: centre ({c_mask[0]:.1f}, {c_mask[1]:.1f}, {c_mask[2]:.1f}) A from the map centre, radius "
-        f"{radius:.0f} A; {S} cop{'y' if S == 1 else 'ies'} each; box {b} -> {nb_out} px at {apix:.3f} A")
-    # expansion: row i*S + k = particle i at pose A_i S_k
-    A = (A0[:, None] @ ops[None]).reshape(-1, 3, 3)
-    src_i = np.repeat(np.arange(n0), S)
-    copy = np.tile(np.arange(S), n0) if S > 1 else (P["copy"].to_numpy(np.int64) if copies_in else None)
-    t = np.repeat(t0_, S, 0)
+        f"{radius:.0f} A; {len(img0) * S:,} rows ({S} per pose row); box {b} -> {nb_out} px at {apix:.3f} A")
+    # rows: one per (image, copy); own expansion (sym_expand) as SymExpand's: row j S + k = pose row j at A_j S_k
+    if S > 1:
+        from .symexpand import expand_poses
+        A, copy, j_ = expand_poses(A0, s.sym_expand)
+        src_i, t, half_r, cls_r, fit_r = img0[j_], t0_[j_], half0[j_], cls0[j_], fit0[j_]
+    else:
+        A, copy, src_i, t, half_r, cls_r, fit_r = A0, copy0, img0, t0_, half0, cls0, fit0
+    off = np.searchsorted(src_i, np.arange(n0 + 1))                 # rows of image i: off[i]:off[i + 1]
+    S_eff = int(copy.max()) + 1 if copy is not None else 1
     c_t = torch.as_tensor(c_mask, dtype=torch.float32)
     p_off = ((A @ c_t)[:, :2].numpy() + t) if s.recentre else np.zeros_like(t)     # region's centre in the box (A)
     n = len(A)
@@ -296,7 +325,7 @@ def run_subtract(project: Project, job, log=print) -> dict:
     ctf_p[:, 1] = torch.as_tensor(P["defocus_v"].to_numpy(np.float64))
     ctf_p[:, 2] = torch.as_tensor(P["defocus_angle"].to_numpy(np.float64))
     ctf_p[:, 5] = 1.0
-    cls_list = sorted(set(int(c) for c in cls0))
+    cls_list = sorted(set(int(c) for c in cls_r))
     vols, used_res, vinfo = _band_volumes(project, rj, cls_list, mj.id, b, apix, s.res_a or None, dev, log)
     res_hi = max(used_res.values())
     fy, fx = freqs(b, dev)
@@ -325,7 +354,7 @@ def run_subtract(project: Project, job, log=print) -> dict:
         e = torch.exp(-1j * ph * (fx[None, None, :] * tt[:, 0, None, None] + fy[None, :, None] * tt[:, 1, None, None]))
         Mf = torch.empty((len(rr), b, b // 2 + 1), dtype=torch.complex64, device=dev)
         Mo = torch.empty_like(Mf)
-        hh, cc = half0[ii], cls0[ii]
+        hh, cc = half_r[rr], cls_r[rr]
         for k in cls_list:
             for h in (0, 1):
                 sel = np.flatnonzero((hh == h) & (cc == k))
@@ -347,15 +376,15 @@ def run_subtract(project: Project, job, log=print) -> dict:
     for m in rng.permutation(um):
         ii = np.flatnonzero(movies == m)
         cache.append((fft(read_movie(ii)).cpu(), ii))
-        taken += len(ii) * S
+        taken += off[ii[-1] + 1] - off[ii[0]]
         if taken >= 2000:
             break
 
     def subset():
         for Xc, ii in cache:
             X = Xc.to(dev)
-            rr = (ii[:, None] * S + np.arange(S)[None]).reshape(-1)
-            jj = np.repeat(np.arange(len(ii)), S)
+            rr = np.arange(off[ii[0]], off[ii[-1] + 1])
+            jj = src_i[rr] - ii[0]
             for i in range(0, len(rr), bt):
                 r_, j_ = rr[i:i + bt], jj[i:i + bt]
                 Xr = X[torch.as_tensor(j_, device=dev)]
@@ -415,8 +444,8 @@ def run_subtract(project: Project, job, log=print) -> dict:
         if q_ + 2 < len(jobs_):
             fut[q_ + 2] = pool.submit(read_movie, jobs_[q_ + 2][1])
         X = fft(img)
-        rr = (ii[:, None] * S + np.arange(S)[None]).reshape(-1)
-        jj = np.repeat(np.arange(len(ii)), S)
+        rr = np.arange(off[ii[0]], off[ii[-1] + 1])
+        jj = src_i[rr] - ii[0]
         outs = []
         for i in range(0, len(rr), bt):
             r_, j_ = rr[i:i + bt], jj[i:i + bt]
@@ -451,7 +480,7 @@ def run_subtract(project: Project, job, log=print) -> dict:
             pick = pick - P[["dx_a", "dy_a"]].to_numpy(np.float64)[src_i[rr]]
         Ar = A[rr]
         rot, tilt, psi = ab.matrix_to_euler(Ar)
-        cols = dict(score=cc_all[rr], fit=fit0[src_i[rr]], sub_scale=a_all[rr], half=half0[src_i[rr]].astype(np.uint8),
+        cols = dict(score=cc_all[rr], fit=fit_r[rr], sub_scale=a_all[rr], half=half_r[rr].astype(np.uint8),
                     rot=rot.numpy(), tilt=tilt.numpy(), psi=psi.numpy(),
                     shift_x_a=(t[rr, 0] - p_off[rr, 0]).astype(np.float32),
                     shift_y_a=(t[rr, 1] - p_off[rr, 1]).astype(np.float32),
@@ -460,8 +489,8 @@ def run_subtract(project: Project, job, log=print) -> dict:
                     defocus_angle=P["defocus_angle"].to_numpy(np.float32)[src_i[rr]])
         if copy is not None:
             cols["copy"] = copy[rr].astype(np.float32)
-        if rj.type == "HeteroRefine":
-            cols["cls"] = (cls0[src_i[rr]] - 1).astype(np.float32)
+        if rj.type in CLASS_JOBS:
+            cols["cls"] = (cls_r[rr] - 1).astype(np.float32)
         project.add_particles(job, int(m), c_new, imgs, apix, dtype=s.dtype,
                               uid=P["uid"].to_numpy(np.int64)[src_i[rr]], pick_xy_a=pick, columns=cols)
         done += 1
@@ -471,12 +500,14 @@ def run_subtract(project: Project, job, log=print) -> dict:
     project.consolidate(job)
     seconds = time.time() - t_start
     region_a = 2 * radius
+    n_part = len(np.unique(P["uid"].to_numpy()))
+    xs = str(qj.params.get("sym")).upper() if qj.type == "SymExpand" else s.sym_expand.upper()
     # the particle size downstream jobs mask with (job_source: 1.25 x this, within the box): the region when re-centred
     project.update_params(job, particle_a=round(region_a if s.recentre else job.params.get("particle_a", region_a), 1),
                           box=nb_out, box_a_used=round(nb_out * apix, 2))
     figure(job.out("subtract.png"), examples, a_all, g.cpu().numpy(), box_a, k_lo, k_hi, nb_out,
-           f"{job.name} · {n:,} images ({n0:,} particles x {S}) · mask {mj.name} · map {rj.name}")
-    summ = dict(particles=int(n0), images=int(n), copies=int(S), sym_expand=s.sym_expand.upper(), box=int(nb_out),
+           f"{job.name} · {n:,} images ({n_part:,} particles x {S_eff}) · mask {mj.name} · map {rj.name}")
+    summ = dict(particles=int(n_part), images=int(n), copies=int(S_eff), sym_expand=xs, box=int(nb_out),
                 apix=round(apix, 4), box_a=round(nb_out * apix, 1), subtracted=bool(s.subtract),
                 recentred=bool(s.recentre), mask_centre_a=[round(float(x), 1) for x in c_mask],
                 region_diameter_a=round(region_a, 1), map=rj.name, map_res_a=round(res_hi, 2),
@@ -496,7 +527,7 @@ def run_subtract(project: Project, job, log=print) -> dict:
     summ["warnings"] = warnings
     project.set_status(job, "finished", summ)
     release_cache()
-    log(f"[subtract] {job.name}: {n:,} images ({n0:,} particles x {S}), box {nb_out}, scale median "
+    log(f"[subtract] {job.name}: {n:,} images ({n_part:,} particles x {S_eff}), box {nb_out}, scale median "
         f"{summ['scale_median']} ({summ['scale_p05_p95'][0]}-{summ['scale_p05_p95'][1]}), {seconds:.0f} s")
     return summ
 
@@ -590,7 +621,7 @@ def _halves_frame(rj: Job, cls: int, n_big: int, apix: float, c_vox, b: int):
     """A refinement's half maps resampled to apix in an n_big box, moved to the focus frame, cut to b^3 (or None)."""
     import mrcfile
     from .jobs import map_to_box
-    pre = f"class{cls:02d}_" if rj.type == "HeteroRefine" else ""
+    pre = f"class{cls:02d}_" if rj.type in CLASS_JOBS else ""
     out = []
     for h in (1, 2):
         p = rj.find(f"{pre}half{h}_unfil.mrc")
@@ -612,16 +643,20 @@ def run_local_refine(project: Project, job, log=print) -> dict:
     s = settings_of(job, LocalRefineSettings)
     pj, qj, mj = (project.job(job.params[k]) for k in ("particles", "poses", "mask"))
     rj = map_job(project, job.params.get("reference") or qj)
-    src, poses, t_start, half, n_dup, dist = _posed_particles(project, job, pj, qj, (), log)
+    t_wall = time.time()
+    for d_ in range(torch.cuda.device_count() if torch.cuda.is_initialized() else 0):   # (a fresh process: from 0)
+        torch.cuda.reset_peak_memory_stats(d_)
+    # symmetry-expanded poses (a SymExpand job): one row per copy, the image of each row loaded once (img)
+    src, poses, t_start, half, n_dup, dist, img = _posed_particles(project, job, pj, qj, (), log, expand=True)
     max_res = s.max_res_a or 2.0 * src.apix
     ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log, nyquist_margin=1.0, max_c64_gb=1.5)
     clf = ses.clf
     clf._wait_loaded(clf.N)
     dev, b, box_a = clf.dev, clf.bmax, clf.box_a
     apix = box_a / b
-    n = clf.N
+    n = len(img)
     ref_cls = 0
-    if rj.type == "HeteroRefine":
+    if rj.type in CLASS_JOBS:
         cl = poses["cls"] if "cls" in poses else np.zeros(n, int)
         ref_cls = int(np.bincount(cl).argmax()) + 1
     ref, ref_apix, _ = _reference_map(rj, ref_cls)
@@ -638,18 +673,18 @@ def run_local_refine(project: Project, job, log=print) -> dict:
         warnings.append(f"{lost * 100:.1f}% of the focus mask lies outside the {b} px box around its centre")
     init = _roll_crop(vol_big, c_vox, b) * fmask
     rsum = project.summary_of(rj)
-    r_ref = rsum.get("resolution_a", 8.0) if rj.type != "HeteroRefine" else \
+    r_ref = rsum.get("resolution_a", 8.0) if rj.type not in CLASS_JOBS else \
         next((c["resolution_a"] for c in rsum.get("classes", []) if c["cls"] == ref_cls), None) or 8.0
     res0 = s.res_start_a or max(8.0, float(r_ref))
     A = ab.euler_to_matrix(torch.as_tensor(poses["rot"]), torch.as_tensor(poses["tilt"]),
                            torch.as_tensor(poses["psi"])).float()
     # the focus frame: the mask's centre is the origin; its projection is at t + (A c)_xy in each image
     t = torch.as_tensor(t_start).float() + (A @ c_xyz)[:, :2]
-    log(f"[local] {n:,} particles of {pj.name}, poses of {qj.name}, map of {rj.name}; focus mask {mj.name}: centre "
+    log(f"[local] {n:,} particles{f' ({clf.N:,} images)' if n > clf.N else ''} of {pj.name}, poses of {qj.name}, map of {rj.name}; focus mask {mj.name}: centre "
         f"({c_xyz[0]:.1f}, {c_xyz[1]:.1f}, {c_xyz[2]:.1f}) A, radius {radius:.0f} A; box {b} at {apix:.3f} A; "
         f"limits {s.max_angle_deg:g} deg / {s.max_shift_a:g} A; mask centre {float(t.norm(dim=1).median()):.1f} A "
         f"from the box centre (median)")
-    idx = torch.arange(n)
+    idx = torch.as_tensor(img)
     init = init * _scale_to_data(clf, idx, A, t, init, b, max(res0, 10.0))
     # first step: a turn that moves the region's edge by a quarter of the starting resolution (shift steps follow the
     # angular step: one step moves the edge by one shift step)
@@ -714,10 +749,11 @@ def run_local_refine(project: Project, job, log=print) -> dict:
     rot, tilt, psi = ab.matrix_to_euler(A_c)
     fit = ab.refine_particles.last_score.cpu().numpy().astype(np.float32)
     used = (ab.refine_particles.last_weights > 0).numpy()
-    _write_results(project, job, src, np.arange(n), dict(
+    _write_results(project, job, src, img, dict(
         rot=rot.numpy().astype(np.float32), tilt=tilt.numpy().astype(np.float32), psi=psi.numpy().astype(np.float32),
         shift_x_a=t_out[:, 0].numpy().astype(np.float32), shift_y_a=t_out[:, 1].numpy().astype(np.float32),
-        fit=fit, half=ab.refine_particles.last_half.numpy().astype(np.uint8), used=used))
+        fit=fit, half=ab.refine_particles.last_half.numpy().astype(np.uint8), used=used,
+        **({"copy": poses["copy"].astype(np.int16)} if "copy" in poses and "celCopy" not in src.parts else {})))
     from . import diagnostics as dg
     moved = dg.orientation_change(A_start, A_c, "C1")
     dshift = (t.cpu() - t_in).norm(dim=1).numpy()
@@ -732,7 +768,9 @@ def run_local_refine(project: Project, job, log=print) -> dict:
         curves.append(("consensus, focus mask", fsc_cons.cpu().numpy()))
     fsc_figure(job.out("focus_fsc.png"), curves, box_a, apix, tag, heading="Focused region: corrected masked FSC")
     warnings += report.pop("warnings", [])
-    summ = dict(particles=int(n), particles_used=int(used.sum()), duplicates_removed=n_dup,
+    import resource
+    gpu_peak = max(torch.cuda.max_memory_allocated(d_) for d_ in range(torch.cuda.device_count()))
+    summ = dict(particles=int(n), images=int(clf.N), particles_used=int(used.sum()), duplicates_removed=n_dup,
                 duplicate_distance_a=round(dist, 1), sym=s.sym, resolution_a=round(res_loc, 2),
                 resolution_solvent_mask_a=round(res_loc, 2),
                 resolution_unmasked_a=round(ab.resolution_from_fsc(fsc_unm, box_a), 2),
@@ -743,7 +781,10 @@ def run_local_refine(project: Project, job, log=print) -> dict:
                 shift_change_a_median=round(float(np.median(dshift)), 2),
                 at_angle_limit=round(float((moved > 0.9 * s.max_angle_deg).mean()), 4),
                 at_shift_limit=round(float((dshift > 0.9 * s.max_shift_a).mean()), 4),
-                seconds=round(seconds, 1), **report, warnings=warnings,
+                seconds=round(seconds, 1), wall_seconds=round(time.time() - t_wall, 1),
+                gpu_peak_gb=round(gpu_peak / 1e9, 2),
+                host_peak_rss_gb=round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6, 2),
+                **report, warnings=warnings,
                 fsc_solvent=[None if x != x else round(float(x), 4) for x in fsc_loc.cpu()],
                 fsc_consensus_region=None if fsc_cons is None else [None if x != x else round(float(x), 4)
                                                                     for x in fsc_cons.cpu()],

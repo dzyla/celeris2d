@@ -164,6 +164,17 @@ engine's model convention (the particle's centre is at +shift from the box centr
   reads expanded copies takes its poses from the Subtract job (copies are not separate particles: duplicate
   removal keeps or drops a particle with all its copies, selections stay uid lists). Distinct uids per copy were rejected: they would break the
   movie / particle lineage, Polish and merging back.
+- **SymExpand** (`celeris2d/symexpand.py`; poses of a Refine3D / HeteroRefine / Class3D (`classes`) / LocalRefine,
+  optional particles; `sym` the user's point group, required, C1 refused, never detected): no images, table
+  `particles` = one row per (uid, `copy`) at pose A·S_k with the particle's shift (relative to its particle job's
+  boxes) and half; `symexpand.png` viewing directions before / after. LocalRefine, Refine3D, Class3D and Subtract take
+  it as poses (and as particles: its particles once): `jobs._posed_particles(expand=True)` gives one row per copy and
+  each row's image index, refine_particles / classify fetch the image by index, so n images are loaded, not n x
+  copies. Subtract on it subtracts per copy (the chain expansion -> subtraction; its own `sym_expand` goes through the
+  same `expand_poses`, same images to 1e-3), Class3D on it = Class3D `sym_expand` (synthetic C2: 99.8 % of copies in
+  the same class; GPU non-determinism). RELION export: one row per copy, the particle's rlnImageName, the expanded
+  angles, origin = -shift, rlnRandomSubset = half + 1, plus celCopy (relion_particle_symmetry_expand's layout;
+  dz_2025_10 D2: 153,832 rows, 3 s). HeteroRefine refuses it.
 - **LocalRefine** (particles - usually a Subtract job -, starting poses, focus mask, optional reference): refinement
   in a box around the mask (rotations about the mask's centre: angle limit `max_angle_deg`, shift limit `max_shift_a`
   as hard bounds on the search, the shift step tied to the angular step by the region's radius), the reference and
@@ -175,6 +186,14 @@ engine's model convention (the particle's centre is at +shift from the box centr
   Refine3D D2 5.54 A; mask: the z > 0 half of the map, one RTX PRO 4000): subtracting the other half and re-boxing
   256 -> 176 px 24 s; local C2 refinement of the half 5.53 A, the consensus in the same mask 5.53 A (103 s); the same
   without subtraction 6.03 A (217 s); D2 expansion (153,836 images, 84 s) + local C1 refinement 5.05 A (335 s).
+  The same half, one RTX 5090 (CELERIS2D_VRAM_GB=14): SymExpand D2 (6 s) + LocalRefine C1 on the original particles,
+  nothing subtracted, box 256: 5.04 A, 172 s wall, 38,458 images loaded for 153,832 rows, GPU peak 12.3 GB, host 3.8
+  GB; Subtract D2 (95 s, 8.9 GB of stacks) + LocalRefine C1 on the re-boxed 176 px copies: 5.05 A, 125 s wall, 153,832
+  images (9.6 GB of spectra in pinned host RAM), GPU peak 3.2 GB, host 20.6 GB. Expansion without subtraction is as
+  good here: the other subunits stay in the images but are outside the focus mask. (The consensus in the same mask
+  reads 5.53-5.73 A: its randomisation shell is shared with the local maps'.) Synthetic C2 (two subunits, each turned
+  up to 25 deg): SymExpand + LocalRefine on subunit 0, no subtraction: 6.4 vs 6.86 A in the mask, pose error 4.4 vs
+  10.2 deg.
 - **Sharpen** (on a Refine3D job or a HeteroRefine class; `celeris2d/sharpen.py`, RELION PostProcess; every Refine3D,
   NU or not, starts one with default settings when it finishes - `Refine3DSettings.sharpen`, on by default - and
   copies its resolution, B-factor and map into its own summary): corrected masked FSC (phases

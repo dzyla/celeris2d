@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 """
 
 JOB_TYPES = ("Import", "MotionCtf", "Curate", "Pick", "Extract", "Select", "Class2D", "InitialModel", "Refine3D", "HeteroRefine",
-             "Polish", "CtfRefine", "Sharpen", "MaskCreate", "MapScore", "Class3D", "Subtract", "LocalRefine")
+             "Polish", "CtfRefine", "Sharpen", "MaskCreate", "MapScore", "Class3D", "Subtract", "LocalRefine", "SymExpand")
 PER_MOVIE = dict(MotionCtf="micrographs", Pick="picks", Extract="chunks", Polish="chunks", Subtract="chunks")
 HEAVY = dict(MotionCtf=(".mrc",), Extract=(".mrcs",), Polish=(".mrcs",), Subtract=(".mrcs",))   # purgeable files of a job's data folder
 REBUILDABLE = ("MotionCtf", "Extract")         # purged files can be made again from the recorded parameters
@@ -459,7 +459,7 @@ class Project:
         job = self.job(ref)
         if job.type == "Subtract":                  # its poses are relative to its own (re-centred) boxes
             return job
-        if job.type in ("Refine3D", "LocalRefine", *CLASS_JOBS):
+        if job.type in ("Refine3D", "LocalRefine", "SymExpand", *CLASS_JOBS):
             src = self.job(job.params["particles"])
             return src if src.type in PARTICLE_JOBS else self.ancestor(src, PARTICLE_JOBS)
         if job.type == "InitialModel":

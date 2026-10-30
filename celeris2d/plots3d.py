@@ -118,7 +118,8 @@ def views_figure(path: str, rot_deg: np.ndarray, tilt_deg: np.ndarray, title_: s
 
 
 @themed
-def views_grid_figure(path: str, groups: list[tuple[str, np.ndarray, np.ndarray, dict]], title_: str):
+def views_grid_figure(path: str, groups: list[tuple[str, np.ndarray, np.ndarray, dict]], title_: str,
+                      heading: str = "Angular distribution per class"):
     """Angular distribution per class: (label, rot, tilt, stats) per panel, shared colour scale."""
     n = len(groups)
     cols = min(3, n)
@@ -135,7 +136,7 @@ def views_grid_figure(path: str, groups: list[tuple[str, np.ndarray, np.ndarray,
         _, m = _sky_axes(fig, [x0, y0 + 0.28 / H0, (pw - 0.35) / (cols * pw + 0.5), (ph - 0.5) / H0], H, le, se, vmax)
         txt = f"{lab} · {len(np.asarray(r)):,}" + (f" · SCF {st['scf']:.2f}" if st and "scf" in st else "")
         fig.text(x0, y0 + 0.08 / H0, txt, fontsize=8.5, color=T.ink2)
-    title(fig, "Angular distribution per class", f"{title_} · particles per equal-area bin, shared log scale")
+    title(fig, heading, f"{title_} · particles per equal-area bin, shared log scale")
     fig.savefig(path)
     plt.close(fig)
 

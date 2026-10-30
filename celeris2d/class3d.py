@@ -543,7 +543,8 @@ class Class3DSettings:
 
 def class3d_job(project, particles, poses, reference, s: Class3DSettings, label: str = ""):
     """3D classification without alignment: particles of an Extract / Polish / CtfRefine / Select job at the poses of
-    a refinement (Refine3D, HeteroRefine, Class3D, InitialModel; matched by uid); reference: the job whose map is the
+    a refinement (Refine3D, HeteroRefine, Class3D, InitialModel; matched by uid; a SymExpand job: every copy, each
+    image loaded once - the same rows as sym_expand); reference: the job whose map is the
     consensus (default the poses job; used for init="consensus" and for signal subtraction)."""
     from .jobspec import params_of
     if s.n_classes < 1:
@@ -555,10 +556,18 @@ def class3d_job(project, particles, poses, reference, s: Class3DSettings, label:
     for grp in (s.sym, s.sym_expand or "C1"):
         symmetry_ops(grp)
     p, q = project.job(particles), project.job(poses)
+    if q.type == "SymExpand":           # already expanded: its copies are classified as they are, in C1
+        if s.sym_expand:
+            raise ValueError(f"{q.name} is already symmetry-expanded: leave sym_expand empty")
+        if s.sym.upper() != "C1":
+            raise ValueError("symmetry-expanded copies are classified in C1: set sym to C1")
     r = project.job(reference) if reference not in (None, "", 0) else q
-    tag = f"K{s.n_classes}" + ("_focus" if s.mask else "") + (f"_x{s.sym_expand.upper()}" if s.sym_expand else "")
+    xs = q.params.get("sym") if q.type == "SymExpand" else s.sym_expand
+    tag = f"K{s.n_classes}" + ("_focus" if s.mask else "") + (f"_x{str(xs).upper()}" if xs else "")
+    ins = [p, q, r]
     return project.new_job("Class3D", dict(params_of(s), particles=p.id, poses=q.id, reference=r.id),
-                           [p, q] + ([r] if r.id != q.id else []), label or f"{tag}_on{p.id:03d}")
+                           [x for i, x in enumerate(ins) if x.id not in [y.id for y in ins[:i]]],
+                           label or f"{tag}_on{p.id:03d}")
 
 
 def _consensus(rj, qj, poses, log):
@@ -578,13 +587,18 @@ def _consensus(rj, qj, poses, log):
 def run_class3d(project, job, log=print) -> dict:
     from . import abinitio as ab
     from . import diagnostics as dg
-    from .jobs import _posed_particles, _scale_to_data, _session, _write_results, load_mask, map_to_box
+    from .jobs import _posed_particles, _scale_to_data, _session, _write_results, load_mask, map_job, map_to_box
     from .jobspec import settings_of
     job = project.job(job)
     s = settings_of(job, Class3DSettings)
     pj, qj = project.job(job.params["particles"]), project.job(job.params["poses"])
-    rj = project.job(job.params.get("reference") or qj.id)
-    src, poses, t_start, half, n_dup, dist = _posed_particles(project, job, pj, qj, tuple(s.classes), log)
+    rj = map_job(project, job.params.get("reference") or qj.id)      # (a SymExpand job: its refinement's map)
+    # poses with several copies per particle (a SymExpand job): a row per copy, every image loaded once
+    src, poses, t_start, half, n_dup, dist, img = _posed_particles(project, job, pj, qj, tuple(s.classes), log,
+                                                                   expand=True)
+    pre_expanded = "copy" in poses and "celCopy" not in src.parts
+    if pre_expanded and s.sym_expand:
+        raise ValueError(f"{qj.name} is already symmetry-expanded: leave sym_expand empty")
     max_res = s.max_res_a or 2.0 * src.apix
     t0 = time.time()
     ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log, nyquist_margin=1.0, max_c64_gb=1.5)
@@ -601,24 +615,29 @@ def run_class3d(project, job, log=print) -> dict:
     idx = torch.arange(n)
     if half is None:
         half = (torch.randperm(n, generator=torch.Generator().manual_seed(s.seed + 1)) % 2).numpy()
+    else:                                   # one half per image (a particle's copies share their particle's)
+        h_ = np.zeros(n, np.int64)
+        h_[img] = half
+        half = h_
     focus = None
     if s.mask:
         focus = torch.as_tensor(load_mask(project, s.mask, b, apix))
         log(f"[class3d] focus mask {s.mask}: {float((focus > 0.5).float().mean()) * 100:.1f}% of the box")
     cons = None
     if s.init == "consensus" or (focus is not None and s.subtract):
-        ref, ref_apix = _consensus(rj, qj, poses, log)
+        ref, ref_apix = _consensus(rj, map_job(project, qj), poses, log)
         cons = map_to_box(ref, ref_apix, b, apix)
-        cons = cons * _scale_to_data(clf, idx, A, t, cons, b, max(s.res_a, 10.0))
-    rows, A_r, t_r, copy_ = None, A, t, None
-    if s.sym_expand:
-        Xs = ab.symmetry_ops(s.sym_expand)
-        S = len(Xs)
-        rows = torch.arange(n).repeat_interleave(S)
-        A_r = (A[:, None] @ Xs[None]).reshape(-1, 3, 3)
-        t_r = t.repeat_interleave(S, 0)
-        copy_ = torch.arange(S).repeat(n)
+        cons = cons * _scale_to_data(clf, torch.as_tensor(img), A, t, cons, b, max(s.res_a, 10.0))
+    rows, A_r, t_r, copy_ = (torch.as_tensor(img), A, t, torch.as_tensor(poses["copy"]).long()) if pre_expanded \
+        else (None, A, t, None)
+    if s.sym_expand:                        # the same expansion as a SymExpand job's (row i S + k: A_i S_k)
+        from .symexpand import expand_poses
+        A_r, k_, i_ = expand_poses(A, s.sym_expand)
+        S = len(A_r) // n
+        rows, t_r, copy_ = torch.as_tensor(img[i_]), t[torch.as_tensor(i_)], torch.as_tensor(k_)
         log(f"[class3d] symmetry expansion {s.sym_expand.upper()}: {n:,} particles x {S} = {len(rows):,} copies")
+    elif pre_expanded:
+        log(f"[class3d] {len(img):,} symmetry copies of {n:,} particles ({qj.name})")
     r = classify(clf, idx, A_r, t_r, K, s.res_a, rows=rows, half=torch.as_tensor(half), sym=s.sym, n_iter=s.n_iter,
                  init=s.init, init_maps=[cons] * K if s.init == "consensus" else None, reg_t=s.reg_t, focus=focus,
                  subtract=cons if (focus is not None and s.subtract) else None, soft=s.soft, final_box=b,

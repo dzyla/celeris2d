@@ -78,7 +78,9 @@ Layers, bottom to top:
    (diagnostic; not applied in refinement yet), `localres.py`: local resolution, `diagnostics.py`: FSC files, angular
    statistics, `mapscore.py`: MapScore, particles vs a map against phase-randomised controls with per-2D-class shares,
    `subtract.py`: Subtract (signal subtraction, re-centring on the mask, symmetry expansion: a particle job whose rows
-   are (uid, copy)) and LocalRefine (focused refinement with angle / shift limits about the mask centre)): the
+   are (uid, copy)) and LocalRefine (focused refinement with angle / shift limits about the mask centre), `symexpand.py`:
+   SymExpand (symmetry expansion of poses, no images: rows (uid, copy); LocalRefine / Refine3D / Class3D / Subtract
+   take it and load every image once, `jobs._posed_particles(expand=True)` gives each row's image index)): the
    movies -> particles -> 3D project store and its jobs
    (layout and rules in docs/project-design.md: `jobs/NNN_<type>_<label>/` small results, `data/NNN/` heavy and
    purgeable, catalog `project.db`, particle uid/key, selections as uid lists); `pipeline.run` overlaps decoding

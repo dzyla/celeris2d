@@ -45,8 +45,8 @@ def particle_source(project: Project, ref):
     ex = project.ancestor(job, PARTICLE_JOBS)
     if job.type == "Select":
         uids = project.selected_uids(job)
-    else:
-        uids = project.table(job, "particles").read(["uid"])["uid"]
+    else:                   # (a SymExpand job: every copy of a particle is the same image)
+        uids = np.unique(project.table(job, "particles").read(["uid"])["uid"])
     src = job_source(ex.path, uids=uids)
     src.path = f"{project.root}#{ex.id:03d}#{job.id:03d}"    # by number: a renamed job keeps its saved 2D results
     return src
@@ -418,10 +418,15 @@ def _scale_to_data(clf, idx, A, t, vol: torch.Tensor, b: int, res_a: float, n: i
     return float((x.conj() * P).real.sum() / (P.abs() ** 2).sum().clamp_min(1e-20))
 
 
-def _posed_particles(project: Project, job: Job, pj: Job, qj: Job, classes=(), log=print):
+def _posed_particles(project: Project, job: Job, pj: Job, qj: Job, classes=(), log=print, expand: bool = False):
     """The particles of particle job pj that have poses in job qj (optionally only those in these 1-based classes of a
-    HeteroRefine), duplicates removed. Returns (source, poses (dict of arrays, rows matching the source), starting
-    shifts (n, 2) A, halves or None, number of duplicates, duplicate distance)."""
+    HeteroRefine / Class3D), duplicates removed. Returns (source, poses (dict of arrays, one per row), starting shifts
+    (n, 2) A, halves or None, number of duplicates, duplicate distance), one row per particle (or per image of
+    symmetry-expanded particles, e.g. an expanded Subtract job: (uid, copy) matched).
+    expand: poses with several copies per uid (a SymExpand job, or a refinement of one) on particles without copies
+    give one row per copy - the source holds every image once, and a seventh value img (rows,) is the source index of
+    each row's image (refine_particles / classify take it as idx / rows: n images in memory, not n x copies).
+    Without expand such poses are refused for a SymExpand job, else each particle takes its lowest copy."""
     # every particle with a pose, also those the poses job left out of its reconstruction: the refinement leaves out
     # its own worst-fitting share. Taking only the "used" ones compounded: InitialModel -> Refine3D -> Refine3D
     # (polished) -> Refine3D (CTF-refined) kept 4,317 -> 3,885 -> 3,496 -> 3,146 of beta-gal's particles.
@@ -438,13 +443,31 @@ def _posed_particles(project: Project, job: Job, pj: Job, qj: Job, classes=(), l
     if cp is not None and pc is None and (cp > 0).any():
         raise ValueError(f"{pj.name} holds symmetry-expanded copies of each particle: take the poses from it (or from "
                          f"a refinement of it), not from {qj.name}, whose poses are one per particle")
-    rows = match_rows(poses["uid"], pc, uid, cp)
-    ok = rows >= 0
-    if not ok.any():
-        raise ValueError(f"none of the particles of {pj.name} have poses in {qj.name}")
-    src.subset(np.flatnonzero(ok))
-    row = rows[ok]
-    cp = None if cp is None else cp[ok]
+    expanded = pc is not None and bool((np.asarray(pc) > 0).any())
+    if expanded and cp is None and not expand and qj.type == "SymExpand":
+        raise ValueError(f"{job.type} does not take symmetry-expanded poses ({qj.name}): LocalRefine, Refine3D, "
+                         f"Subtract and Class3D do")
+    grow = expand and expanded and cp is None
+    if grow:                        # every pose row of a particle (its copies, by copy number), the image shared
+        pu = np.asarray(poses["uid"], np.int64)
+        o = np.lexsort((np.asarray(pc, np.int64), pu))
+        lo, hi = np.searchsorted(pu[o], uid, "left"), np.searchsorted(pu[o], uid, "right")
+        ok = hi > lo
+        if not ok.any():
+            raise ValueError(f"none of the particles of {pj.name} have poses in {qj.name}")
+        src.subset(np.flatnonzero(ok))
+        lo, cnt = lo[ok], (hi - lo)[ok]
+        img = np.repeat(np.arange(len(lo)), cnt)
+        row = o[np.repeat(lo, cnt) + np.arange(len(img)) - np.repeat(np.cumsum(cnt) - cnt, cnt)]
+    else:
+        rows = match_rows(poses["uid"], pc, uid, cp)
+        ok = rows >= 0
+        if not ok.any():
+            raise ValueError(f"none of the particles of {pj.name} have poses in {qj.name}")
+        src.subset(np.flatnonzero(ok))
+        row = rows[ok]
+        cp = None if cp is None else cp[ok]
+        img = np.arange(len(row))
     # starting shift = aligned centre (centre in the extraction the poses were found on + their shift) - centre in
     # this extraction: right for any pair of extractions (re-centred on these poses, on other ones, or not at all)
     c_new = _centres(project, pj, poses["uid"][row], cp)
@@ -456,22 +479,25 @@ def _posed_particles(project: Project, job: Job, pj: Job, qj: Job, classes=(), l
     half = poses["half"][row].astype(np.int64) if "half" in poses else None
     fit = poses["fit"][row] if "fit" in poses else (poses["maxprob"][row] if "maxprob" in poses else np.ones(len(row)))
     dist = duplicate_distance(project, pj)
-    mov = src.parts["celMovie"].to_numpy(np.int64)
-    if cp is None:
+    mov = src.parts["celMovie"].to_numpy(np.int64)[img]
+    if cp is None and not grow:
         keep = drop_duplicates(c_al, mov, fit, dist)
     else:   # symmetry copies share the particle's centre: duplicates are judged per particle, its copies go together
         u_ = poses["uid"][row]
         first = np.unique(u_, return_index=True)[1]
         k1 = drop_duplicates(c_al[first], mov[first], fit[first], dist)
         keep = np.isin(u_, u_[first][k1])
-    n_dup = int((~keep).sum())
+    n_dup = int((~keep).sum()) if not grow else len(np.unique(img[~keep]))
     if n_dup:
         log(f"[3d] {n_dup} duplicate particles left out (aligned centres < {dist:.0f} A apart; best fit kept)")
-        src.subset(np.flatnonzero(keep))
-        row, t_start = row[keep], t_start[keep]
+        row, t_start, img = row[keep], t_start[keep], img[keep]
         half = None if half is None else half[keep]
+        kept_img = np.unique(img)
+        src.subset(kept_img)
+        img = np.searchsorted(kept_img, img)
     src.path = f"{project.root}#{pj.id:03d}#{job.id:03d}"
-    return src, {k: v[row] for k, v in poses.items()}, t_start, half, n_dup, dist
+    out = (src, {k: v[row] for k, v in poses.items()}, t_start, half, n_dup, dist)
+    return out + (img,) if expand else out
 
 
 def load_mask(project: Project, ref: str, b: int, apix: float) -> np.ndarray:
@@ -514,10 +540,10 @@ def solvent_mask_arg(project: Project, mode: str, b: int, apix: float, refs: lis
 
 
 def map_job(project: Project, ref) -> Job:
-    """The job whose map goes with a poses job: a Subtract job's poses are those of the refinement whose map it
-    subtracted (expanded copies: that map's symmetry copies), so that refinement's."""
+    """The job whose map goes with a poses job: a Subtract or SymExpand job's poses are those of the refinement whose
+    map it used (expanded copies: that map's symmetry copies), so that refinement's."""
     j = project.job(ref)
-    while j.type == "Subtract":
+    while j.type in ("Subtract", "SymExpand"):
         j = project.job(j.params["poses"])
     return j
 
@@ -548,7 +574,9 @@ def run_refine3d(project: Project, job, log=print) -> dict:
     s = settings_of(job, Refine3DSettings)
     pj, qj, rj = (project.job(job.params[k]) for k in ("particles", "poses", "reference"))
     rj = map_job(project, rj)
-    src, poses, t_start, half, n_dup, dist = _posed_particles(project, job, pj, qj, tuple(s.classes), log)
+    # symmetry-expanded poses (a SymExpand job, or a refinement of one): one row per copy, each image loaded once
+    src, poses, t_start, half, n_dup, dist, img = _posed_particles(project, job, pj, qj, tuple(s.classes), log,
+                                                                   expand=qj.type not in CLASS_JOBS)
     max_res = s.max_res_a or 2.0 * src.apix
     ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log, nyquist_margin=1.0, max_c64_gb=1.5)
     clf = ses.clf
@@ -581,7 +609,8 @@ def run_refine3d(project: Project, job, log=print) -> dict:
         R, sym_frame = _frame(vol, box_a / b, s.sym, log=log)
         vol, A = apply_frame(vol, A, R)
         sym_frame["from"] = start_sym
-    idx = torch.arange(clf.N)
+    idx = torch.as_tensor(img)
+    n_rows = len(img)
     vol *= _scale_to_data(clf, idx, A, t, vol, b, max(res0, 10.0))
     init = vol.to(dev)                                  # the real map (a padded Volume at box 512 would be 8.6 GB)
     t0 = time.time()
@@ -610,12 +639,13 @@ def run_refine3d(project: Project, job, log=print) -> dict:
     rot, tilt, psi = ab.matrix_to_euler(A.cpu())
     fit = ab.refine_particles.last_score.cpu().numpy().astype(np.float32)
     used = (ab.refine_particles.last_weights > 0).numpy()
-    _write_results(project, job, src, np.arange(clf.N), dict(
+    _write_results(project, job, src, img, dict(
         rot=rot.numpy().astype(np.float32), tilt=tilt.numpy().astype(np.float32), psi=psi.numpy().astype(np.float32),
         shift_x_a=t[:, 0].cpu().numpy().astype(np.float32), shift_y_a=t[:, 1].cpu().numpy().astype(np.float32),
-        fit=fit, half=ab.refine_particles.last_half.numpy().astype(np.uint8), used=used))
+        fit=fit, half=ab.refine_particles.last_half.numpy().astype(np.uint8), used=used,
+        **({"copy": poses["copy"].astype(np.int16)} if "copy" in poses and "celCopy" not in src.parts else {})))
     res_sol = ab.resolution_from_fsc(fsc_sol, box_a)
-    tag = f"{job.name} · {clf.N:,} particles · {s.sym}"
+    tag = f"{job.name} · {n_rows:,} particles · {s.sym}"
     report = refinement_report(job, tag, s.sym, box_a, apix, A_start, A, t, fit, used,
                                ab.refine_particles.last_history,
                                fsc=dict(corrected=fsc_sol, unmasked=fsc_unm, masked=fsc_msk, sphere_masked=fscs[0]),
@@ -632,7 +662,7 @@ def run_refine3d(project: Project, job, log=print) -> dict:
                           maps[0].cpu().numpy(), last["candidates_a"], tag)
         nu_summ = dict(nu={k: last[k] for k in ("p05_a", "median_a", "p95_a", "at_global_pct", "coarse_pct",
                                                  "halves_r", "strict", "window_a")})
-    summ = dict(particles=int(clf.N), particles_used=int(used.sum()), duplicates_removed=n_dup,
+    summ = dict(particles=int(n_rows), images=int(clf.N), particles_used=int(used.sum()), duplicates_removed=n_dup,
                 duplicate_distance_a=round(dist, 1), sym=s.sym, symmetry_frame=sym_frame,
                 resolution_a=round(float(res[0]), 2),
                 resolution_solvent_mask_a=round(res_sol, 2),
@@ -952,8 +982,8 @@ def refinement_report(job, tag: str, sym: str, box_a: float, apix: float, A_star
 
 
 # ---------------------------------------------------------------------------------------------- registry
-_PARTICLES = ("Extract", "Polish", "CtfRefine", "Subtract", "Select")
-_POSES = ("InitialModel", "Refine3D", "HeteroRefine", "Class3D", "LocalRefine", "Subtract")
+_PARTICLES = ("Extract", "Polish", "CtfRefine", "Subtract", "Select", "SymExpand")  # (SymExpand: its particles once)
+_POSES = ("InitialModel", "Refine3D", "HeteroRefine", "Class3D", "LocalRefine", "Subtract", "SymExpand")
 
 
 def _res_key(s: dict) -> str:
@@ -991,6 +1021,7 @@ def registry() -> dict[str, JobSpec]:
     from .mapscore import MapScoreSettings, mapscore_job, run_mapscore
     from .subtract import (LocalRefineSettings, SubtractSettings, local_refine_job, run_local_refine, run_subtract,
                            subtract_job)
+    from .symexpand import POSE_JOBS, SymExpandSettings, run_symexpand, symexpand_job
     specs = [
         JobSpec("Curate", "micrographs kept for picking: limits on CTF fit, defocus, astigmatism and motion",
                 CurateSettings, (Input("micrographs", ("MotionCtf",), doc="the motion-corrected, CTF-fitted micrographs"),),
@@ -1014,7 +1045,8 @@ def registry() -> dict[str, JobSpec]:
         JobSpec("HeteroRefine", "heterogeneous refinement: K maps, particles sorted among them (hard or soft)",
                 HeteroRefineSettings,
                 (Input("particles", _PARTICLES, doc="particles"),
-                 Input("poses", _POSES, doc="starting orientations, matched by particle uid")),
+                 Input("poses", tuple(x for x in _POSES if x != "SymExpand"),
+                       doc="starting orientations, matched by particle uid")),
                 hetero_refine_job, run_hetero_refine, key=_hetero_key,
                 figures=("map_views.png", "views_classes.png", "fsc.png", "progress.png")),
         JobSpec("Class3D", "3D classification without alignment: K maps at the consensus poses (optionally focused "
@@ -1044,8 +1076,8 @@ def registry() -> dict[str, JobSpec]:
         JobSpec("Subtract", "particle subtraction: the map outside a mask removed from each particle at its pose, "
                 "optional symmetry expansion, re-centring on the mask and a smaller box", SubtractSettings,
                 (Input("particles", _PARTICLES, doc="the particles to subtract"),
-                 Input("poses", ("Refine3D", "HeteroRefine", "LocalRefine"),
-                       doc="the refinement whose poses, half sets and map are used"),
+                 Input("poses", ("Refine3D", "HeteroRefine", "Class3D", "LocalRefine", "SymExpand"),
+                       doc="the refinement whose poses, half sets and map are used (a SymExpand job: per copy)"),
                  Input("mask", ("MaskCreate",), doc="the region to keep (made on that refinement's map)")),
                 subtract_job, run_subtract,
                 key=lambda s: f"{_n(s.get('images'))} imgs · {s.get('box', '')} px"
@@ -1054,7 +1086,8 @@ def registry() -> dict[str, JobSpec]:
         JobSpec("LocalRefine", "focused local refinement: a masked region refined with limited searches around the "
                 "input poses, rotations about the mask centre", LocalRefineSettings,
                 (Input("particles", _PARTICLES, doc="particles (e.g. a Subtract job's)"),
-                 Input("poses", _POSES, doc="starting poses (a Subtract job's for expanded copies)"),
+                 Input("poses", _POSES, doc="starting poses (a SymExpand job: every copy, each image loaded once; a "
+                       "Subtract job's for its expanded copies)"),
                  Input("mask", ("MaskCreate",), doc="the focus mask"),
                  Input("reference", _POSES, optional=True, doc="starting map (default: the poses job's)")),
                 local_refine_job, run_local_refine,
@@ -1062,6 +1095,14 @@ def registry() -> dict[str, JobSpec]:
                                f"{_n(s.get('consensus_region_resolution_a'), 2)})" + warn_mark(s))
                 if s.get("resolution_a") else "",
                 figures=("focus_fsc.png", "map_views.png", "fsc.png", "views.png", "progress.png", "particles.png")),
+        JobSpec("SymExpand", "symmetry expansion: every particle once per operator of a point group, at its "
+                "symmetry-related pose (no images written)", SymExpandSettings,
+                (Input("poses", POSE_JOBS, doc="the refinement whose poses are expanded"),
+                 Input("particles", _PARTICLES, optional=True, doc="the particles (default: the refinement's)")),
+                symexpand_job, run_symexpand,
+                key=lambda s: f"{_n(s.get('particles'))} ptcls x {s.get('copies', '')} ({s.get('sym', '')})"
+                if s.get("rows") else "",
+                figures=("symexpand.png",)),
         JobSpec("Sharpen", "post-processing: corrected masked FSC, B-factor, local resolution", SharpenSettings,
                 (Input("refine", ("Refine3D", "LocalRefine", *CLASS_JOBS), doc="the refinement (a HeteroRefine / Class3D: set cls)"),),
                 sharpen_job, run_sharpen,

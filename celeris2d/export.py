@@ -46,7 +46,8 @@ def export(project: Project, job, fmt: str) -> str:
     fmt = fmt.lower()
     if fmt == "relion":
         return dict(Import=_relion_movies, MotionCtf=_relion_micrographs, Pick=_relion_picks,
-                    Extract=_relion_particles, Polish=_relion_particles, Subtract=_relion_particles)[job.type](project, job)
+                    Extract=_relion_particles, Polish=_relion_particles, Subtract=_relion_particles,
+                    SymExpand=_relion_symexpand)[job.type](project, job)
     if fmt == "cryosparc":
         if job.type not in PARTICLE_JOBS:
             raise ValueError("cryoSPARC export is for Extract / Polish jobs (cryoSPARC imports movies / micrographs itself)")
@@ -111,6 +112,31 @@ def relion_particle_blocks(project, job) -> dict:
 def _relion_particles(project, job):
     b = relion_particle_blocks(project, job)
     b["particles"] = b["particles"].drop(columns=[c for c in ("celUid", "celMovie", "celCopy") if c in b["particles"]])
+    return _star(job.out("particles.star"), b)
+
+
+def _relion_symexpand(project, job):
+    """A SymExpand job as relion_particle_symmetry_expand writes it: one row per copy, the particle's image (same
+    rlnImageName), the expanded angles (rlnAngleRot/Tilt/Psi, image = A @ volume as RELION), rlnOriginX/YAngst = -shift
+    (relative to the particle job's box centres), rlnRandomSubset = the particle's half + 1; celCopy keeps the copy
+    number (RELION ignores the column; (uid, copy) is the row's key)."""
+    from .jobs import match_rows
+    ex = project.aligned_particles(job)
+    b = relion_particle_blocks(project, ex)
+    part = b["particles"]
+    t = project.table(job, "particles").read()
+    row = match_rows(part["celUid"].to_numpy(np.int64), None, t["uid"])
+    if (row < 0).any():
+        raise ValueError(f"{ex.name} lacks particles of {job.name}")
+    o = np.lexsort((t["copy"], row))                    # by image, then copy (relion_particle_symmetry_expand's order)
+    df = part.iloc[row[o]].reset_index(drop=True)
+    df["rlnAngleRot"], df["rlnAngleTilt"], df["rlnAnglePsi"] = t["rot"][o], t["tilt"][o], t["psi"][o]
+    df["rlnOriginXAngst"], df["rlnOriginYAngst"] = -t["shift_x_a"][o], -t["shift_y_a"][o]
+    df["rlnRandomSubset"] = t["half"][o].astype(int) + 1
+    if "cls" in t:
+        df["rlnClassNumber"] = t["cls"][o].astype(int) + 1
+    df["celCopy"] = t["copy"][o].astype(np.int64)
+    b["particles"] = df.drop(columns=[c for c in ("celUid", "celMovie") if c in df])
     return _star(job.out("particles.star"), b)
 
 
