@@ -66,3 +66,18 @@ def test_cutoff_stats_and_figure(tmp_path):
     plots3d.nu_figure(str(tmp_path / "nu.png"), hist, cm, mask.cpu().numpy(), sig.cpu().numpy(),
                       infos[0]["candidates_a"], "test")
     assert (tmp_path / "nu.png").exists()
+
+
+def test_weighted_candidates():
+    """nu_weighted: a candidate at the global resolution is the global FSC weighting itself (so a region chosen there
+    is filtered as the homogeneous reference), one at a coarser cutoff the same curve compressed; hard candidates stay
+    raised-cosine low-passes."""
+    from celeris2d.nufilter import _candidate, _kk
+    kk = _kk(32, "cpu")
+    shape = torch.clamp(1 - torch.arange(17, dtype=torch.float32) / 12, 0, 1)        # weight per shell
+    w = _candidate(kk, 8.0, 0.1, shape, 8.0)
+    assert torch.allclose(w[0, :, 0][kk[0, :, 0] < 15], shape[kk[0, :, 0][kk[0, :, 0] < 15].long()], atol=1e-5)
+    w2 = _candidate(kk, 4.0, 0.1, shape, 8.0)
+    assert float(w2[0, 6, 0]) == pytest.approx(float(shape[12]), abs=1e-5)        # shell 6 -> curve at 12
+    h = _candidate(kk, 8.0, 0.1, None, 8.0)
+    assert float(h[0, 4, 0]) == 1.0 and float(h[0, 9, 0]) == 0.0

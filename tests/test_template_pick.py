@@ -46,3 +46,15 @@ def test_template_pick_finds_projections():
     assert found.mean() > 0.9, (found.mean(), found_b.mean())
     assert tp.mean() > 0.8, tp.mean()
     assert c.template is not None and c.template.max() < len(tmpl)
+
+
+def test_valid_bounds_padding():
+    """Edge rows / columns filled by repeating the last real one (micrographs aligned elsewhere) are found; a micrograph
+    without padding keeps its full extent."""
+    rng = np.random.default_rng(1)
+    img = rng.normal(size=(300, 400)).astype(np.float32)
+    assert pk.valid_bounds(torch.from_numpy(img)) == (0, 400, 0, 300)
+    img[:, :23] = img[:, 23:24]
+    img[:, -11:] = img[:, -12:-11]
+    img[:17] = img[17:18]
+    assert pk.valid_bounds(torch.from_numpy(img)) == (23, 389, 17, 300)

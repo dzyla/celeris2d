@@ -290,6 +290,18 @@ def logged(run):
         return self.name
 
 
+def fits_float16(data: np.ndarray) -> bool:
+    """float16 holds the data: every value below its maximum (65504) and the mean small enough that its steps
+    (~mean / 1024) stay below a fifth of the standard deviation. Raw-count micrographs do not (CryoPPP EMPIAR-10017,
+    Falcon: mean 70,867, std 2,742 - written as float16 they were 98 % inf)."""
+    x = np.asarray(data)
+    if not np.issubdtype(x.dtype, np.floating) or x.dtype == np.float16:
+        return True
+    v = x[::max(1, x.size // 1_000_000)] if x.ndim == 1 else x.reshape(-1)[::max(1, x.size // 1_000_000)]
+    m, sd = float(np.mean(v, dtype=np.float64)), float(np.std(v, dtype=np.float64))
+    return bool(np.isfinite(x).all() and float(np.abs(x).max()) < 6.0e4 and abs(m) < 200 * max(sd, 1e-30))
+
+
 class Project:
     """A processing project directory (one writer process; any number of readers)."""
 
@@ -580,15 +592,19 @@ class Project:
         self.write_index()
         return n / 1e9
 
-    def write_mrc(self, path: str, data: np.ndarray, apix: float, dtype: str = "float32"):
-        """MRC/MRCS in float32 (mode 2) or float16 (mode 12: RELION >= 4, cryoSPARC >= 4; half the space)."""
+    def write_mrc(self, path: str, data: np.ndarray, apix: float, dtype: str = "float32") -> str:
+        """MRC/MRCS in float32 (mode 2) or float16 (mode 12: RELION >= 4, cryoSPARC >= 4; half the space). float16
+        only where the data fit it (fits_float16), else float32. Returns the dtype written."""
         import mrcfile
+        if dtype == "float16" and not fits_float16(data):
+            dtype = "float32"
 
         def w(t):
             with mrcfile.new(t, overwrite=True) as m:
                 m.set_data(np.ascontiguousarray(data, dtype=np.float16 if dtype == "float16" else np.float32))
                 m.voxel_size = apix
         _atomic(path, w)
+        return dtype
 
     # ------------------------------------------------------------------ movies (Import jobs)
     def import_movies(self, paths: list[str], root: str = "", job: Job | None = None, params: dict | None = None,

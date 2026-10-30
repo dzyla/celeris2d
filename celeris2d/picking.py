@@ -287,6 +287,25 @@ def dedup(xy: np.ndarray, score: np.ndarray, dist: float) -> np.ndarray:
     return keep
 
 
+def valid_bounds(img: torch.Tensor, frac: float = 0.2) -> tuple[int, int, int, int]:
+    """The micrograph without its padded border: (x0, x1, y0, y1), px, half-open. Columns / rows at the edges that
+    barely differ from their neighbour (mean |difference| < frac x the median) are padding - micrographs aligned
+    elsewhere often fill the shifted-out edge by repeating the last row / column (CryoPPP EMPIAR-10017: 68-107 px on
+    every side, picked as stripes that 2D classified into stripe classes)."""
+    x = img.float()
+    dc = (x[:, 1:] - x[:, :-1]).abs().mean(0)
+    dr = (x[1:] - x[:-1]).abs().mean(1)
+
+    def run(d):
+        bad = (d < frac * d.median()).cpu().numpy()
+        a = int(np.argmin(bad)) if not bad.all() else len(bad)
+        b = int(np.argmin(bad[::-1])) if not bad.all() else len(bad)
+        return a, b
+    (ca, cb), (ra, rb) = run(dc), run(dr)
+    nx, ny = x.shape[1], x.shape[0]
+    return ca, nx - cb, ra, ny - rb
+
+
 def auto_threshold(score: np.ndarray) -> float:
     """Generous score threshold: the mode of the candidate scores (smoothed histogram). Below it the candidates
     are mostly noise maxima; above it particles take over, mixed with some background that 2D classification

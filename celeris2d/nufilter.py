@@ -19,6 +19,19 @@ import math
 import torch
 
 
+def _candidate(kk: torch.Tensor, kc: float, edge: float, shape: torch.Tensor | None, k_res: float) -> torch.Tensor:
+    """A candidate filter on grid kk: a hard low-pass at kc (raised-cosine edge), or with shape (the global per-shell
+    FSC weight, shell = cycles per box) that curve stretched so the global resolution k_res lands on kc."""
+    if shape is None:
+        w = torch.clamp((kk - kc * (1 - edge / 2)) / (kc * edge), 0, 1)
+        return 0.5 * (1 + torch.cos(math.pi * w))
+    x = kk * (k_res / kc)
+    i0 = x.floor().long().clamp(max=len(shape) - 1)
+    f = x - i0
+    w = shape[i0] * (1 - f) + shape[(i0 + 1).clamp(max=len(shape) - 1)] * f
+    return torch.where(x < len(shape) - 1, w, torch.zeros_like(w))
+
+
 def _kk(n: int, dev) -> torch.Tensor:
     """|k| (cycles per box) on the rfftn grid of an n^3 map."""
     k = torch.fft.fftfreq(n, device=dev) * n
@@ -35,12 +48,14 @@ def _smooth(x: torch.Tensor, sigma_px: float, kk: torch.Tensor) -> torch.Tensor:
 
 def adaptive_filter(h: torch.Tensor, h_ref: torch.Tensor, apix: float, res_a: float, mask: torch.Tensor | None = None,
                     n_cut: int = 12, lo_a: float = 20.0, window_a: float | None = None, edge: float = 0.1,
-                    info: dict | None = None) -> torch.Tensor:
+                    info: dict | None = None, shape: torch.Tensor | None = None) -> torch.Tensor:
     """h filtered with a cutoff chosen per voxel: candidates log-spaced from lo_a to 1.1 x... just beyond res_a (the
     global resolution; a region can be sharper than the average, so the finest candidate is 0.85 x res_a), the
     local error |filtered h - h_ref|^2 averaged over a Gaussian of sigma window_a (default 2 x res_a, at least 8 A).
     mask: only for the summary (cutoffs inside it). Returns the filtered map; info gets the cutoff map (A) and its
-    distribution."""
+    distribution. shape: candidates are this per-shell weight (the global FSC weighting) stretched per region instead
+    of hard low-passes - a hard cut minimises the error where a shell's signal equals its noise (local FSC ~0.5) and
+    drops the band between that and the 0.143 resolution, which the weighting keeps attenuated."""
     n = h.shape[0]
     dev = h.device
     box_a = n * apix
@@ -52,9 +67,9 @@ def adaptive_filter(h: torch.Tensor, h_ref: torch.Tensor, apix: float, res_a: fl
     cuts = torch.exp(torch.linspace(math.log(k_lo), math.log(max(k_hi, k_lo * 1.01)), n_cut)).tolist()
     sig = max(window_a or 2.0 * res_a, 8.0) / apix
     best_err = best = best_k = None
+    sh_ = None if shape is None else shape.to(dev).float()
     for kc in cuts:
-        w = torch.clamp((kk - kc * (1 - edge / 2)) / (kc * edge), 0, 1)
-        f = torch.fft.irfftn(Fh * (0.5 * (1 + torch.cos(math.pi * w))), s=h.shape)
+        f = torch.fft.irfftn(Fh * _candidate(kk, kc, edge, sh_, box_a / res_a), s=h.shape)
         err = _smooth((f - hr) ** 2, sig, kk)
         if best is None:
             best_err, best, best_k = err, f, torch.full_like(f, kc)
@@ -75,7 +90,8 @@ def adaptive_filter(h: torch.Tensor, h_ref: torch.Tensor, apix: float, res_a: fl
 
 def adaptive_filter_cv(h: torch.Tensor, fold_a: torch.Tensor, fold_b: torch.Tensor, apix: float, apix_s: float,
                        res_a: float, mask: torch.Tensor | None = None, n_cut: int = 12, lo_a: float = 20.0,
-                       window_a: float | None = None, edge: float = 0.1, info: dict | None = None) -> torch.Tensor:
+                       window_a: float | None = None, edge: float = 0.1, info: dict | None = None,
+                       shape: torch.Tensor | None = None) -> torch.Tensor:
     """Gold-standard version of adaptive_filter: the per-voxel cutoff for half map h (n^3, apix) is chosen by
     cross-validation between two reconstructions from disjoint subsets of h's own particles (fold_a, fold_b: m^3 at
     apix_s, the same box in A, usually a smaller band-limited box) - no information from the other half - and then
@@ -92,9 +108,9 @@ def adaptive_filter_cv(h: torch.Tensor, fold_a: torch.Tensor, fold_b: torch.Tens
     sig = max(window_a or 2.0 * res_a, 8.0) / apix_s
     fa_, fb_ = fold_a.float(), fold_b.float()
     best_err = best_i = None
+    sh_ = None if shape is None else shape.to(dev).float()
     for i, kc in enumerate(cuts):
-        w = torch.clamp((kk_s - kc * (1 - edge / 2)) / (kc * edge), 0, 1)
-        lp = 0.5 * (1 + torch.cos(math.pi * w))
+        lp = _candidate(kk_s, kc, edge, sh_, box_a / res_a)
         ea = torch.fft.irfftn(Fa * lp, s=fold_a.shape) - fb_
         eb = torch.fft.irfftn(Fb * lp, s=fold_b.shape) - fa_
         err = _smooth(ea * ea + eb * eb, sig, kk_s)
@@ -114,8 +130,7 @@ def adaptive_filter_cv(h: torch.Tensor, fold_a: torch.Tensor, fold_b: torch.Tens
         sel = idx == i
         if not bool(sel.any()):
             continue
-        w = torch.clamp((kk - kc * (1 - edge / 2)) / (kc * edge), 0, 1)
-        f = torch.fft.irfftn(Fh * (0.5 * (1 + torch.cos(math.pi * w))), s=h.shape)
+        f = torch.fft.irfftn(Fh * _candidate(kk, kc, edge, sh_, box_a / res_a), s=h.shape)
         out = torch.where(sel, f, out)
         del f
     if info is not None:
