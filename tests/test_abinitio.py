@@ -149,3 +149,25 @@ def test_working_box_fits_memory(monkeypatch):
     monkeypatch.setattr(ab, "_free", lambda dev: 6e9)
     b = ab.working_box(Fake(), n_acc=2, n_ft=2, log=lambda *a: None)
     assert b < 256 and (2 * 160 + 2 * 64 + 320) * b ** 3 + 1.5e9 <= 0.85 * 6e9
+
+
+def test_volume_padding_and_gridding():
+    """set_real / real round trip in every mode; gridding correction brings pad 2 projections closer to a pad 4
+    reference, and pad 1 (the big-box fallback) stays within its known error."""
+    dev = "cuda"
+    vol = _volume(BLOBS).to(dev)
+    for pad in (1, 2):
+        for gc in (False, True):
+            V = ab.Volume(BOX, dev, pad=pad, grid_correct=gc)
+            V.set_real(vol)
+            assert torch.allclose(V.real(), vol, atol=1e-4 * float(vol.abs().max())), (pad, gc)
+    A = ab.euler_to_matrix(torch.tensor([10.0, 80.0]), torch.tensor([30.0, 120.0]), torch.tensor([0.0, 45.0])).to(dev)
+
+    def proj(pad, gc):
+        V = ab.Volume(BOX, dev, pad=pad, grid_correct=gc)
+        V.set_real(vol)
+        return V.project(A)
+    ref = proj(4, True)
+    err = lambda p: float((p - ref).norm() / ref.norm())
+    assert err(proj(2, True)) < err(proj(2, False)) and err(proj(2, True)) < 0.05
+    assert err(proj(1, True)) < 0.3

@@ -36,20 +36,18 @@ def _lowpass(v: torch.Tensor, apix: float, res_a: float) -> torch.Tensor:
 
 
 def _resize(v: torch.Tensor, n: int) -> torch.Tensor:
-    """Fourier crop / pad of a real cube to n^3 (same box in A)."""
+    """Fourier crop of a real cube to n^3 <= its size (same box in A, values kept): real FFT, the low frequencies
+    taken by index (a full complex FFT and shifted copies were 2 GB at 512^3)."""
     b = v.shape[0]
     if b == n:
         return v
-    ft = torch.fft.fftshift(torch.fft.fftn(v))
-    if n < b:
-        o = (b - n) // 2
-        ft = ft[o:o + n, o:o + n, o:o + n]
-    else:
-        z = torch.zeros((n,) * 3, dtype=ft.dtype, device=v.device)
-        o = (n - b) // 2
-        z[o:o + b, o:o + b, o:o + b] = ft
-        ft = z
-    return torch.fft.ifftn(torch.fft.ifftshift(ft)).real * (n / b) ** 3
+    if n > b:
+        raise ValueError("_resize only crops")
+    ft = torch.fft.rfftn(v)
+    h = n // 2
+    keep = torch.cat([torch.arange(h, device=v.device), torch.arange(b - h, b, device=v.device)])
+    ft = ft[keep][:, keep][:, :, :h + 1]
+    return torch.fft.irfftn(ft, s=(n, n, n)) * (n / b) ** 3
 
 
 def solvent_stats(lp: torch.Tensor, apix: float, diameter_a: float | None) -> tuple[float, float]:
@@ -95,12 +93,12 @@ def _grid(n: int, apix: float, lowpass_a: float) -> tuple[int, float]:
     return nb, n * apix / nb
 
 
-def noise_sigma(h1: torch.Tensor, h2: torch.Tensor, nb: int, vox: float, lp_a: float) -> float:
+def noise_sigma(h1: torch.Tensor, h2: torch.Tensor | None, nb: int, vox: float, lp_a: float) -> float:
     """Noise standard deviation of the low-passed average of two half maps: (h1 - h2) / 2 is pure noise with the
     statistics of the average, everywhere (also inside the particle, and in a map already masked to a sphere, whose
-    solvent is zero), restricted to where the halves are not both zero."""
-    d = _lowpass(_resize(0.5 * (h1.float() - h2.float()), nb), vox, lp_a)
-    a = _resize(0.5 * (h1.float() + h2.float()), nb)
+    solvent is zero), restricted to where the halves are not both zero. h2 None: h1 is that half difference."""
+    d = _lowpass(_resize(h1.float() if h2 is None else 0.5 * (h1.float() - h2.float()), nb), vox, lp_a)
+    a = d if h2 is None else _resize(0.5 * (h1.float() + h2.float()), nb)
     sel = a.abs() > 1e-12 * a.abs().max()
     x = d[sel] if int(sel.sum()) > 1000 else d.reshape(-1)
     return float(1.4826 * (x - x.median()).abs().median())
@@ -120,7 +118,7 @@ def auto_mask(vmap: torch.Tensor, apix: float, res_a: float | None = None, lowpa
     v = _resize(vmap.float(), nb)
     lp = _lowpass(v, vox, lp_a)
     mu, sd = solvent_stats(lp, vox, diameter_a)
-    if halves is not None:
+    if halves is not None:          # (h1, h2), or (half difference, None)
         mu, sd = 0.0, noise_sigma(halves[0], halves[1], nb, vox, lp_a)
     peak = float(lp.max())
     thr = max(mu + k_sigma * sd, mu + min_frac * (peak - mu))

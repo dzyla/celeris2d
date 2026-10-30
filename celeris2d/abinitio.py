@@ -112,9 +112,19 @@ class Volume:
     Memory: the spectrum is 64 b^3 bytes; the insert() accumulators (another 96 b^3) exist only on volumes that
     receive data."""
 
-    def __init__(self, b: int, dev, pad: int = 2, ft: torch.Tensor | None = None):
+    def __init__(self, b: int, dev, pad: int = 2, ft: torch.Tensor | None = None, pre: bool = False,
+                 grid_correct: bool = False):
         self.b, self.pad, self.G, self.dev = b, pad, pad * b, dev
         G = self.G
+        # gridding correction: trilinear interpolation in the spectrum multiplies the real-space map by sinc^2(x / G)
+        # per axis (0.81 at the box edge for pad 2, 0.41 for pad 1), both when projecting (sampling) and when
+        # reconstructing (splatting). set_real divides it out beforehand (pre: the spectrum holds the divided map,
+        # real() multiplies it back); real() of a reconstruction divides it out. Simulated 96^3 blobs: projection error
+        # vs pad 4 10 % -> 3.5 % (pad 2; pad 1 20 %), reconstruction error 7.7 % -> 3.1 % (pad 2), 25 % -> 11 % (pad 1).
+        # Off by default (ab initio, its low-resolution stages: the test object's wrong-basin rate went up with it);
+        # the high-resolution refinements turn it on (refine_particles(grid_correct=True)).
+        self.grid_correct = grid_correct
+        self.pre = pre
         # real, imag channels; index = frequency + G/2
         self.ft = torch.zeros((2, G, G, G), device=dev) if ft is None else ft
         self.num = self.den = None
@@ -124,17 +134,44 @@ class Volume:
         self.kr = torch.sqrt(fy[:, None] ** 2 + fx[None, :] ** 2)
 
     # ---- real space <-> spectrum
+    def _kernel(self) -> torch.Tensor:
+        """sinc^2(pi x / G) for the b voxels of one axis (x from the centre): the trilinear interpolation's
+        real-space factor per axis."""
+        x = (torch.arange(self.b, device=self.dev, dtype=torch.float32) - self.b // 2) / self.G
+        return torch.special.sinc(x) ** 2
+
     def set_real(self, vol: torch.Tensor):
-        """vol: (b, b, b) real map, centre at b/2."""
-        b, G = self.b, self.G
-        v = torch.zeros((G, G, G), device=self.dev)
-        o = (G - b) // 2
-        v[o:o + b, o:o + b, o:o + b] = vol
-        ft = torch.fft.fftn(torch.fft.ifftshift(v), norm="forward")
-        del v
-        ft = torch.fft.fftshift(ft)
-        ft *= (b * self.pad ** 3)
-        self.ft = torch.view_as_real(ft).permute(3, 0, 1, 2).contiguous()
+        """vol: (b, b, b) real map, centre at b/2. The forward transform axis by axis into the padded grid, in slabs
+        (at once it held ~4 G^3 complex arrays)."""
+        b, G, dev = self.b, self.G, self.dev
+        vol = vol.to(dev).float()
+        if self.grid_correct:
+            k = self._kernel()
+            vol = vol / (k[:, None, None] * k[None, :, None] * k[None, None, :])
+        pos = (torch.arange(b, device=dev) - b // 2) % G                 # the centred map, ifftshifted
+        sh = (torch.arange(G, device=dev) + G // 2) % G                  # fftshift as an index
+        s = max(1, int(16e6 // (G * G)))
+        x1 = torch.zeros((b, b, G), dtype=torch.complex64, device=dev)
+        for i in range(0, b, s):                                         # axis 2
+            t = torch.zeros((min(s, b - i), b, G), dtype=torch.complex64, device=dev)
+            t[:, :, pos] = vol[i:i + s].to(torch.complex64)
+            x1[i:i + s] = torch.fft.fft(t, dim=2, norm="forward")[:, :, sh]
+        x2 = torch.zeros((b, G, G), dtype=torch.complex64, device=dev)
+        for i in range(0, b, s):                                         # axis 1
+            t = torch.zeros((min(s, b - i), G, G), dtype=torch.complex64, device=dev)
+            t[:, pos, :] = x1[i:i + s]
+            x2[i:i + s] = torch.fft.fft(t, dim=1, norm="forward")[:, sh, :]
+        del x1
+        self.ft = None
+        ft = torch.empty((2, G, G, G), device=dev)
+        scale = b * self.pad ** 3
+        for j in range(0, G, s):                                         # axis 0, slabs of axis 1
+            t = torch.zeros((G, min(s, G - j), G), dtype=torch.complex64, device=dev)
+            t[pos] = x2[:, j:j + s]
+            t = torch.fft.fft(t, dim=0, norm="forward")[sh] * scale
+            ft[0, :, j:j + s], ft[1, :, j:j + s] = t.real, t.imag
+        self.ft = ft
+        self.pre = self.grid_correct
 
     def real(self) -> torch.Tensor:
         """The real-space map (b^3): the inverse transform done axis by axis, keeping only the central b of each
@@ -156,7 +193,15 @@ class Volume:
         v = torch.empty((b, b, b), device=dev)
         for i in range(0, b, s):                                     # axis 2
             v[i:i + s] = torch.fft.ifft(out2[i:i + s], dim=2, norm="forward")[:, :, c].real
-        return v / (b * self.pad ** 3)
+        v /= (b * self.pad ** 3)
+        if self.grid_correct:
+            k = self._kernel()
+            K = k[:, None, None] * k[None, :, None] * k[None, None, :]
+            if self.pre:                                             # undo set_real's pre-correction
+                v *= K
+            else:                                                    # a reconstruction: the splatting's factor
+                v /= K
+        return v
 
     def shell_index(self) -> torch.Tensor:
         return _shells(self.G, self.pad, self.dev)
@@ -262,6 +307,7 @@ class Volume:
             d = den[z:z + cz] + (reg[sh[z:z + cz].clamp(max=len(reg) - 1)] if sh is not None else reg)
             out[:, z:z + cz] = (num[z:z + cz] / d[..., None]).permute(3, 0, 1, 2)
         self.ft = out
+        self.pre = False
 
     def filter_shells(self, f: torch.Tensor):
         """Multiply the spectrum by a per-shell factor f (cycles/box b)."""
@@ -508,10 +554,19 @@ def classes_to_volume(cls_ft: torch.Tensor, pops: torch.Tensor, box_a: float, di
 
 
 # --------------------------------------------------------------------------- stage 2: particles
-def _to_box(init: Volume, b: int, dev) -> torch.Tensor:
-    """Real map of a Volume, Fourier-cropped/padded to box b."""
-    v0 = torch.fft.fftshift(torch.fft.fftn(torch.fft.ifftshift(init.real())))
-    b1 = init.b
+def auto_pad(b: int, n_vol: int, dev) -> int:
+    """Padding of 3D spectra: 2 if n_vol reconstructions (~60 (2b)^3 bytes each with accumulators and references)
+    fit in 60 % of the free memory, else 1 (gridding-corrected; box 512 in 16 GB)."""
+    return 2 if n_vol * 60 * (2 * b) ** 3 < 0.6 * _free(dev) else 1
+
+
+def _to_box(init, b: int, dev) -> torch.Tensor:
+    """Real map of a Volume (or a real map itself), Fourier-cropped/padded to box b."""
+    r = init.to(dev).float() if torch.is_tensor(init) else init.real()
+    b1 = r.shape[0]
+    if b1 == b:
+        return r
+    v0 = torch.fft.fftshift(torch.fft.fftn(torch.fft.ifftshift(r)))
     if b >= b1:
         vb = torch.zeros((b, b, b), dtype=torch.complex64, device=dev)
         o = (b - b1) // 2
@@ -789,7 +844,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                      box: int | None = None, relax_ops: torch.Tensor | None = None, relax_iters: int = 0,
                      step_min: float = 0.5,
                      half: torch.Tensor | None = None, soft: bool = False, solvent_mask=None,
-                     solvent_from_a: float = 15.0, log=print):
+                     solvent_from_a: float = 15.0, pad: int | None = None, grid_correct: bool = False, log=print):
     """Local refinement of particle orientations A and shifts t (A, model shift) against CTF-modulated projections,
     gold-standard halves (half: (n,) 0/1 per particle, e.g. the split of the refinement the poses come from - a
     particle must stay in the half it was aligned or polished against; default a random split, seed 1). inits:
@@ -814,6 +869,8 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     tensor). It replaces the particle sphere for the FSC that sets the resolution and weights the references (then
     corrected by phase randomisation, as it is tight), for flattening the references' solvent, and for the final map:
     the references lose the solvent noise and keep more of the signal. refine_particles.last_mask holds the last one.
+    pad: padding of the 3D spectra (None: 2 if the volumes, ~60 (2b)^3 bytes for one model, fit in 60 % of the free
+    memory, else 1 - box 512 in 16 GB). grid_correct: gridding correction of every volume (Volume; pad 1 needs it).
     Returns (maps (M, b, b, b), A (n, 3, 3), t (n, 2) in the chosen model, z, fsc (M, shells), resolutions (M,),
     half Volumes [[h0, h1] per model])."""
     dev = clf.dev
@@ -838,7 +895,12 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     if t.dim() == 2:
         t = t[:, None].expand(n, M, 2).contiguous()
     ar_n = torch.arange(n, device=dev)
-    vols = [[Volume(b, dev), Volume(b, dev)] for _ in range(M)]
+    if pad is None:
+        pad = auto_pad(b, M, dev)
+        if pad == 1:
+            log(f"[3d] box {b}: 3D spectra without padding (pad 1, gridding-corrected) to fit the GPU")
+    gc = grid_correct or pad == 1
+    vols = [[Volume(b, dev, pad=pad, grid_correct=gc), Volume(b, dev, pad=pad, grid_correct=gc)] for _ in range(M)]
     v_init = [_to_box(v, b, dev) for v in inits]
     res = [res_start] * M
     fscs = [None] * M
@@ -887,8 +949,8 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     cur_mask = None                 # solvent mask in use (solvent_mask), else the particle sphere
     for it in range(n_iter + 1):
         # ---- reconstruct halves, FSC, filter
-        refs = None                 # the last alignment's references and cached batch blocks are not needed while the
-        torch.cuda.empty_cache()    # halves are back-projected (they overlapped the accumulators: 15.8 of 16 GB, spill)
+        refs = r = rm = None        # the last alignment's references (also bound to the loop variables that built them)
+        torch.cuda.empty_cache()    # and cached batch blocks are not needed while the halves are back-projected
         if it == 0:
             for m in range(M):
                 for v in vols[m]:
@@ -903,9 +965,15 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                 if solvent_mask is not None and M == 1 and (torch.is_tensor(solvent_mask) or res[m] < solvent_from_a):
                     from .masking import auto_mask
                     h1_, h2_ = vols[m][0].real(), vols[m][1].real()
-                    cur_mask = solvent_mask.to(dev) if torch.is_tensor(solvent_mask) else auto_mask(
-                        0.5 * (h1_ + h2_) * mask, box_a / b, res_a=res[m], k_sigma=5.0, halves=(h1_ * mask, h2_ * mask),
-                        diameter_a=diam)
+                    if torch.is_tensor(solvent_mask):
+                        cur_mask = solvent_mask.to(dev)
+                    else:                   # the masked average and half difference, once each (box 512: memory)
+                        cur_mask = None
+                        avg_ = (h1_ + h2_).mul_(0.5).mul_(mask)
+                        dif_ = (h1_ - h2_).mul_(0.5).mul_(mask)
+                        cur_mask = auto_mask(avg_, box_a / b, res_a=res[m], k_sigma=5.0, halves=(dif_, None),
+                                             diameter_a=diam)
+                        del avg_, dif_
                     fscs[m] = corrected_masked_fsc(h1_, h2_, cur_mask)
                     del h1_, h2_
                 else:
@@ -930,7 +998,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
         for m in range(M):
             rm = []
             for v in vols[m]:
-                r = Volume(b, dev, ft=v.ft.clone())
+                r = Volume(b, dev, pad=pad, ft=v.ft.clone(), pre=v.pre, grid_correct=gc)
                 if fscs[m] is not None and M == 1:
                     r.filter_shells(torch.sqrt((2 * fscs[m] / (1 + fscs[m])).clamp(0, 1).nan_to_num(0)))
                 lowpass(r, box_a / k_al, box_a)
@@ -1034,6 +1102,8 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             r2 = (x - mdl).abs() ** 2
             res_pow.index_add_(0, shb, r2.sum(0))
             res_cnt.index_add_(0, shb, torch.full_like(shb, nb, dtype=torch.float32))
+        # the last batch's arrays (sized from free memory: gigabytes) are not needed through the back-projection
+        P = CP = Z = cross = pw = ll = e_t = mdl = r2 = x = ctf = Ac = None
         if M > 1:
             lm = llm_all.clone()
             lm[:, [m for m in range(M) if not alive[m]]] = -float("inf")
@@ -1083,7 +1153,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     for m in range(M):
         if fscs[m] is None or not alive[m]:
             res[m] = float("nan")
-        out = Volume(b, dev, ft=0.5 * (vols[m][0].ft + vols[m][1].ft))
+        out = Volume(b, dev, pad=pad, ft=0.5 * (vols[m][0].ft + vols[m][1].ft), pre=vols[m][0].pre, grid_correct=gc)
         if fscs[m] is not None:
             out.filter_shells(torch.sqrt((2 * fscs[m] / (1 + fscs[m])).clamp(0, 1).nan_to_num(0)))
         maps.append((out.real() * (mask if cur_mask is None else cur_mask)).nan_to_num(0))

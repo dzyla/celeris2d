@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import shutil
 import time
@@ -309,6 +310,8 @@ class Refine3DSettings:
     mask: str = "auto"              # solvent mask during refinement: "auto" (made from the map every iteration below
                                     # 15 A, masking.auto_mask), "sphere" (the particle sphere only), or a MaskCreate job
                                     # / .mrc path (fixed)
+    grid_correct: bool = False      # gridding correction of the 3D spectra (more accurate projections and maps)
+    pad: int = 0                    # padding of the 3D spectra: 0 automatic (2 if it fits the GPU, else 1), 1 or 2
     align_symmetry: bool = True     # sym differs from the start job's: first rotate the map and the poses so the
                                     # group's axes (n-fold on z, 2-fold on x) lie on the map's (symalign.py); the
                                     # symmetry itself is the user's choice, the scores say how well it holds
@@ -344,11 +347,13 @@ def map_to_box(vol: np.ndarray, apix: float, b: int, apix_new: float) -> torch.T
 def _scale_to_data(clf, idx, A, t, vol: torch.Tensor, b: int, res_a: float, n: int = 500) -> float:
     """Least-squares scale of the map's CTF-modulated projections to particles at their poses (frequencies up to
     res_a): a map from another box or pixel size has other intensity units than these particles."""
-    from .abinitio import Volume
+    from .abinitio import Volume, _to_box
     from .engine import TWO_PI, ctf_2d, freqs
     dev, box_a = clf.dev, clf.box_a
+    # on the smallest box that holds the band (the data are cropped alike): a pad-2 volume at box 512 is 8.6 GB
+    b = min(b, int(math.ceil(2 * box_a / res_a / 2)) * 2 + 8)
     v = Volume(b, dev)
-    v.set_real(vol.to(dev))
+    v.set_real(_to_box(vol.to(dev), b, dev) * (b / vol.shape[0]) ** 3)     # crop keeping the map's values
     fy, fx = freqs(b, dev)
     kr = torch.sqrt(fy[:, None] ** 2 + fx[None, :] ** 2)
     band = (kr >= 2) & (kr <= box_a / res_a)
@@ -440,7 +445,7 @@ def run_refine3d(project: Project, job, log=print) -> dict:
     pj, qj, rj = (project.job(job.params[k]) for k in ("particles", "poses", "reference"))
     src, poses, t_start, half, n_dup, dist = _posed_particles(project, job, pj, qj, tuple(s.classes), log)
     max_res = s.max_res_a or 2.0 * src.apix
-    ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log, nyquist_margin=1.0)
+    ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log, nyquist_margin=1.0, max_c64_gb=1.5)
     clf = ses.clf
     clf._wait_loaded(clf.N)
     dev, b, box_a = clf.dev, clf.bmax, clf.box_a
@@ -466,8 +471,7 @@ def run_refine3d(project: Project, job, log=print) -> dict:
         sym_frame["from"] = start_sym
     idx = torch.arange(clf.N)
     vol *= _scale_to_data(clf, idx, A, t, vol, b, max(res0, 10.0))
-    init = ab.Volume(b, dev)
-    init.set_real(vol.to(dev))
+    init = vol.to(dev)                                  # the real map (a padded Volume at box 512 would be 8.6 GB)
     t0 = time.time()
     A_start = A.clone()
     sm = None if s.mask == "sphere" else ("auto" if s.mask == "auto" else torch.as_tensor(
@@ -477,7 +481,8 @@ def run_refine3d(project: Project, job, log=print) -> dict:
                                                          global_at=tuple(range(1, s.global_iters + 1)),
                                                          global_res=s.global_res_a, box=b,
                                                          half=None if half is None else torch.as_tensor(half),
-                                                         solvent_mask=sm, log=log)
+                                                         solvent_mask=sm, grid_correct=s.grid_correct,
+                                                         pad=s.pad or None, log=log)
     seconds = time.time() - t0
     apix = box_a / b
     h1, h2 = vols[0][0].real(), vols[0][1].real()
@@ -596,7 +601,7 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
     src, poses, t_start, half, n_dup, dist = _posed_particles(project, job, pj, qj, (), log)
     max_res = s.max_res_a or 2.0 * src.apix
     t0 = time.time()
-    ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log, nyquist_margin=1.0)
+    ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log, nyquist_margin=1.0, max_c64_gb=1.5)
     clf = ses.clf
     clf._wait_loaded(clf.N)
     dev, box_a, n = clf.dev, clf.box_a, clf.N
@@ -624,7 +629,7 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
     inits = []
     g = torch.Generator().manual_seed(s.seed + 3)
     for i, v in enumerate(vols):
-        V = ab.Volume(b, dev)
+        V = ab.Volume(b, dev, pad=ab.auto_pad(b, K, dev), grid_correct=True)
         vv = v.to(dev)
         if any(str(s.references[j]) == str(s.references[i]) for j in range(i)):
             # a repeated reference: a little independent noise beyond res_start so the copies can separate

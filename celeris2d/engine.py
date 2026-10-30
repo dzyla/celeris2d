@@ -185,6 +185,8 @@ class Params:
     n_iter: int = 25
     diameter_a: float = 200.0
     max_res_a: float = 6.0          # final E/M-step resolution limit
+    max_c64_gb: float = 0.0         # particle spectra larger than this (GB as complex64) are stored as fp16 even if they
+                                    # fit (0: no limit); the 3D jobs set 1.5 to leave the GPU to their volumes
     nyquist_margin: float = 1.1     # max_res_a is at least this x Nyquist: 2D never classifies at Nyquist (the last shells
                                     # only carry interpolation/aliasing artefacts); 3D refinements use 1.0 (their FSC
                                     # decides; beta-gal at 3.1 A was capped by 2.2 x 1.24 A/px = 2.7 A)
@@ -367,7 +369,7 @@ class Classifier2D:
         bh = bm // 2 + 1
         c64 = self.N * bm * bh * 8
         free = gpu_free(self.dev) if self.dev.type == "cuda" else 0
-        if c64 < 0.35 * free:
+        if c64 < 0.35 * free and not (self.p.max_c64_gb and c64 > self.p.max_c64_gb * 1e9):
             self.half, where = False, self.dev
         elif c64 / 2 < 0.6 * free:
             self.half, where = True, self.dev
