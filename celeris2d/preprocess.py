@@ -101,10 +101,14 @@ class Micrograph:
     model: "MotionModel | None" = None      # local motion model (frame shift at a position = shifts + model)
 
 
-def dose_weights(n: int, dose_per_frame: float, k: torch.Tensor, pre_dose: float = 0.0) -> torch.Tensor:
+def dose_weights(n: int, dose_per_frame: float, k: torch.Tensor, pre_dose: float = 0.0,
+                 kv: float = 300.0) -> torch.Tensor:
     """Grant & Grigorieff (2015) exposure filter per frame, (n, *k.shape), scaled so that sum_i w_i^2 = n at
-    every frequency (the dose-weighted sum keeps the noise level of a plain sum)."""
-    ne = 0.245 * k.clamp_min(1e-4).pow(-1.665) + 2.81                 # critical exposure (e/A^2)
+    every frequency (the dose-weighted sum keeps the noise level of a plain sum). The critical exposure was measured
+    at 300 kV; at 200 kV it is 0.8 x that (as in MotionCor2 and RELION)."""
+    ne = 0.245 * k.clamp_min(1e-4).pow(-1.665) + 2.81                 # critical exposure (e/A^2) at 300 kV
+    if kv < 250:
+        ne = 0.8 * ne
     dose = pre_dose + (torch.arange(n, device=k.device, dtype=torch.float32) + 0.5) * dose_per_frame
     q = torch.exp(-dose.view(-1, *[1] * k.dim()) / (2 * ne[None]))
     return q * torch.sqrt(n / q.pow(2).sum(0, keepdim=True))
@@ -211,7 +215,7 @@ def patch_shifts(R: torch.Tensor, apix: float, grid: int = 5, align_apix: float 
     return torch.tensor(cen, device=R.device), out
 
 
-def _local_sums(F, sh_g, model, w, apix, tile=512):
+def _local_sums(F, sh_g, model, w, apix, tile=512, pre_dose=0.0, kv=300.0):
     """Aligned sums with local motion: overlapping tiles (half-tile steps, sin^2 weights that add up to 1), each
     frame of a tile shifted in Fourier space by the global shift plus the model at the tile centre. Returns the
     plain sum, the dose-weighted sum and the dose-weighted sums of the even and the odd frames (ny, nx)."""
@@ -228,7 +232,7 @@ def _local_sums(F, sh_g, model, w, apix, tile=512):
     win1 = torch.sin(math.pi * (r + 0.5) / tile) ** 2
     win = win1[:, None] * win1[None, :]
     ky, kx = _grid(tile, tile, apix, dev)
-    wt = dose_weights(n, w, torch.sqrt(ky ** 2 + kx ** 2))                          # w = dose per frame here
+    wt = dose_weights(n, w, torch.sqrt(ky ** 2 + kx ** 2), pre_dose, kv)            # w = dose per frame here
     t = torch.linspace(0, 1, n, device=dev)
     ys, xs = list(range(0, Ny - tile + 1, st)), list(range(0, Nx - tile + 1, st))
     for y0 in ys:
@@ -245,7 +249,7 @@ def _local_sums(F, sh_g, model, w, apix, tile=512):
 
 def motion_correct(frames: np.ndarray, gain: np.ndarray | None, apix: float, dose_per_frame: float, bin: float = 1,
                    align_apix: float = 4.0, pre_dose: float = 0.0, patches: int = 5, device=None,
-                   keep_frames: bool = False) -> Micrograph:
+                   keep_frames: bool = False, kv: float = 300.0) -> Micrograph:
     """Gain, Fourier binning by `bin` (any factor >= 1: 2 for super-resolution -> physical pixels, more to save
     space and time; the pixel size becomes apix * NY / ny, x within one pixel of the same), whole-frame alignment on a copy
     binned to ~align_apix, then the aligned sums (plain and dose-weighted) at apix * bin. patches > 0: local
@@ -286,13 +290,13 @@ def motion_correct(frames: np.ndarray, gain: np.ndarray | None, apix: float, dos
         cen, rs = patch_shifts(Rg, p, grid=patches)
         del Rg
         model = MotionModel(cen, torch.linspace(0, 1, n, device=dev), rs)
-        out = _local_sums(F, sh, model, dose_per_frame, p)
+        out = _local_sums(F, sh, model, dose_per_frame, p, pre_dose=pre_dose, kv=kv)
         return Micrograph(sum=out[0], sum_dw=out[1], apix=p, shifts=sh.cpu().numpy(), halves=(out[2], out[3]),
                           dose_per_frame=dose_per_frame, frames_ft=F if keep_frames else None, model=model,
                           local=dict(rms_a=model.rms, used=model.n_used, measured=rs.cpu().numpy(),
                                      centres=cen.cpu().numpy(),
                                      model=model(cen, torch.linspace(0, 1, n, device=dev)).cpu().numpy()))
-    w = dose_weights(n, dose_per_frame, torch.sqrt(ky ** 2 + kx ** 2), pre_dose)
+    w = dose_weights(n, dose_per_frame, torch.sqrt(ky ** 2 + kx ** 2), pre_dose, kv)
     S = torch.zeros((ny, nx // 2 + 1), dtype=torch.complex64, device=dev)
     Sw, He, Ho = torch.zeros_like(S), torch.zeros_like(S), torch.zeros_like(S)
     for i in range(0, n, 4):                                         # i is even: rows 0, 2 of a chunk are even

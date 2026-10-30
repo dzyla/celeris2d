@@ -32,9 +32,11 @@ def _atomic_json(path, obj):
 
 
 def _atomic_npz(path, cols):
-    base = path[:-4]
-    tmp = f"{base}.tmp{os.getpid()}.npz"
-    np.savez(tmp, **cols)
+    """Write, then rename into place. The temporary name does not end in .npz (np.savez on a file object does not
+    add the suffix), so a writer killed mid-save leaves a file that no reader takes for a table file."""
+    tmp = f"{path}.tmp{os.getpid()}"
+    with open(tmp, "wb") as f:
+        np.savez(f, **cols)
     os.replace(tmp, path)
 
 
@@ -98,7 +100,10 @@ class ShardedTable:
         done = self.movies_in_shards()
         out = []
         for f in sorted(glob.glob(os.path.join(self.path, "staging", "*.npz"))):
-            m = int(os.path.basename(f)[:-4])
+            stem = os.path.basename(f)[:-4]
+            if not stem.isdigit():                   # not a staged micrograph (e.g. a temporary file of an old version)
+                continue
+            m = int(stem)
             if m not in done:
                 out.append((m, f))
         return out

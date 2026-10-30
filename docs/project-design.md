@@ -95,13 +95,35 @@ engine's model convention (the particle's centre is at +shift from the box centr
   half maps, figures, table `particles` = uid, rot, tilt, psi (RELION Euler), shifts, used, model.
 - **Extract with `recenter=<job>`**: the aligned particles of a Class2D / InitialModel / Refine3D job cut at their
   aligned centre (centre in the extraction they were aligned on + shift), uid kept, pick position kept as dx_a /
-  dy_a; particles whose new centres are closer than particle_a / 4 are merged (best maxprob / fit kept).
+  dy_a; particles whose new centres are closer than the duplicate distance are merged (best maxprob / fit kept).
 - **Refine3D** (particles, starting poses by uid, reference map): the map is resampled to the particles' pixel
-  size and box and scaled to the data; shifts start at zero when the particles were re-centred on that job's
-  shifts. Writes map.mrc (solvent-masked), map_nomask, mask, half maps, fsc.png, table `particles` = uid, rot, tilt,
-  psi, shifts, fit, half. `global_iters` adds exhaustive orientation searches to the first iterations.
+  size and box and scaled to the data; the starting shift is the aligned centre (in the extraction the poses were
+  found on) minus the centre in this extraction, so any pair of extractions works. Writes map.mrc
+  (solvent-masked), map_nomask, mask, half maps, fsc.png, table `particles` = uid, rot, tilt, psi, shifts, fit,
+  half. `global_iters` adds exhaustive orientation searches to the first iterations.
 - **Polish** (on a Refine3D job): per-particle tracks and per-frame weights from the movies (method in
-  `polish.py`'s docstring); a particle job like an extraction, same uids, centred at the refined centre.
+  `polish.py`'s docstring); a particle job like an extraction, same uids, centred at the refined centre, and the
+  table keeps each particle's half (its track was fitted against that half map).
+
+**Gold-standard halves are never mixed.** A particle keeps the half of the refinement its poses come from
+(Refine3D reads the poses job's `half` column; RELION's rlnRandomSubset), so a polished or re-refined particle is
+never compared with a half map it was aligned against. **Duplicates never reach a 3D reconstruction**: InitialModel
+(on 2D-aligned centres) and Refine3D (on the starting aligned centres) keep only the best-fitting particle of any
+whose centres on one micrograph are closer than the duplicate distance, half the picking diameter (two distinct
+particles cannot be that close; `jobs.duplicate_distance`), before the halves are split; the summary reports
+`duplicates_removed`. The picker's own minimum distance (`min_dist_frac` x diameter, between picks; 0.5 by
+default: T20S recall of J104's refined set 90.8 % from 20,901 picks; 0.4: 97.2 % / 33,681; 0.6: 76.0 % / 12,973;
+the old picker, which allowed half its stated distance, 84.4 % / 17,008) lets two picks land on one elongated
+particle; they converge after alignment and are removed there. T20S with these rules: InitialModel D7 removed
+1,177 of 11,980 particles (10 %), 11.58 A as before; Refine3D D7 on the re-centred extraction (already merged)
+removed 50, 3.29 A (3.10 A solvent mask) with the inherited halves vs 3.32 / 3.13 A with fresh random ones.
+
+**Purge / rebuild / rename / delete** refuse a running job (a job records the process running it, so one left
+"running" by a process that died is recognised as not running). Only MotionCtf and Extract jobs can be purged
+(Polish stacks need the movies and the refinement again). Rebuild changes nothing before it runs: a purged job's
+movie counts as done once its file exists again, and the purged flag is cleared when every movie is, so a failed
+rebuild can simply be repeated. Extraction pixel sizes are exact (the source box is an even number of pixels:
+2.0 A/px requested from 1.3 A/px at box 128 is 198 x 1.3 / 128 = 2.0109 A/px, stored as such).
 
 EMPIAR-10025 (20 movies, all jobs from movies, one RTX 5090): motion/CTF/picks/64 px extraction 56 s; Class2D K40
 45 s; Class2D K30 on the selection 18 s; ab initio 10 s (C1) / 38 s (D7); re-centred 288 px extraction 12-16 s;

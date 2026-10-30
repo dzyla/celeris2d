@@ -762,10 +762,12 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                      sym: str = "C1", n_iter: int = 8, res_start: float = 15.0, step_start: float | None = None,
                      batch: int = 256, n_local: int = 1, step_scale: float | None = None, global_at: tuple = (),
                      global_res: float = 12.0, drop_frac: float = 0.0, rebalance: float = 0.0,
-                     box: int | None = None, relax_ops: torch.Tensor | None = None, relax_iters: int = 0, log=print):
+                     box: int | None = None, relax_ops: torch.Tensor | None = None, relax_iters: int = 0,
+                     half: torch.Tensor | None = None, log=print):
     """Local refinement of particle orientations A and shifts t (A, model shift) against CTF-modulated projections,
-    gold-standard halves. inits: starting Volume or list of M Volumes. A: (n, 3, 3) or, with several models, the
-    pose in every model's own frame (n, M, 3, 3); t: (n, 2) or (n, M, 2); z: (n,) starting model. Each iteration
+    gold-standard halves (half: (n,) 0/1 per particle, e.g. the split of the refinement the poses come from - a
+    particle must stay in the half it was aligned or polished against; default a random split, seed 1). inits:
+    starting Volume or list of M Volumes. A: (n, 3, 3) or, with several models, the pose in every model's own frame (n, M, 3, 3); t: (n, 2) or (n, M, 2); z: (n,) starting model. Each iteration
     refines the pose in every model and puts the particle in the model that fits best.
     relax_ops: symmetry operators of the group the start map was solved in; for the first relax_iters iterations
     the local search also covers every symmetry-related copy of each pose (RELION's relaxed symmetry), so a
@@ -788,8 +790,9 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     M = len(inits)
     z = torch.zeros(n, dtype=torch.long, device=dev) if z is None else z.clone().to(dev).long()
     ops = symmetry_ops(sym).to(dev)
-    g = torch.Generator().manual_seed(1)
-    half = torch.randperm(n, generator=g) % 2
+    if half is None:
+        half = torch.randperm(n, generator=torch.Generator().manual_seed(1)) % 2
+    half = torch.as_tensor(half).long().cpu()
     fy, fx = freqs(b, dev)
     kr = torch.sqrt(fy[:, None] ** 2 + fx[None, :] ** 2)
     ph = TWO_PI / box_a

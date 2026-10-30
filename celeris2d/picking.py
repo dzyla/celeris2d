@@ -38,6 +38,18 @@ def suggest_box(box_a: float, apix: float) -> int:
     return next(b for b in NICE if b >= n and b % 2 == 0)
 
 
+def source_box(box: int, apix: float, out_apix: float | None) -> int:
+    """Box (px, even) cut at pixel size apix that extract() Fourier-crops to box px at about out_apix."""
+    f = (out_apix or apix) / apix
+    return int(math.ceil(box * f / 2 - 1e-6)) * 2
+
+
+def binned_apix(box: int, apix: float, out_apix: float | None) -> float:
+    """The exact pixel size of extract()'s particles: source_box x apix / box (the requested out_apix rounded to an
+    even source box; e.g. 2.0054 for 2.0 A/px from a 1.3 A/px micrograph at box 128)."""
+    return source_box(box, apix, out_apix) * apix / box
+
+
 def ctf_sign(ny: int, nx: int, apix: float, du: float, dv: float, ang_deg: float, optics, dev) -> torch.Tensor:
     """sign(CTF) on an rfft2 grid (ny, nx//2+1), RELION convention (as engine.ctf_2d)."""
     ky, kx = _grid(ny, nx, apix, dev)
@@ -85,7 +97,7 @@ def _conv(img_ft, ker, shape):
 
 
 def blob_candidates(mic: torch.Tensor, apix: float, diameter_a: float, ctf=None, optics=None, dark: bool = True,
-                    min_dist_frac: float = 0.8, keep_maps: bool = False) -> Candidates:
+                    min_dist_frac: float = 0.5, keep_maps: bool = False) -> Candidates:
     img, wa = prepare(mic, apix, diameter_a, ctf, optics, dark)
     dev, (h, w) = img.device, img.shape
     yy = (torch.arange(h, device=dev) - h // 2).float()[:, None] * wa
@@ -104,7 +116,10 @@ def blob_candidates(mic: torch.Tensor, apix: float, diameter_a: float, ctf=None,
     ncc = num / torch.sqrt(var * nwin)
     big = (rr <= diameter_a).float()                                # ~2 diameters across
     mean_big = _conv(Fi, big, (h, w)) / float(big.sum())
-    k = 2 * max(1, int(round(min_dist_frac * diameter_a / wa / 2))) + 1
+    # minimum distance between picks (min_dist_frac x diameter, circular): local maxima over the square inscribed
+    # in that circle, then greedy suppression by true distance, best score first (_spaced below)
+    md = min_dist_frac * diameter_a
+    k = 2 * max(1, int(md / wa / math.sqrt(2))) + 1
     peak = (ncc == torch.nn.functional.max_pool2d(ncc[None, None], k, 1, k // 2)[0, 0]) & (ncc > 0)
     e = int(math.ceil(r / wa))
     peak[:e], peak[-e:], peak[:, :e], peak[:, -e:] = False, False, False, False
@@ -121,10 +136,27 @@ def blob_candidates(mic: torch.Tensor, apix: float, diameter_a: float, ctf=None,
     oy = para(ncc[y - 1, x], s, ncc[y + 1, x])
     ox = para(ncc[y, x - 1], s, ncc[y, x + 1])
     xy = torch.stack([(x.float() + ox) * wa, (y.float() + oy) * wa], 1)
+    keep = torch.as_tensor(dedup(xy.cpu().numpy(), -np.arange(len(xy)), md), device=dev)   # xy is best first
+    xy, y, x, s = xy[keep], y[keep], x[keep], s[keep]
     med = float(sd[e:-e, e:-e].median())
     work = dict(image=img.cpu().numpy(), score=ncc.cpu().numpy(), apix=wa) if keep_maps else {}
     return Candidates(xy.cpu().numpy(), s.cpu().numpy(), (sd[y, x] / med).cpu().numpy(),
                       mean_big[y, x].cpu().numpy(), work)
+
+
+def dedup(xy: np.ndarray, score: np.ndarray, dist: float) -> np.ndarray:
+    """Mask of points kept: greedy, best score first, none closer than dist to a kept one."""
+    from scipy.spatial import cKDTree
+    keep = np.ones(len(xy), bool)
+    if len(xy) < 2 or dist <= 0:
+        return keep
+    tree = cKDTree(xy)
+    for i in np.argsort(-np.asarray(score), kind="stable"):
+        if keep[i]:
+            for j in tree.query_ball_point(xy[i], dist):
+                if j != i:
+                    keep[j] = False
+    return keep
 
 
 def auto_threshold(score: np.ndarray) -> float:
@@ -152,10 +184,11 @@ def extract(mic: torch.Tensor, apix: float, xy_a: np.ndarray, box: int, out_apix
             dark: bool = True, diameter_a: float | None = None) -> np.ndarray:
     """Particles (n, b, b) float32 cut at the (sub-pixel) positions, white protein, normalised to zero mean and
     unit standard deviation over the background (outside 0.55 diameter, or outside 0.8 of the box radius).
-    out_apix > apix: Fourier-binned to that pixel size (box is then in output pixels)."""
+    out_apix > apix: Fourier-binned to about that pixel size (box is then in output pixels; the exact pixel size is
+    binned_apix(box, apix, out_apix))."""
     dev = mic.device
-    f = (out_apix or apix) / apix
-    bi = int(math.ceil(box * f / 2)) * 2                                   # box at the micrograph pixel size
+    bi = source_box(box, apix, out_apix)                                  # box at the micrograph pixel size
+    out_apix = bi * apix / box                                              # exact pixel size of the result
     h = bi // 2
     m = torch.nn.functional.pad(mic.float()[None, None], (h + 2,) * 4, mode="reflect")[0, 0]
     x, y = np.asarray(xy_a)[:, 0] / apix, np.asarray(xy_a)[:, 1] / apix

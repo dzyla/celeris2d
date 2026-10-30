@@ -461,10 +461,9 @@ def purge_job(job: str) -> str:
 @server.tool()
 def rebuild_job(job: str) -> str:
     """Make a purged job's micrographs / particle stacks again from its recorded parameters (in the background)."""
+    from .pipeline import check_rebuild
     prj = _p()
-    j = prj.job(job)
-    prj.forget(j)
-    prj.update_params(j, purged=False)
+    j = check_rebuild(prj, job)
     _background([j])
     return _js(dict(job=j.name, note="running in the background: job_status"))
 

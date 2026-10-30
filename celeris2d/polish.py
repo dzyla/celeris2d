@@ -24,6 +24,7 @@ from dataclasses import asdict, dataclass
 import numpy as np
 import torch
 
+from . import picking as pk
 from . import preprocess as pp
 from .engine import ctf_2d, freqs
 from .project import PARTICLE_JOBS, Job, Project
@@ -132,7 +133,9 @@ def _particles(project: Project, job: Job):
     if "dx_a" in ex_t.columns:                                     # the pick position, kept through re-centring
         d = ex_t.read(["dx_a", "dy_a"])
         pick = pick - np.stack([d["dx_a"][j], d["dy_a"][j]], 1)
-    half = r["half"] if "half" in r else (np.arange(len(r["uid"])) % 2)
+    if "half" not in r:
+        raise ValueError(f"{rj.name} has no half sets (made by an older version: run the refinement again)")
+    half = r["half"]
     return dict(uid=r["uid"], movie=e["movie"][j].astype(np.int64), centre=centre, pick=pick, A=A, half=half,
                 ctf=torch.as_tensor(np.asarray(ctf, np.float32)), optics=src.optics)
 
@@ -170,7 +173,8 @@ def run_polish(project: Project, job, log=print) -> dict:
     movies = np.unique(P["movie"])
     mic_apix = mc.params["apix"] * mc.params["bin"]
     out_apix, box = p["out_apix"], p["box"]
-    bi = int(math.ceil(box * out_apix / mic_apix / 2)) * 2                          # box at the frame pixel size
+    bi = pk.source_box(box, mic_apix, out_apix)                                     # box at the frame pixel size
+    out_apix = bi * mic_apix / box              # exact (extractions by older versions stored the requested one)
     box_a = bi * mic_apix
     max_res = s.max_res_a or max(2.5 * mic_apix, float(project.summary_of(rj)["resolution_a"]))
     vols = _half_maps(project, rj, bi, mic_apix, max_res, dev)
@@ -316,7 +320,8 @@ def run_polish(project: Project, job, log=print) -> dict:
             trk, mvd = np.zeros(0, np.float32), np.zeros(0, np.float32)
         project.add_particles(job, int(m), new_c, imgs, out_apix, dtype=s.dtype, uid=P["uid"][sel],
                               pick_xy_a=P["pick"][sel], columns=dict(score=np.zeros(len(sel), np.float32),
-                                                                     track_rms_a=trk, track_mean_a=mvd))
+                                                                     track_rms_a=trk, track_mean_a=mvd,
+                                                                     half=P["half"][sel].astype(np.uint8)))
         done += 1
         del mic
         if done % 10 == 0 or done == len(movies):

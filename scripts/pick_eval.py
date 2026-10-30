@@ -1,7 +1,7 @@
 """Movies -> project (motion, CTF, blob picks, particles) and pick recall against a refined particle set.
 
 usage: pick_eval.py <movie dir> <gain> <refined particles.cs> <project dir> --apix 0.6575 --dose 53 --bin 2
-           --diameter 120 [--particle-a 160] [--box-a 0] [--threshold T] [--min-dist 0.8] [--pattern "*.tif*"]
+           --diameter 120 [--particle-a 160] [--box-a 0] [--threshold T] [--min-dist 0.5] [--pattern "*.tif*"]
            [--dtype float16] [--particle-apix 2.63] [--no-figures] [--export relion,cryosparc]
 
 Makes Import, MotionCtf, Pick and Extract jobs in the project and runs them over every movie (pipeline.run), and
@@ -36,7 +36,7 @@ def main():
     ap.add_argument("--box-a", type=float, default=0.0, help="0: particle + CTF delocalisation")
     ap.add_argument("--particle-a", type=float, default=0.0, help="longest particle dimension (0: 1.3 x diameter)")
     ap.add_argument("--threshold", type=float, default=None)
-    ap.add_argument("--min-dist", type=float, default=0.8)
+    ap.add_argument("--min-dist", type=float, default=0.5)
     ap.add_argument("--pattern", default="*.tif*", help="movie file pattern in the movie dir")
     ap.add_argument("--dtype", default="float32")
     ap.add_argument("--particle-apix", type=float, default=0.0)

@@ -52,7 +52,7 @@ class MotionSettings:
 class PickSettings:
     diameter_a: float                   # blob (the particle's short dimension)
     dark: bool = True                   # particles darker than the background (cryo); False for negative stain
-    min_dist_frac: float = 0.8
+    min_dist_frac: float = 0.5           # x diameter: T20S recall 90.8% (0.4: 97.2% at 1.6x the picks; 0.6: 76%)
     threshold: float | None = None      # None: automatic per micrograph (generous; 2D cleans up)
     max_std: float = 2.0                # contamination filters (picking.select)
     max_mean: float = 3.0
@@ -71,7 +71,7 @@ class ExtractSettings:
     recenter: int = 0                   # a Class2D / InitialModel / Refine3D job: extract its particles, each centred
                                         # at its aligned centre (centre in that job's extraction + its shift)
     dedup_a: float = -1.0               # with recenter: of particles whose new centres are closer than this (A) only
-                                        # the best-scoring is kept (-1: particle_a / 4; 0: keep all)
+                                        # the best-scoring is kept (-1: half the pick diameter, the particle's short dimension; 0: keep all)
     export: tuple = ()                  # ("relion", "cryosparc"): write particles.star / particles.cs at the end
 
 
@@ -104,6 +104,7 @@ def extract_job(project: Project, picks: Job, s: ExtractSettings, label: str = "
     box_a = s.box_a or pk.box_for(s.particle_a, 20000.0, max(s.box_res_a, 2 * out_apix),
                                   optics_of(project, mic_job).wavelength)
     box = pk.suggest_box(box_a, out_apix)
+    out_apix = pk.binned_apix(box, mic_apix, out_apix)          # exact (the source box is an even number of pixels)
     label = label or (f"{box * out_apix:.0f}A_{out_apix:.3g}apx_{'f16' if s.dtype == 'float16' else 'f32'}"
                       + (f"_sel{s.select:03d}" if s.select else "") + (f"_rc{s.recenter:03d}" if s.recenter else ""))
     return project.new_job("Extract", dict(asdict(s), picks=picks.id, micrographs=mic_job.id, box=box,
@@ -118,7 +119,7 @@ def _recentred(project: Project, job: Job) -> dict:
     al = project.table(rj, "particles").read()
     if "used" in al:
         al = {k: v[al["used"]] for k, v in al.items()}
-    ex0 = project.ancestor(rj, PARTICLE_JOBS)
+    ex0 = project.aligned_particles(rj)
     e = project.table(ex0, "particles").read()
     o = np.argsort(e["uid"])
     pos = np.searchsorted(e["uid"][o], al["uid"])
@@ -139,19 +140,7 @@ def _recentred(project: Project, job: Job) -> dict:
 
 
 def _dedup(xy: np.ndarray, score: np.ndarray, dist: float) -> np.ndarray:
-    """Mask of particles kept: greedy, best score first, none closer than dist to a kept one."""
-    from scipy.spatial import cKDTree
-    keep = np.ones(len(xy), bool)
-    if dist <= 0 or len(xy) < 2:
-        return keep
-    tree = cKDTree(xy)
-    for i in np.argsort(-score):
-        if keep[i]:
-            nb = tree.query_ball_point(xy[i], dist)
-            for j in nb:
-                if j != i:
-                    keep[j] = False if keep[i] else keep[j]
-    return keep
+    return pk.dedup(xy, score, dist)
 
 
 # ------------------------------------------------------------------------------- one movie of one job
@@ -160,6 +149,49 @@ _mem: dict = {}           # movie_id -> (micrograph on the GPU, apix, CTF): stag
 _mem_picks: dict = {}     # (pick job id, movie_id) -> picks
 _sel_cache: dict = {}     # Select job id -> uids
 _rc_cache: dict = {}      # re-centring Extract job id -> per-movie particles
+
+
+class _Writer(ThreadPoolExecutor):
+    """The I/O thread: one worker (catalog order kept); check() raises the first failed write."""
+    def __init__(self):
+        super().__init__(1)
+        self.futs = []
+
+    def submit(self, *a, **k):
+        f = super().submit(*a, **k)
+        self.futs.append(f)
+        return f
+
+    def check(self):
+        done = [f for f in self.futs if f.done()]
+        self.futs = [f for f in self.futs if not f.done()]
+        for f in done:
+            if f.exception() is not None:
+                raise RuntimeError("writing results failed") from f.exception()
+
+
+def _release(item):
+    """Free a shared-memory block, or the frames of a reader queue item (i, (shm, frames)): unlinked first (the
+    /dev/shm name goes now), then closed if no array still views it (else when the last view is collected)."""
+    if isinstance(item, tuple) and len(item) == 2 and isinstance(item[1], tuple):
+        item = item[1][0]
+    if item is None or isinstance(item, (BaseException, tuple)):
+        return
+    for f in (item.unlink, item.close):
+        try:
+            f()
+        except (FileNotFoundError, BufferError):
+            pass
+
+
+def _release_name(name: str):
+    from multiprocessing import shared_memory
+    try:
+        shm = shared_memory.SharedMemory(name=name)
+        shm.close()
+        shm.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def _io(executor, fn, *args, **kw):
@@ -201,7 +233,7 @@ def _motion(project: Project, job: Job, mv: dict, frames=None, log=print, keep_f
         gain = _gain_cache[s.gain][0]
     t0 = time.time()
     mic = pp.motion_correct(fr, gain, s.apix, s.dose_total / len(fr), bin=s.bin, patches=s.patches,
-                            keep_frames=keep_frames)
+                            keep_frames=keep_frames, kv=s.kv)
     optics = Optics(s.kv, s.cs_mm, s.amp_contrast)
     fit = pp.estimate_ctf(mic.sum, mic.apix, optics) if ctf else None
     torch.cuda.synchronize()
@@ -287,7 +319,7 @@ def process_movie_extract(project: Project, job: Job, movie_id: int, io: ThreadP
             return dict(particles=0)
         uid, xy, pick, score = _rc_cache[job.id][movie_id]
         d = p.get("dedup_a", -1.0)
-        k = _dedup(xy, score, p["particle_a"] / 4 if d < 0 else d)
+        k = _dedup(xy, score, pick_job_.params["diameter_a"] / 2 if d < 0 else d)
         ny, nx = img.shape
         k &= (xy[:, 0] >= 0) & (xy[:, 1] >= 0) & (xy[:, 0] < nx * apix) & (xy[:, 1] < ny * apix)
         imgs = pk.extract(img, apix, xy[k], p["box"], out_apix=out_apix if out_apix > apix * 1.001 else None,
@@ -341,6 +373,9 @@ def rethreshold(project: Project, picks: Job, threshold: float | None = None, ma
 
 def finish(project: Project, job: Job, status: str = "finished") -> dict:
     """Consolidated table, summary.json, exports the job asked for; status."""
+    if status == "finished" and job.params.get("purged"):
+        if all(project.done(job, int(m)) for m in _job_movies(project, job)):
+            project.update_params(job, purged=False)
     if job.type in ("MotionCtf", "Pick", "Extract"):
         project.consolidate(job)
     if job.type in ("MotionCtf", "Pick") and job.params.get("figures") == "outliers" and status == "finished":
@@ -443,25 +478,37 @@ def run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thre
     paths = project.movies().set_index("id")["path"]
     q: queue.Queue = queue.Queue(maxsize=2)
     pool = _decode_pool(2) if mc is not None else None
+    halt = threading.Event()                         # the GPU loop has stopped (error): the reader stops too
+    futs: dict = {}
+
+    def put(x) -> bool:
+        while not halt.is_set():
+            try:
+                q.put(x, timeout=0.5)
+                return True
+            except queue.Full:
+                pass
+        _release(x)
+        return False
 
     def reader():                                    # keeps two movies decoding ahead, in order
         try:
-            futs = {}
             for n, i in enumerate(todo):
                 for k in todo[n:n + 2]:
                     if k not in futs and mc is not None and not project.done(mc, k):
                         futs[k] = pool.submit(_decode_shm, paths[k])
-                if stop is not None and stop.is_set():
+                if (stop is not None and stop.is_set()) or halt.is_set():
                     break
                 if i in futs:
                     name, shape, dt = futs.pop(i).result()
                     shm = shared_memory.SharedMemory(name=name)
-                    q.put((i, (shm, np.ndarray(shape, np.dtype(dt), buffer=shm.buf))))
-                else:
-                    q.put((i, None))
-            q.put(None)
+                    if not put((i, (shm, np.ndarray(shape, np.dtype(dt), buffer=shm.buf)))):
+                        return
+                elif not put((i, None)):
+                    return
+            put(None)
         except BaseException as e:                   # the GPU loop raises it instead of waiting forever
-            q.put(e)
+            put(e)
 
     threading.Thread(target=reader, daemon=True).start()
     t0, n = time.time(), 0
@@ -471,9 +518,11 @@ def run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thre
         tm[k] += time.time() - t
         return time.time()
 
+    cur: list = [None]
     try:
-        with ThreadPoolExecutor(1) as figs, ThreadPoolExecutor(1) as io:     # one writer: catalog order kept
+        with ThreadPoolExecutor(1) as figs, _Writer() as io:     # one writer: catalog order kept
             while True:
+                io.check()
                 t = time.time()
                 item = q.get()
                 t = lap("wait_for_reader", t)
@@ -482,15 +531,14 @@ def run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thre
                 if isinstance(item, BaseException):
                     raise RuntimeError("reading movies failed") from item
                 i, sf = item
+                cur[0] = None if sf is None else sf[0]
                 if mc is not None:
                     process_movie_motion(project, mc, i, frames=None if sf is None else sf[1], log=log,
                                          figures=figs, io=io)
                     t = lap("motion_ctf", t)
-                if sf is not None:                       # frames are on the GPU by now: free the shared block
-                    shm = sf[0]
-                    del sf, item
-                    shm.close()
-                    shm.unlink()
+                del sf, item                             # frames are on the GPU by now: free the shared block
+                _release(cur[0])
+                cur[0] = None
                 if pj is not None:
                     process_movie_pick(project, pj, i, log=log, figures=figs)
                     t = lap("pick", t)
@@ -501,14 +549,25 @@ def run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thre
                 if progress:
                     progress(n, len(todo))
             t = time.time()
+        io.check()                                       # a failed write (e.g. a full disk) fails the run
         tm["writes_after_last"] = time.time() - t
     finally:
+        halt.set()
+        _release(cur[0])
+        while True:                                      # blocks the reader decoded but the loop did not use
+            try:
+                _release(q.get_nowait())
+            except queue.Empty:
+                break
         _mem.clear()
         _mem_picks.clear()
         _sel_cache.clear()
         _rc_cache.clear()
         if pool is not None:
-            pool.shutdown(cancel_futures=True)
+            pool.shutdown(wait=True, cancel_futures=True)
+            for f in list(futs.values()):
+                if f.done() and not f.cancelled() and f.exception() is None:
+                    _release_name(f.result()[0])
     if finish_jobs:
         for j in jobs:
             finish(project, j)
@@ -549,9 +608,29 @@ def draw_figure(project: Project, job, movie_id: int) -> str:
 def rebuild(project: Project, job, log=print) -> dict:
     """Make a purged job's micrographs / particle stacks again from its recorded parameters (its input jobs must
     still have their data: rebuild those first)."""
-    job = project.job(job)
-    if job.type not in ("MotionCtf", "Extract"):
-        raise ValueError(f"nothing to rebuild for {job.type} jobs")
-    project.forget(job)
-    project.update_params(job, purged=False)
+    job = check_rebuild(project, job)
     return run(project, [job], log=log)
+
+
+def _job_movies(project: Project, job: Job) -> list[int]:
+    from .project import PER_MOVIE
+    with project._db() as c:
+        return [r[0] for r in c.execute(f"SELECT movie_id FROM {PER_MOVIE[job.type]} WHERE job_id=?", (job.id,))]
+
+
+def check_rebuild(project: Project, job) -> Job:
+    """The job, if rebuild can make its files again: nothing is changed before the run, which writes each movie's
+    files again and replaces its catalog row; a purged job's movie counts as done once its file exists, and the
+    purged flag is cleared when every movie is (finish). A failed rebuild leaves the job purged and can be repeated."""
+    from .project import REBUILDABLE
+    job = project.job(job)
+    if job.type not in REBUILDABLE:
+        raise ValueError(f"nothing to rebuild for {job.type} jobs")
+    if not job.params.get("purged"):
+        raise ValueError(f"{job.name} was not purged")
+    if project.is_running(job):
+        raise ValueError(f"{job.name} is running")
+    for i in job.inputs:
+        if project.job(i).params.get("purged"):
+            raise ValueError(f"{job.name} needs {project.job(i).name}, which is purged: rebuild that first")
+    return job

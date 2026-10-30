@@ -16,6 +16,7 @@ shift_y_a, used.
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import shutil
@@ -35,22 +36,78 @@ def particle_source(project: Project, ref):
     from .export import job_source
     job = project.job(ref)
     if job.type in PARTICLE_JOBS:
-        return job_source(job.path)
+        src = job_source(job.path)
+        src.path = f"{project.root}#{job.id:03d}"
+        return src
     ex = project.ancestor(job, PARTICLE_JOBS)
     if job.type == "Select":
         uids = project.selected_uids(job)
     else:
         uids = project.table(job, "particles").read(["uid"])["uid"]
     src = job_source(ex.path, uids=uids)
-    src.path = f"{ex.path}#{job.name}"
+    src.path = f"{project.root}#{ex.id:03d}#{job.id:03d}"    # by number: a renamed job keeps its saved 2D results
     return src
+
+
+def _centres(project: Project, particle_job, uids: np.ndarray) -> np.ndarray:
+    """Box centres (n, 2) in A of these particles in a particle job (by uid)."""
+    t = project.table(particle_job, "particles").read(["uid", "x_a", "y_a"])
+    o = np.argsort(t["uid"])
+    pos = np.searchsorted(t["uid"][o], uids).clip(0, len(o) - 1)
+    if not (t["uid"][o[pos]] == uids).all():
+        raise ValueError(f"{project.job(particle_job).name} lacks some of the particles")
+    return np.stack([t["x_a"][o[pos]], t["y_a"][o[pos]]], 1).astype(np.float64)
+
+
+def duplicate_distance(project: Project, particle_job) -> float:
+    """Two particles whose aligned centres are closer than this are one particle picked twice: half the picking
+    diameter (the particle's short dimension; two distinct particles cannot be that close)."""
+    pick = project.ancestor(particle_job, "Pick")
+    return 0.5 * pick.params["diameter_a"] if pick else project.job(particle_job).params.get("particle_a", 0) / 4
+
+
+def drop_duplicates(centres: np.ndarray, movie: np.ndarray, fit: np.ndarray, dist: float) -> np.ndarray:
+    """Mask of particles kept: per micrograph, of aligned centres closer than dist only the best-fitting one. Must run
+    before particles are split into gold-standard halves - two copies of one particle in different halves inflate
+    the FSC."""
+    from .picking import dedup
+    keep = np.ones(len(centres), bool)
+    for m in np.unique(movie):
+        i = np.flatnonzero(movie == m)
+        keep[i] = dedup(centres[i], fit[i], dist)
+    return keep
 
 
 def _session(project: Project, job: Job, src, diameter_a, max_res_a, gpus, log, workdir=None):
     from .session import Session
     s = Session(workdir or os.path.join(job.path, "session"), log=log)
+    _migrate_session(s.workdir, src.path)
     info = s.load(src, diameter=diameter_a or None, max_res=max_res_a, gpus=gpus)
     return s, info
+
+
+def _ids(key: str) -> list[str]:
+    """Job numbers in a session input key: '<root>#004#005' (now) or '<root>/jobs/004_extract_x#005_class2d_y' (older
+    versions, which broke when a job was renamed)."""
+    return [os.path.basename(k)[:3] for k in key.split("#")[1:]] + ([os.path.basename(key.split("#")[0])[:3]]
+                                                                     if "/jobs/" in key.split("#")[0] else [])
+
+
+def _migrate_session(workdir: str, key: str):
+    """Results a job's session saved under an older input key (folder names) are re-keyed to the current one (job
+    numbers), so they are restored."""
+    if not os.path.isdir(workdir):
+        return
+    for fn in os.listdir(workdir):
+        f = os.path.join(workdir, fn, "summary.json") if os.path.isdir(os.path.join(workdir, fn)) else \
+            os.path.join(workdir, fn)
+        if not (f.endswith(".result.json") or f.endswith("summary.json")) or not os.path.isfile(f):
+            continue
+        meta = json.load(open(f))
+        old = meta.get("input")
+        if isinstance(old, str) and old != key and "#" in old and sorted(_ids(old)) == sorted(_ids(key)):
+            meta["input"] = key
+            json.dump(meta, open(f, "w"), indent=1, default=str)
 
 
 def _write_results(project: Project, job: Job, src, idx, cols: dict, name="particles"):
@@ -180,11 +237,29 @@ def run_initial_model(project: Project, job, log=print) -> dict:
     src = particle_source(project, c.params["particles"])
     ses, _ = _session(project, c, src, cs.diameter_a, project.summary_of(c)["max_res_a"], s.gpus, log,
                       workdir=os.path.join(c.path, "session"))
+    if "2d" not in ses.results:
+        raise ValueError(f"{c.name}: its 2D result was not found in {c.name}/session (made by an older version: run "
+                         f"the Class2D job again)")
     r = ses.results["2d"]
     mask = None
     if s.classes:
         mask = np.zeros(len(r.pops), bool)
         mask[np.asarray(s.classes, int) - 1] = True
+    # duplicates (2D-aligned centres closer than duplicate_distance) are left out before the half split
+    pj = project.aligned_particles(c)
+    covered = r.labels >= 0
+    rows = np.asarray(r.idx)[covered]
+    uid = src.parts["celUid"].to_numpy(np.int64)[rows]
+    centres = _centres(project, pj, uid) + np.asarray(r.offsets, np.float64)[covered]
+    dist = duplicate_distance(project, pj)
+    keep = drop_duplicates(centres, src.parts["celMovie"].to_numpy(np.int64)[rows], np.asarray(r.maxprob)[covered],
+                           dist)
+    n_dup = int((~keep).sum())
+    if n_dup:
+        log(f"[3d] {n_dup} duplicate particles left out (2D-aligned centres < {dist:.0f} A apart; best fit kept)")
+        r = copy.copy(r)
+        r.labels = np.asarray(r.labels).copy()
+        r.labels[np.flatnonzero(covered)[~keep]] = -1
     prm = ab.AbinitioParams(sym=s.sym, n_models=s.n_models, seed=s.seed)
     summ = ab.run(ses.clf, r, job.path, prm, classes=mask, log=log, src=None)
     z = np.load(os.path.join(job.path, "poses.npz"))
@@ -195,7 +270,7 @@ def run_initial_model(project: Project, job, log=print) -> dict:
     os.remove(os.path.join(job.path, "poses.npz"))                     # the sharded table replaces it
     keep = {k: summ[k] for k in ("particles", "particles_used", "resolution_a", "resolution_solvent_mask_a",
                                  "resolution_unmasked_a", "apix", "box", "seconds_total")}
-    keep.update(sym=s.sym, map="map.mrc")
+    keep.update(sym=s.sym, map="map.mrc", duplicates_removed=n_dup, duplicate_distance_a=round(dist, 1))
     project.set_status(job, "finished", keep)
     ses.clf = None
     torch.cuda.empty_cache()
@@ -280,10 +355,25 @@ def run_refine3d(project: Project, job, log=print) -> dict:
     ok[ok] = poses["uid"][order[pos[ok]]] == uid[ok]
     src.subset(np.flatnonzero(ok))
     row = order[pos[ok]]
-    recentred = qj.id in (pj.params.get("recenter"), pj.params.get("refine"))   # centred on these shifts already
-    t_start = np.zeros((len(row), 2), np.float32) if recentred else np.stack(
+    # starting shift = aligned centre (centre in the extraction the poses were found on + their shift) - centre in
+    # this extraction: right for any pair of extractions (re-centred on these poses, on other ones, or not at all)
+    c_new = _centres(project, pj, poses["uid"][row])
+    c_al = _centres(project, project.aligned_particles(qj), poses["uid"][row]) + np.stack(
         [poses["shift_x_a"][row], poses["shift_y_a"][row]], 1)
-    src.path = f"{pj.path}#{job.name}"
+    t_start = (c_al - c_new).astype(np.float32)
+    # gold-standard halves: those of the refinement the poses come from (a particle stays in the half it was aligned
+    # / polished against); duplicates (aligned centres closer than duplicate_distance) are left out, best fit kept
+    half = poses["half"][row].astype(np.int64) if "half" in poses else None
+    fit = poses["fit"][row] if "fit" in poses else (poses["maxprob"][row] if "maxprob" in poses else np.ones(len(row)))
+    dist = duplicate_distance(project, pj)
+    keep = drop_duplicates(c_al, src.parts["celMovie"].to_numpy(np.int64), fit, dist)
+    n_dup = int((~keep).sum())
+    if n_dup:
+        log(f"[refine3d] {n_dup} duplicate particles left out (aligned centres < {dist:.0f} A apart; best fit kept)")
+        src.subset(np.flatnonzero(keep))
+        row, t_start = row[keep], t_start[keep]
+        half = None if half is None else half[keep]
+    src.path = f"{project.root}#{pj.id:03d}#{job.id:03d}"
     max_res = s.max_res_a or 2.0 * src.apix
     ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log)
     clf = ses.clf
@@ -305,7 +395,8 @@ def run_refine3d(project: Project, job, log=print) -> dict:
     maps, A, t, z, fscs, res, vols = ab.refine_particles(clf, idx, A, t, init, sym=s.sym, n_iter=s.n_iter,
                                                          res_start=res0, n_local=s.n_local, drop_frac=s.drop_frac,
                                                          global_at=tuple(range(1, s.global_iters + 1)),
-                                                         global_res=s.global_res_a, box=b, log=log)
+                                                         global_res=s.global_res_a, box=b,
+                                                         half=None if half is None else torch.as_tensor(half), log=log)
     apix = box_a / b
     h1, h2 = vols[0][0].real(), vols[0][1].real()
     smask = ab.solvent_mask(maps[0], apix)
@@ -323,7 +414,7 @@ def run_refine3d(project: Project, job, log=print) -> dict:
     _fsc_figure(os.path.join(job.path, "fsc.png"), box_a,
                 [("soft sphere mask", fscs[0].cpu().numpy()), ("no mask", fsc_unm.cpu().numpy()),
                  ("solvent mask", fsc_sol.cpu().numpy())], f"{job.name}: {clf.N:,} particles, {s.sym}")
-    summ = dict(particles=int(clf.N), sym=s.sym, resolution_a=round(float(res[0]), 2),
+    summ = dict(particles=int(clf.N), duplicates_removed=n_dup, duplicate_distance_a=round(dist, 1), sym=s.sym, resolution_a=round(float(res[0]), 2),
                 resolution_solvent_mask_a=round(ab.resolution_from_fsc(fsc_sol, box_a), 2),
                 resolution_unmasked_a=round(ab.resolution_from_fsc(fsc_unm, box_a), 2),
                 apix=round(apix, 4), box=b, res_start_a=round(res0, 1), seconds=round(time.time() - t0, 1),

@@ -205,3 +205,72 @@ def test_class2d_selection_recentre(tmp_path):
     assert np.allclose(r.loc[u, "x_a"], old.loc[u, "x_a"] + 6.0, atol=0.01)
     assert np.allclose(r.loc[u, "y_a"], old.loc[u, "y_a"] - 4.0, atol=0.01)
     assert np.allclose(r.loc[u, "dx_a"], 6.0, atol=0.01) and np.allclose(r.loc[u, "dy_a"], -4.0, atol=0.01)
+
+
+def test_rebuild_survives_a_failure(tmp_path, monkeypatch):
+    """A rebuild that fails part-way changes nothing it cannot redo: the job stays purged, its catalog rows stay, and
+    the next rebuild finishes it (and clears the flag). Purge / rename refuse a running job; Polish is not purgeable."""
+    rng = np.random.default_rng(2)
+    prj, pj, ex = _synthetic_project(tmp_path, rng)
+    before = open_source(ex.path).read_all()
+    rows = len(prj.particles(ex))
+    prj.purge(ex)
+    real, calls = pk.extract, []
+
+    def flaky(*a, **k):
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("disk full")
+        return real(*a, **k)
+    monkeypatch.setattr(pk, "extract", flaky)
+    with pytest.raises(RuntimeError):
+        pl.rebuild(prj, ex)
+    ex = prj.job(ex.id)
+    assert ex.params["purged"] and len(prj.particles(ex)) == rows
+    monkeypatch.setattr(pk, "extract", real)
+    pl.rebuild(prj, ex)
+    ex = prj.job(ex.id)
+    assert not ex.params["purged"] and np.allclose(open_source(ex.path).read_all(), before, atol=1e-2)
+    with pytest.raises(ValueError):
+        pl.rebuild(prj, ex)                                    # not purged
+    prj.set_status(ex, "running")
+    for f in (lambda: prj.purge(ex), lambda: prj.rename(ex, "x"), lambda: prj.delete_job(ex, force=True)):
+        with pytest.raises(ValueError, match="running"):
+            f()
+
+
+def test_picks_keep_their_distance_and_duplicates_go():
+    """The picker's minimum distance is the distance between picks (not half of it); the 3D jobs' duplicate removal
+    keeps the best of aligned centres closer than the duplicate distance, per micrograph."""
+    from celeris2d.jobs import drop_duplicates
+    rng = np.random.default_rng(3)
+    img, _ = _micrograph(rng)
+    for frac in (0.5, 0.8):
+        c = pk.blob_candidates(torch.as_tensor(img, device="cuda"), APIX, DIAM, min_dist_frac=frac)
+        from scipy.spatial import cKDTree
+        d, _ = cKDTree(c.xy_a).query(c.xy_a, k=2)
+        assert d[:, 1].min() >= frac * DIAM - 1e-3
+    xy = np.array([[0, 0], [20, 0], [200, 0], [0, 0], [500, 500]], float)
+    movie = np.array([1, 1, 1, 2, 1])
+    fit = np.array([0.5, 0.9, 0.1, 0.2, 0.3])
+    assert drop_duplicates(xy, movie, fit, 60.0).tolist() == [False, True, True, True, True]
+
+
+def test_table_ignores_leftover_temp_files(tmp_path):
+    """A writer killed mid-save leaves a temporary file in staging; the table still reads and flushes."""
+    from celeris2d.tables import ShardedTable
+    t = ShardedTable(str(tmp_path / "t"), shard_size=2)
+    t.append(1, dict(uid=np.arange(3)), flush=False)
+    for junk in ("00000012.tmp999.npz", "00000013.npz.tmp999"):          # old and current temporary names
+        open(tmp_path / "t" / "staging" / junk, "wb").write(b"partial")
+    t.append(2, dict(uid=np.arange(3, 5)))                              # reaches shard_size: flushes
+    assert ShardedTable(str(tmp_path / "t")).read()["uid"].tolist() == [0, 1, 2, 3, 4]
+
+
+def test_binned_pixel_size_is_exact():
+    """Fourier binning crops an even source box, so the pixel size is source box x apix / box, stored exactly."""
+    assert pk.source_box(128, 1.3, 2.0) == 198 and abs(pk.binned_apix(128, 1.3, 2.0) - 198 * 1.3 / 128) < 1e-12
+    assert pk.binned_apix(96, 2.0, 2.0) == 2.0
+    w300 = pp.dose_weights(40, 2.0, torch.tensor([0.25]))
+    w200 = pp.dose_weights(40, 2.0, torch.tensor([0.25]), kv=200)
+    assert w200[-1, 0] < w300[-1, 0] and w200[0, 0] > w300[0, 0]        # faster decay at 200 kV

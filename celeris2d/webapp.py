@@ -726,10 +726,14 @@ class App:
         line = " ".join(str(x) for x in a)
         self.log.append(f"{time.strftime('%H:%M:%S')} {line}")
 
-    def submit(self, kind, name, fn, **info):
+    def submit(self, kind, name, fn, prepare=None, **info):
+        """Run fn on a thread; one GPU job at a time. prepare() -> (name, fn), called under the lock once the slot
+        is free (e.g. to create a project job only when it can run)."""
         with self.lock:
             if self.job and not self.job.get("done"):
                 raise RuntimeError(f"busy: {self.job['kind']} '{self.job['name']}' is still running")
+            if prepare is not None:
+                name, fn = prepare()
             self.job = dict(kind=kind, name=name, started=time.time(), done=False, error=None, info=info)
 
         def run():
@@ -745,7 +749,9 @@ class App:
                 self.job["done"] = True
                 self.job["seconds"] = round(time.time() - self.job["started"], 1)
                 self._log(f"[{kind}] {name} finished in {self.job['seconds']}s")
-        threading.Thread(target=run, daemon=True).start()
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        return name, t
 
 
 def _progress(c, job):
@@ -834,7 +840,7 @@ def create(workdir, project_dir=None):
 
     def submit(kind, name, fn, **info):
         try:
-            st.submit(kind, name, fn, **info)
+            return st.submit(kind, name, fn, **info)
         except RuntimeError as e:
             raise HTTPException(409, str(e))
 
@@ -919,23 +925,26 @@ def create(workdir, project_dir=None):
         with movies they do not have. One run at a time."""
         from .jobs import rerun
         prj = _prj()
-        if any(t["thread"].is_alive() for t in proj_state["runs"].values()):
-            raise HTTPException(409, "a project job is running")
-        try:
-            j, fn = rerun(prj, body["job"], log=lambda *a: None)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
         rec = dict(error=None)
 
-        def work():
-            try:
-                fn()
-            except Exception as e:
-                rec["error"] = repr(e)
-                prj.set_status(j, "failed", dict(error=repr(e)))
-        rec["thread"] = threading.Thread(target=work, daemon=True)
-        proj_state["runs"][j.name] = rec
-        rec["thread"].start()
+        def prepare():                               # under the GPU-job lock: no second job is made while one runs
+            j, fn = rerun(prj, body["job"], log=st._log)
+            rec["job"] = j
+
+            def work():
+                try:
+                    fn()
+                except Exception as e:
+                    rec["error"] = repr(e)
+                    prj.set_status(j, "failed", dict(error=repr(e)))
+                    raise
+            return j.name, work
+        try:
+            name, rec["thread"] = submit("project", body["job"], None, prepare=prepare)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        j = rec["job"]
+        proj_state["runs"][name] = rec
         return dict(job=j.name)
 
     @app.get("/api/defaults")

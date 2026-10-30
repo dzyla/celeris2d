@@ -26,6 +26,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import time
@@ -58,6 +59,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 JOB_TYPES = ("Import", "MotionCtf", "Pick", "Extract", "Select", "Class2D", "InitialModel", "Refine3D", "Polish")
 PER_MOVIE = dict(MotionCtf="micrographs", Pick="picks", Extract="chunks", Polish="chunks")
 HEAVY = dict(MotionCtf=(".mrc",), Extract=(".mrcs",), Polish=(".mrcs",))   # purgeable files of a job's data folder
+REBUILDABLE = ("MotionCtf", "Extract")         # purged files can be made again from the recorded parameters
 PARTICLE_JOBS = ("Extract", "Polish")          # jobs that hold particle images (a "particles" table + stacks)
 
 
@@ -213,11 +215,12 @@ class Project:
             raise ValueError(f"job type {type!r} not in {JOB_TYPES}")
         inputs = [self.job(j).id for j in inputs]
         label = _slug(label)
+        params = dict(params or {}, run_pid=os.getpid(), run_host=socket.gethostname())     # is_running
         with self._db() as c:
             n = (c.execute("SELECT MAX(id) FROM jobs").fetchone()[0] or 0) + 1
             name = f"{n:03d}_{type.lower()}" + (f"_{label}" if label else "")
             c.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?)",
-                      (n, type, name, label, json.dumps(params or {}, default=str), json.dumps(inputs), "running",
+                      (n, type, name, label, json.dumps(params, default=str), json.dumps(inputs), "running",
                        time.time(), time.time()))
         job = self.job(n)
         os.makedirs(job.path, exist_ok=True)
@@ -257,7 +260,12 @@ class Project:
         return self.job(int(j["id"].iloc[-1])) if len(j) else None
 
     def set_status(self, job: Job, status: str, summary: dict | None = None):
-        """running / finished / failed / aborted; summary: the job's key numbers (summary.json)."""
+        """running / finished / failed / aborted; summary: the job's key numbers (summary.json). A running job
+        records the process running it (is_running)."""
+        if status == "running":
+            job.params.update(run_pid=os.getpid(), run_host=socket.gethostname())
+            with self._db() as c:
+                c.execute("UPDATE jobs SET params=? WHERE id=?", (json.dumps(job.params, default=str), job.id))
         with self._db() as c:
             c.execute("UPDATE jobs SET status=?, updated=? WHERE id=?", (status, time.time(), job.id))
         job.status = status
@@ -277,6 +285,7 @@ class Project:
         """New descriptive label (the folder becomes NNN_<type>_<label>); references are by number, so nothing
         breaks. RELION / cryoSPARC exports point into data/, which does not move."""
         job = self.job(ref)
+        self._not_running(job, "renamed")
         label = _slug(label)
         name = f"{job.id:03d}_{job.type.lower()}" + (f"_{label}" if label else "")
         os.rename(job.path, os.path.join(self.root, "jobs", name))
@@ -286,6 +295,26 @@ class Project:
         self._write_job_json(job)
         self.write_index()
         return job
+
+    def is_running(self, job: Job) -> bool:
+        """Status running and its process alive (a process that died leaves a job marked running; on this host that
+        is detected, on another host the job counts as running)."""
+        if job.status != "running":
+            return False
+        pid, host = job.params.get("run_pid"), job.params.get("run_host")
+        if pid is None or host != socket.gethostname():
+            return pid is not None
+        try:
+            os.kill(int(pid), 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            pass
+        return True
+
+    def _not_running(self, job: Job, what: str):
+        if self.is_running(job):
+            raise ValueError(f"{job.name} is running: it cannot be {what} now")
 
     def write_summary(self, job: Job, summary: dict):
         _atomic(os.path.join(job.path, "summary.json"),
@@ -328,6 +357,19 @@ class Project:
         types = (type,) if isinstance(type, str) else tuple(type)
         return next((self.job(n) for n in self.lineage(ref) if self.job(n).type in types), None)
 
+    def aligned_particles(self, ref) -> Job:
+        """The particle job (Extract / Polish) whose box centres an alignment job's shifts are relative to: a
+        Refine3D job's particles, or the extraction a Class2D (or the Class2D of an InitialModel) was run on."""
+        job = self.job(ref)
+        if job.type == "Refine3D":
+            return self.job(job.params["particles"])
+        if job.type == "InitialModel":
+            job = self.job(job.params["class2d"])
+        if job.type != "Class2D":
+            raise ValueError(f"{job.name} has no particle alignments")
+        src = self.job(job.params["particles"])
+        return src if src.type in PARTICLE_JOBS else self.ancestor(src, PARTICLE_JOBS)
+
     def dependents(self, ref) -> list[str]:
         i = self.job(ref).id
         return [r.name for r in self.jobs().itertuples() if i in json.loads(r.inputs)]
@@ -335,6 +377,7 @@ class Project:
     def delete_job(self, ref, force: bool = False) -> str:
         """Move a job (folder and data) to Trash/. Refuses if other jobs used it, unless force."""
         job = self.job(ref)
+        self._not_running(job, "deleted")
         deps = self.dependents(job)
         if deps and not force:
             raise ValueError(f"{job.name} is an input of {deps}")
@@ -373,6 +416,9 @@ class Project:
         """Delete a job's heavy files (micrographs / particle stacks) and keep everything else; rebuild() makes
         them again from the recorded parameters. Returns GB freed."""
         job = self.job(ref)
+        if job.type not in REBUILDABLE:
+            raise ValueError(f"{job.name}: {job.type} jobs cannot be purged (rebuild could not make their files again)")
+        self._not_running(job, "purged")
         n = 0
         for ext in HEAVY.get(job.type, ()):
             for f in glob.glob(os.path.join(job.data_path, "**", "*" + ext), recursive=True):
@@ -433,10 +479,15 @@ class Project:
             return dict(c.execute("SELECT * FROM movies WHERE id=?", (int(movie_id),)).fetchone())
 
     def done(self, job: Job, movie_id: int) -> bool:
-        """Has this job its output for the movie?"""
+        """Has this job its output for the movie? (A purged job's: only if its file is there again.)"""
         with self._db() as c:
-            return c.execute(f"SELECT 1 FROM {PER_MOVIE[job.type]} WHERE job_id=? AND movie_id=?",
-                             (job.id, int(movie_id))).fetchone() is not None
+            if not job.params.get("purged"):
+                return c.execute(f"SELECT 1 FROM {PER_MOVIE[job.type]} WHERE job_id=? AND movie_id=?",
+                                 (job.id, int(movie_id))).fetchone() is not None
+            col = dict(micrographs="path, 1", chunks="stack_path, n").get(PER_MOVIE[job.type])
+            r = c.execute(f"SELECT {col} FROM {PER_MOVIE[job.type]} WHERE job_id=? AND movie_id=?",
+                          (job.id, int(movie_id))).fetchone() if col else None
+            return r is not None and (r[1] == 0 or os.path.exists(self.abs(r[0])))
 
     def forget(self, job: Job, movie_ids=None):
         """Drop a job's catalog rows (all, or for some movies) so that a run makes them again (rebuild)."""
