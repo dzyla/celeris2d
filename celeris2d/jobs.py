@@ -1104,7 +1104,7 @@ def run_refine3d(project: Project, job, log=print) -> dict:
 class HeteroRefineSettings:
     references: tuple = ()          # maps, one per class: job numbers ("12") or "job:class" ("25:2" = InitialModel
                                     # model 2, "30:3" = HeteroRefine class 3); a reference can be given several times;
-                                    # "decoy": a junk class (cryoSPARC's decoy references) - the first reference with
+                                    # "decoy": a junk class (cryoSPARC's decoy references) - the first map with
                                     # its phases randomised beyond decoy_res_a (its size and power, no structure), so
                                     # particles that fit no structure gather there; use with global_search. Which
                                     # class ends up clean is decided by the data, not by the reference it started
@@ -1149,6 +1149,8 @@ def hetero_refine_job(project: Project, particles, poses, s: HeteroRefineSetting
         raise ValueError("heterogeneous refinement needs at least two reference maps")
     p, q = project.job(particles), project.job(poses)
     refs = [project.job(str(r).split(":")[0]) for r in s.references if str(r) != "decoy"]
+    if not refs:
+        raise ValueError("heterogeneous refinement needs at least one map among the references (decoys are made from it)")
     ins = [p, q] + [r for i, r in enumerate(refs) if r.id not in [x.id for x in [p, q] + refs[:i]]]
     return project.new_job("HeteroRefine", dict(params_of(s), references=[str(r) for r in s.references], particles=p.id,
                                                 poses=q.id), ins, label or f"K{len(s.references)}_on{p.id:03d}")
@@ -1236,23 +1238,26 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
     if half is None:
         half = (torch.randperm(n, generator=torch.Generator().manual_seed(1)) % 2).numpy()
     half_t = torch.as_tensor(half).long()
-    # references: same box and pixel size; the first scaled to the particles at their poses, the others to the
-    # first's Fourier amplitudes at low resolution (they may be in other frames, so poses cannot scale them)
-    vols, names = [], []
-    if str(s.references[0]) == "decoy":
-        raise ValueError("the first reference must be a map (decoys are made from it)")
+    # references: same box and pixel size; the first map scaled to the particles at their poses, the others to its
+    # Fourier amplitudes at low resolution (they may be in other frames, so poses cannot scale them); decoys are
+    # made from the first map, wherever they are in the list
+    vols, names = [None] * K, [None] * K
+    maps = [i for i, r in enumerate(s.references) if str(r) != "decoy"]
+    if not maps:
+        raise ValueError("references need at least one map (decoys are made from it)")
+    for i in maps:
+        v, a, nm = _reference(project, s.references[i])
+        vols[i], names[i] = map_to_box(v, a, b, apix), nm
+    f = maps[0]
     for i, r in enumerate(s.references):
         if str(r) == "decoy":
-            vols.append(decoy_map(vols[0], box_a, s.decoy_res_a, clf.p.diameter_a, seed=s.seed + 11 * i))
-            names.append(f"decoy ({s.decoy_res_a:g} A)")
-            continue
-        v, a, nm = _reference(project, r)
-        vols.append(map_to_box(v, a, b, apix))
-        names.append(nm)
-    vols[0] = vols[0] * _scale_to_data(clf, idx, A0, t, vols[0], b, max(s.res_start_a, 10.0))
-    a0 = _amplitude(vols[0], box_a, 2 * s.res_start_a, s.res_start_a)
-    for i in range(1, K):
-        vols[i] = vols[i] * (a0 / max(_amplitude(vols[i], box_a, 2 * s.res_start_a, s.res_start_a), 1e-20))
+            vols[i] = decoy_map(vols[f], box_a, s.decoy_res_a, clf.p.diameter_a, seed=s.seed + 11 * i)
+            names[i] = f"decoy ({s.decoy_res_a:g} A)"
+    vols[f] = vols[f] * _scale_to_data(clf, idx, A0, t, vols[f], b, max(s.res_start_a, 10.0))
+    a0 = _amplitude(vols[f], box_a, 2 * s.res_start_a, s.res_start_a)
+    for i in range(K):
+        if i != f:
+            vols[i] = vols[i] * (a0 / max(_amplitude(vols[i], box_a, 2 * s.res_start_a, s.res_start_a), 1e-20))
     inits = []
     g = torch.Generator().manual_seed(s.seed + 3)
     for i, v in enumerate(vols):

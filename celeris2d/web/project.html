@@ -221,6 +221,10 @@
   .sw { display: inline-flex; gap: 8px; align-items: center; padding-top: 7px; color: var(--ink2); }
   .checks { display: inline-flex; gap: 16px; padding-top: 7px; } .checks label { display: inline-flex; gap: 6px; align-items: center; }
   .cpick { margin-top: 8px; } .cphint { font-size: 12.5px; margin-bottom: 6px; } .cprow { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; } .cprow select { width: auto !important; }
+  .rslots ol { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 4px; max-width: 560px; }
+  .rslots li { display: flex; align-items: center; gap: 10px; background: var(--surface); border-radius: 7px; padding: 4px 6px 4px 8px; font-size: 13px; }
+  .rslots li > span:nth-child(2) { flex: 1; } .rslots .rn { min-width: 22px; text-align: center; font-weight: 600; color: var(--data); }
+  .rslots .rx { padding: 0 8px; font-size: 15px; line-height: 22px; }
   .cpgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; max-width: 980px; }
   .cpc { display: flex; flex-direction: column; gap: 4px; padding: 6px; text-align: left; background: #000; border: 2px solid var(--line); border-radius: 9px; }
   .cpc.on { border-color: var(--data); } .cpc .three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; } .cpc img { width: 100%; display: block; aspect-ratio: 1; }
