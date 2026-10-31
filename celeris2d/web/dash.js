@@ -298,13 +298,15 @@ function renderStage(j) {
 function stageLive(st, j) {
   st.className = 'stage';
   const t0 = (j.params || {}).run_started, skew = Date.now() / 1000 - (j.now || Date.now() / 1000);
+  const lbody = `<div class="lbody nofig" id="lbody"><pre class="log ltail" id="ltail">waiting for the first lines of the log…</pre>
+      <figure class="lfig" id="lfig"></figure></div>`;
   st.innerHTML = `<div class="live"><div class="runstrip" id="rstrip"><div class="rsteps" id="rsteps"><div class="rstep"><div class="rsh"><b>Starting</b></div><div class="bar"><div style="width:2%;background:var(--you)"></div></div></div></div>
         <div class="reta"><b id="reta">–</b><span id="lel" class="muted"></span></div></div>
       <div class="lhead"><span class="muted">Last line:</span> <span id="llast" class="lastline"></span></div>
-      ${LIVE3D.includes(j.type) ? `<div id="l3d"><div class="muted" style="padding:14px 4px">The map appears here once the job has made one.</div></div>` : ''}
+      ${LIVE3D.includes(j.type) ? `<div class="l3grid"><div class="l3left"><div id="l3d"><div class="muted" style="padding:14px 4px">The map appears here once the job has made one.</div></div>${lbody}</div>
+        <aside class="vside" id="l3side"></aside></div>` : ''}
       ${j.type === 'Class2D' ? `<div id="lgal"><div class="muted" style="padding:18px 4px">The classes appear here after the first iteration.</div></div>` : ''}
-      <div class="lbody nofig" id="lbody"><pre class="log ltail" id="ltail">waiting for the first lines of the log…</pre>
-      <figure class="lfig" id="lfig"></figure></div></div>`;
+      ${LIVE3D.includes(j.type) ? '' : lbody}</div>`;
   let offset = 0, text = '', lastFig = '', n = 0, liveAt = 0, at3d = 0;
   // the run strip: the job's stages, done / current (with its step of n) / to come, and the time left at the current pace
   const STAGES3D = {InitialModel: [['classes', 'Class averages'], ['sgd', 'Particle SGD'], ['refine', 'Refinement'], ['class3d', '3D classes']],
@@ -334,14 +336,23 @@ function stageLive(st, j) {
     const K = d.maps.length, cnt = d.counts || [], tot = cnt.reduce((a, b) => a + (b || 0), 0);
     const views = await Promise.all(d.maps.map(m => api('/api/project/mapviews?path=' + encodeURIComponent(m)).catch(() => null)));
     if (current !== name || !$('#l3d')) return;
-    const tile = (x, cls = '') => `<figure class="${cls}"><img src="${x.src}" alt="${esc(x.label)}"><figcaption>${esc(x.label.replace('Fourier section', 'Fourier'))}</figcaption></figure>`;
-    $('#l3d').innerHTML = `<div class="gal-tools"><div class="sum">${esc(stage)}, step <b>${d.it}</b> of ${d.n_iter} · ${K > 1 ? K + ' classes · ' : ''}shown at ${d.apix.toFixed(2)} Å/px</div>
-        <button class="quiet" id="l3dv">Show the current map${K > 1 ? 's' : ''} in 3D</button></div>
+    const tile = (x, cls = '') => `<figure class="${cls}"><img data-cm src="${x.src}" alt="${esc(x.label)}"><figcaption>${esc(x.label.replace('Fourier section', 'Fourier'))}</figcaption></figure>`;
+    const ll = ($('#llast') || {}).textContent || '', mm = ll.match(/align ([\d.]+) A, step ([\d.]+) deg, pose change median ([\d.]+) deg \(90%: ([\d.]+)\)/);
+    const best = Math.min(...(d.history || []).map(x => (x.res || [])[0]).filter(x => x > 0));
+    const rows = [['Step', `${d.it} of ${d.n_iter}`], ...(K === 1 && (d.res || [])[0] != null ? [['Resolution now', d.res[0].toFixed(2) + ' Å']] : []),
+      ...(K === 1 && isFinite(best) ? [['Best so far', best.toFixed(2) + ' Å']] : []),
+      ...(mm ? [['Aligning at', mm[1] + ' Å'], ['Angular step', mm[2] + '°'], ['Pose change', `${mm[3]}° median · 90%: ${mm[4]}°`]] : []),
+      ...(K > 1 ? d.maps.map((_, k) => [`Class ${k + 1}`, `${cnt[k] != null ? fmt(cnt[k]) : '–'}${(d.res || [])[k] != null ? ' · ' + d.res[k].toFixed(1) + ' Å' : ''}`]) : []),
+      ['Shown at', d.apix.toFixed(2) + ' Å/px']];
+    $('#l3d').innerHTML = `<div class="gal-tools"><div class="sum">${esc(stage)}, step <b>${d.it}</b> of ${d.n_iter}${K > 1 ? ' · ' + K + ' classes' : ''}</div>
+        ${cmapPicker()}<button class="quiet" id="l3dv">Show the current map${K > 1 ? 's' : ''} in 3D</button></div>
       <div class="l3m ${K > 1 ? 'multi' : ''}">${views.map((v, k) => v ? `<div class="l3card"><div class="l3t"><b>${K > 1 ? 'Class ' + (k + 1) : 'Map'}</b>
           ${cnt[k] != null ? `<span>${fmt(cnt[k])} particles${tot ? ' · ' + (100 * cnt[k] / tot).toFixed(1) + '%' : ''}</span>` : ''}
           ${(d.res || [])[k] != null ? `<span>${d.res[k].toFixed(1)} Å</span>` : ''}</div>
-          <div class="l3row">${(K > 1 ? v.views.slice(0, 3) : v.views).map(x => tile(x)).join('')}${(v.fourier || []).slice(0, K > 1 ? 1 : 3).map(x => tile(x, 'four')).join('')}</div></div>` : '').join('')}</div>
-      <div class="l3charts"><div id="l3h"></div>${K > 1 ? '<div id="l3c"></div>' : ''}</div>`;
+          <div class="l3row">${(K > 1 ? v.views.slice(0, 3) : v.views).map(x => tile(x)).join('')}${(v.fourier || []).slice(0, K > 1 ? 1 : 3).map(x => tile(x, 'four')).join('')}</div></div>` : '').join('')}</div>`;
+    if ($('#l3side')) $('#l3side').innerHTML = `<div class="vcard"><h3>Progress</h3><table class="vst">${rows.map(([a, b]) => `<tr><td>${esc(a)}</td><td>${esc(b)}</td></tr>`).join('')}</table></div>
+        <div class="vcard"><div id="l3h"></div></div>${K > 1 ? '<div class="vcard"><div id="l3c"></div></div>' : ''}`;
+    recolor($('#l3d'));
     $('#l3dv').onclick = () => openViewer($('#stage'), j, d.maps.map(path => ({path})), null);
     const P = await CelerisPlots.plotly(), T = THEME(), h = d.history || [];
     if (!$('#l3h') || !h.length) return;
@@ -352,17 +363,17 @@ function stageLive(st, j) {
     const SN = {classes: 'class averages', sgd: 'SGD', refine: 'refinement', class3d: '3D classes'};
     const cuts = h.map((x, i) => i && x.stage !== h[i - 1].stage ? i + 0.5 : null).filter(x => x != null);
     const starts = [0.5, ...cuts];
-    P.react($('#l3h'), tr, plotLayout(T, '<b>Resolution</b> per step (lower is better)', {showlegend: nm > 1,
+    P.react($('#l3h'), tr, plotLayout(T, '<b>Resolution</b> per step', {showlegend: nm > 1, height: 230, margin: {l: 38, r: 8, t: 30, b: 34},
       shapes: cuts.map(x => ({type: 'line', x0: x, x1: x, yref: 'paper', y0: 0, y1: 1, line: {color: T.axis, width: 1, dash: 'dot'}})),
       annotations: starts.map((x, i) => ({x, xanchor: 'left', y: 1, yref: 'paper', yanchor: 'top', showarrow: false, text: SN[h[Math.ceil(x) - 1].stage] || h[Math.ceil(x) - 1].stage, font: {size: 10.5, color: T.ink3}})),
-      xaxis: {title: {text: 'step'}}, yaxis: {title: {text: 'Å'}}}), {displaylogo: false, responsive: true});
+      xaxis: {title: {text: 'step', standoff: 4}, tickformat: 'd', dtick: Math.max(1, Math.ceil(h.length / 8))}, yaxis: {title: {text: 'Å'}}}), {displaylogo: false, responsive: true, displayModeBar: false});
     if (K > 1 && $('#l3c')) {
       const hc = h.filter(x => x.counts && x.counts.length === K);
       const tc = Array.from({length: K}, (_, m) => ({type: 'scatter', mode: 'lines', stackgroup: 'one', groupnorm: 'percent', name: 'class ' + (m + 1),
         x: hc.map(x => h.indexOf(x) + 1), y: hc.map(x => x.counts[m]), text: hc.map(x => x.stage + ' ' + x.it), line: {color: cols[m % cols.length], width: 1},
         hovertemplate: `class ${m + 1}: %{y:.1f}%<extra>%{text}</extra>`}));
-      P.react($('#l3c'), tc, plotLayout(T, '<b>Particles per class</b> over the steps', {showlegend: true,
-        xaxis: {title: {text: 'step'}}, yaxis: {title: {text: '% of particles'}, range: [0, 100]}}), {displaylogo: false, responsive: true});
+      P.react($('#l3c'), tc, plotLayout(T, '<b>Particles per class</b>', {showlegend: false, height: 230, margin: {l: 38, r: 8, t: 30, b: 34},
+        xaxis: {title: {text: 'step', standoff: 4}, tickformat: 'd'}, yaxis: {title: {text: '%'}, range: [0, 100]}}), {displaylogo: false, responsive: true, displayModeBar: false});
     }
   };
   const name = j.name;
@@ -823,21 +834,132 @@ async function stageGallery(st, j) {
   }
   draw();
 }
+// pseudocolour for the grey map pictures (projections, sections, Fourier): a look-up table applied in the browser
+const CMAPS = {
+  gray: null, 'gray (inverted)': ['#ffffff', '#000000'],
+  viridis: ['#440154', '#482878', '#3e4989', '#31688e', '#26828e', '#1f9e89', '#35b779', '#6ece58', '#b5de2b', '#fde725'],
+  inferno: ['#000004', '#1b0c41', '#4a0c6b', '#781c6d', '#a52c60', '#cf4446', '#ed6925', '#fb9b06', '#f7d13d', '#fcffa4'],
+  magma: ['#000004', '#180f3d', '#440f76', '#721f81', '#9e2f7f', '#cd4071', '#f1605d', '#fd9668', '#feca8d', '#fcfdbf'],
+  cividis: ['#00224e', '#123570', '#3b496c', '#575d6d', '#707173', '#8a8779', '#a69d75', '#c4b56c', '#e4cf5b', '#fee838'],
+  turbo: ['#30123b', '#4662d7', '#36aaf9', '#1ae4b6', '#72fe5e', '#c8ef34', '#faba39', '#f66b19', '#ca2a04', '#7a0403'],
+  hot: ['#000000', '#7f0000', '#ff0000', '#ff7f00', '#ffff00', '#ffffff'],
+  ice: ['#000000', '#0b1f4d', '#1f4f9a', '#3c8fd1', '#9fd4f2', '#ffffff'],
+};
+let cmapName = 'gray';
+try { cmapName = localStorage.getItem('celeris-cmap') || 'gray'; } catch (e) {}
+if (!(cmapName in CMAPS)) cmapName = 'gray';
+const LUTS = {};
+function lut(name) {
+  if (LUTS[name]) return LUTS[name];
+  const st = CMAPS[name].map(h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16))), out = new Uint8ClampedArray(768);
+  for (let v = 0; v < 256; v++) {
+    const x = v / 255 * (st.length - 1), i = Math.min(Math.floor(x), st.length - 2), f = x - i;
+    for (let c = 0; c < 3; c++) out[3 * v + c] = st[i][c] + (st[i + 1][c] - st[i][c]) * f;
+  }
+  return (LUTS[name] = out);
+}
+function colorize(img) {
+  if (!img.dataset.src) img.dataset.src = img.getAttribute('src');
+  if (!CMAPS[cmapName]) { if (img.getAttribute('src') !== img.dataset.src) img.src = img.dataset.src; return; }
+  const name = cmapName, src = new Image();
+  src.onload = () => {
+    if (name !== cmapName) return;
+    const c = document.createElement('canvas'); c.width = src.naturalWidth; c.height = src.naturalHeight;
+    const g = c.getContext('2d'); g.drawImage(src, 0, 0);
+    const im = g.getImageData(0, 0, c.width, c.height), p = im.data, L = lut(name);
+    for (let k = 0; k < p.length; k += 4) { const v = p[k]; p[k] = L[3 * v]; p[k + 1] = L[3 * v + 1]; p[k + 2] = L[3 * v + 2]; }
+    g.putImageData(im, 0, 0); img.src = c.toDataURL();
+  };
+  src.src = img.dataset.src;
+}
+function recolor(root) { (root || document).querySelectorAll('img[data-cm]').forEach(colorize); }
+function cmapPicker() {
+  return `<select class="cmap" aria-label="colours of the map pictures" title="colours of the projections, sections and Fourier sections">${Object.keys(CMAPS).map(k => `<option ${k === cmapName ? 'selected' : ''}>${k}</option>`).join('')}</select>`;
+}
+document.addEventListener('change', e => {
+  if (!e.target.matches('select.cmap')) return;
+  cmapName = e.target.value;
+  try { localStorage.setItem('celeris-cmap', cmapName); } catch (err) {}
+  document.querySelectorAll('select.cmap').forEach(x => x.value = cmapName);
+  recolor(document);
+});
+// the half-map FSC (data/jNNN_fsc.json) drawn for the narrow column beside the map: readable at that width
+async function sideFSC(box, f) {
+  const d = await (await fetch(file(f.path))).json();
+  const P = await CelerisPlots.plotly(), T = THEME(), x = d.spatial_frequency_inv_a, cv = d.curves || {};
+  const main = cv[d.main_curve] ? d.main_curve : 'corrected';
+  const L = [[main, 'masked, corrected', css('--data'), 'solid', 2], ['unmasked', 'unmasked', css('--good'), 'solid', 1.5],
+             ['randomised', 'phases randomised', T.ink3, 'dot', 1.2]].filter(([k]) => cv[k]);
+  const tr = L.map(([k, name, color, dash, width]) => ({type: 'scatter', mode: 'lines', name, x, y: cv[k], line: {color, width, dash},
+    customdata: x.map(v => v > 0 ? (1 / v).toFixed(2) : '∞'), hovertemplate: `${name}: %{y:.3f} at %{customdata} Å<extra></extra>`}));
+  const r = d.resolution_a, xmax = Math.max(...x.filter(v => v != null));
+  if (r) tr.push({type: 'scatter', mode: 'markers', x: [1 / r], y: [0.143], marker: {color: css('--data'), size: 7}, showlegend: false, hovertemplate: `FSC 0.143 at ${r.toFixed(2)} Å<extra></extra>`});
+  const ticks = [30, 15, 10, 7, 5, 4, 3.5, 3, 2.5, 2].filter(v => 1 / v <= xmax * 1.001);
+  P.react(box, tr, plotLayout(T, r ? `<b>${r.toFixed(2)} Å</b> at FSC 0.143` : 'Half-map FSC', {height: 250, margin: {l: 38, r: 8, t: 30, b: 36},
+    legend: {orientation: 'v', x: 0.98, xanchor: 'right', y: 0.98, bgcolor: 'rgba(0,0,0,0)', font: {size: 10.5}},
+    xaxis: {range: [0, xmax], tickvals: ticks.map(v => 1 / v), ticktext: ticks.map(String), title: {text: 'resolution (Å)', standoff: 4}},
+    yaxis: {range: [-0.05, 1.03], tickvals: [0, 0.143, 0.5, 1], ticktext: ['0', '.143', '.5', '1']},
+    shapes: [{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 0.143, y1: 0.143, line: {color: T.axis, width: 1, dash: 'dash'}}]}),
+    {displaylogo: false, responsive: true, displayModeBar: false});
+}
+// a map job's numbers for the column beside the viewer: [label, value (html), tooltip]
+function volStats(s) {
+  const A = v => typeof v === 'number' ? v.toFixed(2) + ' Å' : null, n = v => typeof v === 'number' ? v.toLocaleString() : null;
+  const out = [];
+  const add = (k, v, t) => { if (v !== null && v !== undefined && v !== '') out.push([k, v, t]); };
+  add('Resolution', A(s.resolution_a), 'gold-standard FSC 0.143, phase-randomisation corrected, in the solvent mask');
+  if (s.resolution_solvent_mask_a !== s.resolution_a) add('… solvent mask', A(s.resolution_solvent_mask_a));
+  add('Unmasked', A(s.resolution_unmasked_a), 'FSC 0.143 of the unmasked half maps');
+  const sh = s.sharpened || {};
+  add('FSC 0.5', A(sh.resolution_fsc05_a));
+  const B = sh.b_factor ?? s.b_factor;
+  if (typeof B === 'number') add('Sharpening B', B.toFixed(0) + ' Å²', 'Guinier fit of the masked map; the sharpened map is in the Map list');
+  if (s.nu && typeof s.nu.median_a === 'number') add('NU cutoffs', `${s.nu.median_a.toFixed(1)} Å median <span class="muted">(${s.nu.p05_a.toFixed(1)}–${s.nu.p95_a.toFixed(1)})</span>`,
+    'non-uniform filter: local cutoffs in the mask, 5 / 50 / 95 %');
+  add('Particles', s.particles_used != null && s.particles != null && s.particles_used !== s.particles ? `${n(s.particles_used)} <span class="muted">of ${n(s.particles)}</span>` : n(s.particles_used ?? s.particles));
+  add('Symmetry', s.sym ? esc(s.sym) : null);
+  if (s.box && s.apix) add('Box', `${s.box} px · ${(+s.apix).toFixed(3)} Å/px`);
+  if (typeof s.scf === 'number') add('SCF', s.scf.toFixed(2), 'sampling compensation factor: 1 = uniform Fourier sampling from the views (preferred orientation lowers it)');
+  if (typeof s.orientation_change_deg_median === 'number') add('Pose change', `${s.orientation_change_deg_median.toFixed(1)}° median` +
+    (typeof s.orientation_change_over_10deg === 'number' ? ` · ${(100 * s.orientation_change_over_10deg).toFixed(1)}% > 10°` : ''), 'how far the orientations moved from the ones the job started from');
+  if (s.view_coverage && typeof s.view_coverage.occupied === 'number') add('Views covered', (100 * s.view_coverage.occupied).toFixed(0) + '%');
+  if (typeof s.seconds === 'number') add('Run time', s.seconds >= 120 ? Math.round(s.seconds / 60) + ' min' : Math.round(s.seconds) + ' s');
+  return out;
+}
 function stageVolume(st, j, maps) {
   st.className = 'stage';
   const rank = p => ['_map.mrc', 'sharpened_masked.mrc', 'sharpened.mrc', 'map_nomask.mrc'].findIndex(x => p.endsWith(x));
   maps.sort((a, b) => (rank(a.path) < 0 ? 9 : rank(a.path)) - (rank(b.path) < 0 ? 9 : rank(b.path)));
   const localres = j.files.find(f => /localres\.mrc$/.test(f.path));
   const preview = j.files.find(f => /map_views\.png$/.test(f.path)) || j.files.find(f => /postprocess\.png$/.test(f.path));
+  // beside the map (3 : 1): the numbers, FSC and angular distribution, so the viewer is not the whole width
+  const fig = re => j.files.find(f => /\.png$/.test(f.path) && !/\.(light|dark)\.png$/.test(f.path) && re.test(f.path.split('/').pop().replace(/^j\d+_/, '')));
+  const figs = [['Fourier shell correlation', fig(/^fsc\.png$/)], ['Angular distribution', fig(/^(views|angdist)\.png$/)]].filter(([, f]) => f);
+  const rows = volStats(j.summary || {});
+  const side = rows.length || figs.length;
   // the map itself first (the viewer opens at once), then its projections, central sections and Fourier sections
-  st.innerHTML = `<div id="v3host" class="v3host"></div>
+  st.innerHTML = `<div class="${side ? 'vgrid' : ''}"><div class="vmain"><div id="v3host" class="v3host"></div>
     <div class="vstrip"><div class="vrow" id="mviews">${Array.from({length: 9}, () => '<figure><div class="tile"></div></figure>').join('')}</div>
-      <div class="fnote muted" id="mvname"></div></div>`;
+      <div class="fnote muted" id="mvname"></div></div></div>
+    ${side ? `<aside class="vside" aria-label="map statistics">
+      ${rows.length ? `<div class="vcard"><h3>Statistics</h3><table class="vst">${rows.map(([k, v, t]) => `<tr${t ? ` title="${esc(t)}"` : ''}><td>${esc(k)}</td><td>${v}</td></tr>`).join('')}</table></div>` : ''}
+      ${figs.map(([n], i) => `<div class="vcard"><h3>${esc(n)}</h3><div class="vplot" id="vside${i}"></div></div>`).join('')}
+      <div class="muted" style="font-size:12px">All figures are under Results below.</div></aside>` : ''}</div>`;
   openViewer($('#v3host'), j, maps, localres);
+  figs.forEach(async ([, f], i) => {
+    const box = $('#vside' + i), js = f.path.replace(/\.png$/, '.plot.json');
+    const data = i === 0 && j.files.find(x => /^j\d+_fsc\.json$/.test(x.path.split('/').pop()) && /\/data\//.test(x.path));
+    if (data) { try { await sideFSC(box, data); return; } catch (e) {} }
+    if (interactive && j.files.some(x => x.path === js)) {
+      try { const spec = await (await fetch(file(js))).json(); box.innerHTML = ''; await CelerisPlots.render(box, spec, THEME(), {minFont: 10, noTitles: true, minWidth: 200}); return; } catch (e) {}
+    }
+    box.innerHTML = `<img src="${file(f.path)}" alt="${esc(f.path.split('/').pop())}">`;
+  });
   api('/api/project/mapviews?path=' + encodeURIComponent(maps[0].path)).then(d => {
     if (!$('#mviews')) return;
-    $('#mviews').innerHTML = [...d.views, ...(d.fourier || [])].map(v => `<figure><div class="tile ${/Fourier/.test(v.label) ? 'four' : ''}"><img src="${v.src}" alt="${esc(v.label)}"></div><figcaption>${esc(v.label.replace('Fourier section', 'Fourier'))}</figcaption></figure>`).join('');
-    $('#mvname').innerHTML = `${esc(d.name)} · box ${d.box[0]} at ${d.apix.toFixed(2)} Å/px.` + (d.fourier ? ` <b>Fourier sections</b> (log amplitudes, edge = Nyquist ${d.nyquist_a} Å): even, round discs mean detail in every direction; streaks, a missing wedge or a squashed disc mean preferred views.` : '');
+    $('#mviews').innerHTML = [...d.views, ...(d.fourier || [])].map(v => `<figure><div class="tile ${/Fourier/.test(v.label) ? 'four' : ''}"><img data-cm src="${v.src}" alt="${esc(v.label)}"></div><figcaption>${esc(v.label.replace('Fourier section', 'Fourier'))}</figcaption></figure>`).join('');
+    recolor($('#mviews'));
+    $('#mvname').innerHTML = `${cmapPicker()} ${esc(d.name)} · box ${d.box[0]} at ${d.apix.toFixed(2)} Å/px.` + (d.fourier ? ` <b>Fourier sections</b> (log amplitudes, edge = Nyquist ${d.nyquist_a} Å): even, round discs mean detail in every direction; streaks, a missing wedge or a squashed disc mean preferred views.` : '');
   }).catch(() => {
     if ($('#mviews') && preview) $('#mviews').outerHTML = `<img class="fallback" src="${file(preview.path)}" alt="map preview">`;
   });

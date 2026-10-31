@@ -145,6 +145,16 @@
   .err { color: var(--bad); }
   .stage { margin: 4px 28px 0; border-radius: 12px; position: relative; }
   .stage > .launch, .stage > .v3, .v3host > .v3, .v3host > .launch { background: #000; border-radius: 12px; overflow: hidden; }
+  .vgrid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+  .vmain { min-width: 0; }
+  .vside { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .vcard { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+  .vcard h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink3); }
+  .vplot img { width: 100%; display: block; border-radius: 6px; }
+  table.vst { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.vst td { padding: 3px 0; vertical-align: top; } table.vst td:first-child { color: var(--ink2); padding-right: 10px; white-space: nowrap; }
+  table.vst td:last-child { text-align: right; }
+  @media (max-width: 1200px) { .vgrid { grid-template-columns: 1fr; } }
   .vstrip { margin-top: 10px; } .vrow { display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); gap: 6px; }
   .vrow figure { margin: 0; } .vrow .tile { aspect-ratio: 1; background: #000; border-radius: 6px; overflow: hidden; } .vrow .tile img { width: 100%; height: 100%; object-fit: contain; display: block; }
   .vrow .tile.four { outline: 1px solid var(--line); outline-offset: -1px; } .vrow figcaption { font-size: 11.5px; color: var(--ink3); text-align: center; margin-top: 3px; }
@@ -288,8 +298,12 @@
   .chip { background: var(--well); border: 1px solid var(--line); border-radius: 14px; padding: 3px 10px; font-size: 12.5px; cursor: pointer; }
   .chip:hover { border-color: var(--data); }
   .live, .mp { padding: 6px 0 0; }
+  .l3grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 1fr); gap: 14px; align-items: start; margin: 0 0 12px; }
+  .l3grid .l3m { margin: 10px 0; } .l3left { min-width: 0; } .l3left .ltail { max-height: 300px; }
+  @media (max-width: 1200px) { .l3grid { grid-template-columns: 1fr; } }
+  select.cmap { font-size: 12px; padding: 3px 6px; margin-right: 8px; }
   .l3m { display: grid; grid-template-columns: 1fr; gap: 10px; margin: 10px 0 12px; }
-  .l3m.multi { grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); }
+  .l3m.multi { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
   .l3card { background: var(--surface); border-radius: 8px; padding: 8px 10px 10px; }
   .l3t { display: flex; gap: 14px; align-items: baseline; font-size: 13px; color: var(--ink2); margin-bottom: 6px; } .l3t b { color: var(--ink); }
   .l3row { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px; }
