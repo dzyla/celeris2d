@@ -113,7 +113,12 @@ def test_manualpick_flow(tmp_path):
     bad = xy[~mpk][:5]
     mp.set_picks(prj, j, "mic02", picks=[[x, y, 1] for x, y in xy[mpk]], rejected=bad.tolist(), state="reviewed")
     info = mp.train(prj, j)
-    assert info["micrographs"] == 2
+    assert info["micrographs"] == 2 and info["accepted"] == int(mpk.sum())
+    # mic03 not checked: a pick of the user's and a removed suggestion there stay through Pick all
+    row3 = mi[mi["stem"] == "mic03"].iloc[0]
+    s3 = mp.suggestions(prj, j, row3)
+    gone = np.asarray(s3["xy"])[int(np.argmax(s3["score"]))]
+    mp.set_picks(prj, j, "mic03", picks=[[60.0, 60.0, 0]], rejected=[gone.tolist()], state="suggested")
     # Pick all, through the queue's run function
     mp.queue_run(prj, j)
     assert prj.job(j.id).status == "queued"
@@ -127,6 +132,10 @@ def test_manualpick_flow(tmp_path):
         p = prj.picks(j, mid)
         mpk, mref = pk.match(p["xy_a"][p["keep"]], truth[stem], 0.3 * D)
         assert mref.mean() > 0.85 and mpk.mean() > 0.8, (stem, mref.mean(), mpk.mean())
+    p3 = prj.picks(j, 3)
+    k3 = p3["xy_a"][p3["keep"]]
+    assert np.hypot(*(k3 - [60.0, 60.0]).T).min() < 0.1                 # the user's pick
+    assert np.hypot(*(k3 - gone).T).min() > 0.3 * D                      # the removed suggestion
     summ = prj.summary_of(j)
     assert summ["reviewed"] == 2 and summ["micrographs"] == 4 and j.find("templates.png")
     # Extract takes it as a Pick job's output
@@ -138,6 +147,25 @@ def test_manualpick_flow(tmp_path):
     from celeris2d.micview import family
     assert family(prj, ex)["pick"].id == j.id
     json.dumps(mp.load_state(j))
+    # templates off, the score range, then a new particle size: templates dropped, picks kept, label follows
+    assert mp.set_off(prj, j, [1, 1]) == [1]
+    assert mp.set_threshold(prj, j, upper=0.9)[1] == 0.9
+    n_before = len(mp.load_state(j)["mics"])
+    mp.set_settings(prj, j, diameter_a=D + 20, templates=3)
+    j = prj.job(j.id)
+    st = mp.load_state(j)
+    assert not mp.has_templates(j) and st["threshold"] is None and st["threshold_hi"] is None and st["off"] == []
+    assert len(st["mics"]) == n_before and mp.settings(j).templates == 3 and mp.settings(j).diameter_a == D + 20
+    assert j.label == f"d{D + 20:g}"
+
+
+def test_auto_keep():
+    c = pk.Candidates(xy_a=np.zeros((5, 2)), score=np.array([0.2, 0.4, 0.6, 0.8, 0.9]), local_std=np.ones(5),
+                      local_mean=np.zeros(5), template=np.array([0, 1, 0, 1, 0]))
+    ok = np.array([1, 1, 1, 1, 0], bool)
+    assert mp.auto_keep(c, ok, 0.3, None, []).tolist() == [0, 1, 1, 1, 0]
+    assert mp.auto_keep(c, ok, 0.3, 0.7, []).tolist() == [0, 1, 1, 0, 0]       # dark contamination above the range
+    assert mp.auto_keep(c, ok, 0.3, None, [1]).tolist() == [0, 0, 1, 0, 0]      # template 1 switched off
 
 
 def test_threshold():

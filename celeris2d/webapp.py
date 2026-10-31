@@ -1133,7 +1133,10 @@ def create(workdir, project_dir=None, password: str = ""):
         for r in prj.jobs().itertuples():
             summ = prj.summary_of(int(r.id))
             out.append(dict(id=int(r.id), name=r.name, type=r.type, label=r.label,
-                            status="running" if r.name in live else r.status, final=int(r.id) in finals,
+                            # a stopped / finished job's own status wins over its watcher thread, still waiting for
+                            # the process to end (Stop: SIGTERM, then up to 15 s)
+                            status="running" if r.name in live and r.status in ("queued", "running") else r.status,
+                            final=int(r.id) in finals,
                             final_note=finals.get(int(r.id), {}).get("note", ""),
                             inputs=[prj.job(int(i)).name for i in json.loads(r.inputs)],
                             created=float(r.created), updated=float(r.updated),

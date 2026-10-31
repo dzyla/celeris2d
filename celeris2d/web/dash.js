@@ -80,7 +80,7 @@ function renderQueue() {
   document.querySelectorAll('#queue [data-s]').forEach(b => b.onclick = async () => {
     if (!confirm(`Stop ${b.dataset.s}? Its process ends now; Restart runs it again.`)) return;
     try { await api('/api/project/stop', {job: b.dataset.s}); } catch (e) { alert(e.message); }
-    load();
+    load(); setTimeout(load, 3000);
   });
 }
 // job types: a category (colour) and a glyph (shape) each, so a job reads at a glance in every view of the rail
@@ -257,7 +257,7 @@ async function showJob(name, scroll = true) {
   on('nextj', () => jobForm(nt.type, {[nin.name]: j.id}));
   on('stop', async () => {
     if (!confirm(`Stop ${j.name}? Its process ends now; what it wrote so far stays, and Restart runs it again.`)) return;
-    try { await api('/api/project/stop', {job: j.name}); await load(); showJob(j.name, false); } catch (e) { alert(e.message); }
+    try { await api('/api/project/stop', {job: j.name}); await load(); showJob(j.name, false); setTimeout(load, 3000); } catch (e) { alert(e.message); }
   });
   on('cancel', async () => { try { await api('/api/project/cancel', {job: j.name}); await load(); showJob(j.name, false); } catch (e) { alert(e.message); } });
   on('final', async () => {
@@ -1244,20 +1244,39 @@ function jobForm(type, params = {}, edit = null) {
   }
   const refs = $('#f_references');
   if (refs) {
+    // the classes as a numbered list (one reference each, a map may come several times), maps added a copy per click
     const box = document.createElement('div'); box.className = 'cpick';
     const multi = usable.filter(x => ['InitialModel', 'Refine3D', 'HeteroRefine', 'Class3D', 'LocalRefine', 'Sharpen', 'ModeMaps'].includes(x.type)).sort((a, b) => b.id - a.id);
-    box.innerHTML = `<div class="cprow"><span class="muted">Add maps from</span><select id="refsrc"><option value="">a job…</option>${multi.map(x => `<option value="${x.id}">${esc((types[x.type] || {}).name || x.type)} ${String(x.id).padStart(3, '0')}${x.key ? ' · ' + esc(x.key) : ''}</option>`).join('')}</select>
-      <button type="button" class="quiet" id="refdecoy" title="a junk reference: the first map's phases randomised (catches junk particles)">+ decoy</button></div><div id="refstrip"></div>`;
+    box.innerHTML = `<div class="rslots" id="rslots"></div>
+      <div class="cprow"><span class="muted">Add</span><select id="refsrc"><option value="">a map from a job…</option>${multi.map(x => `<option value="${x.id}">${esc((types[x.type] || {}).name || x.type)} ${String(x.id).padStart(3, '0')}${x.key ? ' · ' + esc(x.key) : ''}</option>`).join('')}</select>
+      <button type="button" class="quiet" id="refdecoy" title="a junk class: the first map's size and power with its structure scrambled beyond the decoy resolution, so particles that fit no structure gather there">+ decoy</button></div><div id="refstrip"></div>`;
     refs.parentNode.insertBefore(box, refs.nextSibling);
     const list = () => refs.value.split(/[\s,]+/).filter(Boolean);
-    $('#refdecoy').onclick = () => { refs.value = [...list(), 'decoy'].join(', '); };
+    const name = r => {
+      if (r === 'decoy') return '<b>decoy</b> <span class="muted">junk catcher</span>';
+      const [id, k] = r.split(':'), x = jobs.find(y => y.id === +id);
+      return `${esc(x ? (types[x.type] || {}).name || x.type : 'job')} ${String(+id).padStart(3, '0')}${k ? ` <b>class ${+k}</b>` : ''}${x && x.key ? ` <span class="muted">${esc(x.key)}</span>` : ''}`;
+    };
+    const slots = () => {
+      const L = list(), seen = {};
+      const firstMap = L.findIndex(r => r !== 'decoy');
+      $('#rslots').innerHTML = L.length ? `<div class="muted cphint">${L.length} class${L.length > 1 ? 'es' : ''}, each starting from:</div><ol>${L.map((r, i) => {
+          seen[r] = (seen[r] || 0) + 1;
+          return `<li><span class="rn">${i + 1}</span><span>${name(r)}${r !== 'decoy' && seen[r] > 1 ? ` <span class="muted">copy ${seen[r]}</span>` : ''}${r === 'decoy' && firstMap >= 0 ? ` <span class="muted">from class ${firstMap + 1}'s map</span>` : ''}</span>
+            <button type="button" class="quiet rx" data-i="${i}" title="remove this class">×</button></li>`; }).join('')}</ol>
+          ${L.length < 2 ? '<div class="muted cphint">Add at least two.</div>' : firstMap < 0 ? '<div class="cphint" style="color:var(--serious)">Add a map: decoys are made from one.</div>' : ''}`
+        : '<div class="muted cphint">No classes yet. Add maps below, one class per map; add the same map several times for several classes from it, and a decoy to catch junk.</div>';
+      $('#rslots').querySelectorAll('.rx').forEach(b => b.onclick = () => { const L2 = list(); L2.splice(+b.dataset.i, 1); set(L2); });
+      if ($('#refstrip')._redraw) $('#refstrip')._redraw();
+    };
+    const set = L => { refs.value = [...L.filter(r => r !== 'decoy'), ...L.filter(r => r === 'decoy')].join(', '); slots(); };   // decoys after the maps
+    refs.addEventListener('input', slots);
+    slots();
+    $('#refdecoy').onclick = () => set([...list(), 'decoy']);
     $('#refsrc').onchange = e => {
-      const id = e.target.value; if (!id) { $('#refstrip').innerHTML = ''; return; }
+      const id = e.target.value; $('#refstrip')._redraw = null; if (!id) { $('#refstrip').innerHTML = ''; return; }
       const has = () => list().filter(r => r.split(':')[0] === String(+id)).map(r => +(r.split(':')[1] || 0));
-      classStrip($('#refstrip'), id, has(), (k, on) => {
-        const tag = k ? `${+id}:${k}` : String(+id), cur = list().filter(r => r !== tag);
-        refs.value = (on ? [...cur, tag] : cur).join(', ');
-      }, false);
+      classStrip($('#refstrip'), id, has, k => set([...list(), k ? `${+id}:${k}` : String(+id)]), false);
     };
   }
   $('#frun').onclick = async () => {
@@ -1279,27 +1298,37 @@ function jobForm(type, params = {}, edit = null) {
 }
 // the class maps of a job (projections, particles, resolution) to click: single = one class at most; a job without
 // classes shows its one map (k = 0)
+// (several = a function giving the classes already chosen, with repeats: each click adds one more)
 async function classStrip(box, jobId, chosen, onPick, single) {
   if (!box) return;
   box.innerHTML = '<span class="muted">reading the classes…</span>';
   const jj = jobs.find(x => x.id === +jobId);
   let g = null;
   try { g = await api('/api/project/classes?job=' + encodeURIComponent(jj ? jj.name : jobId)); } catch (e) { g = null; }
-  if (!g || g.kind !== '3d' || !g.classes.length) { box.innerHTML = single ? '' : `<span class="muted">${esc(jj ? jj.name : jobId)} has one map.</span> <button type="button" class="quiet" id="cp1">Add it</button>`;
-    if ($('#cp1')) $('#cp1').onclick = () => onPick(0, true); return; }
-  const on = new Set(chosen.filter(Boolean));
+  const many = typeof chosen === 'function', count = k => chosen().filter(x => x === k).length;
+  if (!g || g.kind !== '3d' || !g.classes.length) {
+    if (single) { box.innerHTML = ''; return; }
+    const one = () => { const c = count(0);
+      box.innerHTML = `<span class="muted">${esc(jj ? jj.name : jobId)} has one map${c ? `, in the list ${c}×` : ''}.</span> <button type="button" class="quiet" id="cp1">${c ? 'Add another copy' : 'Add it'}</button>`;
+      $('#cp1').onclick = () => onPick(0, true); };
+    box._redraw = one; one(); return; }
+  const on = new Set(many ? [] : chosen.filter(Boolean));
   const draw = () => {
-    box.innerHTML = `<div class="muted cphint">${single ? 'Start from which class? Click one (none chosen: the class most of the particles are in).' : 'Click the classes to use as references.'}</div>
-      <div class="cpgrid">${g.classes.map(c => `<button type="button" class="cpc ${on.has(c.cls) ? 'on' : ''}" data-k="${c.cls}">
+    box.innerHTML = `<div class="muted cphint">${single ? 'Start from which class? Click one (none chosen: the class most of the particles are in).' : 'Click a class to add it as a reference; click again to add another copy.'}</div>
+      <div class="cpgrid">${g.classes.map(c => { const n = many ? count(c.cls) : 0;
+        return `<button type="button" class="cpc ${(many ? n : on.has(c.cls)) ? 'on' : ''}" data-k="${c.cls}">
         <span class="three">${c.images.slice(0, 3).map(s => `<img src="${s}" alt="">`).join('')}</span>
-        <span class="cpl"><b>Class ${c.cls}</b> ${c.n.toLocaleString()}${c.share != null ? ' · ' + (100 * c.share).toFixed(0) + '%' : ''}${c.res ? ' · ' + (+c.res).toFixed(1) + ' Å' : ''}</span></button>`).join('')}</div>`;
+        <span class="cpl"><b>Class ${c.cls}</b> ${c.n.toLocaleString()}${c.share != null ? ' · ' + (100 * c.share).toFixed(0) + '%' : ''}${c.res ? ' · ' + (+c.res).toFixed(1) + ' Å' : ''}${n ? ` · <b>in the list ${n}×</b>` : ''}</span></button>`; }).join('')}</div>`;
     box.querySelectorAll('.cpc').forEach(b => b.onclick = () => {
-      const k = +b.dataset.k, was = on.has(k);
+      const k = +b.dataset.k;
+      if (many) { onPick(k, true); return; }
+      const was = on.has(k);
       if (single) on.clear();
       was ? on.delete(k) : on.add(k);
       onPick(k, !was); draw();
     });
   };
+  if (many) box._redraw = draw;
   draw();
 }
 $('#newjob').onclick = jobPicker;

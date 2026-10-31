@@ -9,8 +9,11 @@
                                                      state}: saved as the user goes
     POST /api/project/manualpick/train               {job}: templates from the reviewed micrographs' picks
     POST /api/project/manualpick/suggest             {job, stems?, after?, n?}: the next micrographs picked with them
-    POST /api/project/manualpick/threshold           {job, threshold}
-    GET  /api/project/manualpick/templates.png?job=  the templates side by side (white protein)
+    POST /api/project/manualpick/threshold           {job, threshold?, upper?}: the score range (upper null: none)
+    POST /api/project/manualpick/off                 {job, off: [k, ...]}: templates switched off (0-based)
+    POST /api/project/manualpick/settings            {job, diameter_a?, templates?}: at any time but while Pick all
+                                                     runs (a new size drops the templates: train again)
+    GET  /api/project/manualpick/templates.png?job=&k=  the templates side by side (white protein), or template k
     POST /api/project/manualpick/run                 {job}: Pick all, through the queue
 
 The micrograph image itself is the dashboard's /api/project/micraw.png (micview.raw_png: binned to <= 1024 px).
@@ -73,7 +76,7 @@ def router(project_of):
         from .figjson import _clean
         st = mp.load_state(j)
         mi = mp.micrographs(prj, j)
-        ver = int(st.get("version", 0))
+        ver = int(st.get("version", 0)) if mp.has_templates(j) else 0     # 0: none (or the size changed since)
         out_n = {}
         if j.status == "finished" or os.path.isdir(os.path.join(j.path, "picks")):
             out_n = {int(r_.movie_id): int(r_.n_kept) for r_ in prj.pick_table(j).itertuples()}
@@ -91,7 +94,8 @@ def router(project_of):
         tr = st.get("train")
         return _clean(dict(job=j.name, status=j.status, settings=dict(diameter_a=s.diameter_a, dark=s.dark,
                            templates=s.templates, suggest=s.suggest, min_dist_frac=s.min_dist_frac),
-                           mics=rows, threshold=st.get("threshold"), version=ver, train=tr, busy=busy.get(j.id),
+                           mics=rows, threshold=st.get("threshold"), threshold_hi=st.get("threshold_hi"),
+                           off=st.get("off") or [], version=ver, train=tr if ver else None, busy=busy.get(j.id),
                            summary={k: v for k, v in summ.items() if not isinstance(v, (list, dict))},
                            progress=summ.get("progress"), edited_after_run=bool(summ.get("t_run"))
                            and float(st.get("t_edit", 0)) > float(summ["t_run"]),
@@ -121,7 +125,7 @@ def router(project_of):
         return _clean(dict(stem=row.stem, movie_id=int(row.movie_id), apix=float(row.apix), shape=[ny, nx],
                            bin=max(1, int(math.ceil(max(ny, nx) / 1024))),       # micview.raw_png's binning
                            picks=m.get("picks", []), rejected=m.get("rejected", []), state=m.get("state", ""),
-                           suggest=sg, version=int(st.get("version", 0)), output=out,
+                           suggest=sg, version=int(st.get("version", 0)) if mp.has_templates(j) else 0, output=out,
                            defocus_a=_num(0.5 * (row.defocus_u + row.defocus_v)) if row.defocus_u is not None
                            else None))
 
@@ -138,8 +142,22 @@ def router(project_of):
     @r.post("/threshold")
     def threshold(body: dict = Body(...)):
         prj, j = job_of(body.get("job"))
-        th = body.get("threshold")
-        return dict(threshold=mp.set_threshold(prj, j, None if th in (None, "") else float(th)))
+        num = lambda v: None if v in (None, "") else float(v)      # noqa: E731
+        kw = {k: num(body[b]) for k, b in (("threshold", "threshold"), ("upper", "upper")) if b in body}
+        lo, hi = mp.set_threshold(prj, j, **kw)
+        return dict(threshold=lo, threshold_hi=hi)
+
+    @r.post("/off")
+    def off(body: dict = Body(...)):
+        prj, j = job_of(body.get("job"))
+        return dict(off=mp.set_off(prj, j, body.get("off") or []))
+
+    @r.post("/settings")
+    def settings(body: dict = Body(...)):
+        prj, j = job_of(body.get("job"))
+        s = guarded(j, "changing the settings", lambda: mp.set_settings(prj, j, body.get("diameter_a"),
+                                                                       body.get("templates")))
+        return dict(diameter_a=s.diameter_a, templates=s.templates)
 
     @r.post("/train")
     def train(body: dict = Body(...)):
@@ -153,11 +171,15 @@ def router(project_of):
             prj, j, stems=body.get("stems") or None, after=body.get("after") or "", n=body.get("n") or None)))
 
     @r.get("/templates.png")
-    def templates_png(job: str, size: int = 96):
+    def templates_png(job: str, size: int = 96, k: int = -1):
         prj, j = job_of(job)
         tm, _ = mp.templates_of(j)
         if tm is None:
             raise HTTPException(404, "no templates yet")
+        if k >= 0:
+            if k >= len(tm):
+                raise HTTPException(404, f"no template {k}")
+            tm = tm[k:k + 1]
         from PIL import Image
         size = max(32, min(int(size), 256))
         tiles = []

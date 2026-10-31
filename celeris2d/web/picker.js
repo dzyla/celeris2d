@@ -44,7 +44,16 @@ const STYLE = `
 .pk-tm figure { margin: 0; text-align: center; font-size: 11px; color: var(--ink3); }
 .pk-tm img { width: 64px; height: 64px; display: block; border-radius: 4px; background: #000; image-rendering: auto; }
 .pk-hist { width: 100%; height: 56px; display: block; margin-top: 4px; }
-.pk-th { display: flex; align-items: center; gap: 8px; } .pk-th input { flex: 1; } .pk-th span { min-width: 44px; text-align: right; color: var(--ink); font-weight: 600; }
+.pk-th { display: flex; align-items: center; gap: 8px; } .pk-th input[type=range] { flex: 1; } .pk-th span { min-width: 44px; text-align: right; color: var(--ink); font-weight: 600; }
+.pk-th label { min-width: 92px; font-size: 12px; color: var(--ink2); }
+.pk-loupe { width: 100%; aspect-ratio: 1; display: block; background: #000; border-radius: 6px; margin-bottom: 8px; }
+.pk-tmb { position: relative; padding: 2px; background: #000; border: 2px solid var(--line); border-radius: 6px; cursor: pointer; flex: 0 0 auto; }
+.pk-tmb img { width: 60px; height: 60px; display: block; border-radius: 3px; }
+.pk-tmb span { display: block; font-size: 11px; color: var(--ink2); text-align: center; }
+.pk-brush-on { border-color: var(--bad) !important; color: var(--bad) !important; }
+.pk-tmb.off { border-color: var(--bad); } .pk-tmb.off img { opacity: .25; }
+.pk-tmb.off::after { content: '✕'; position: absolute; top: 18px; left: 0; right: 0; text-align: center; color: var(--bad); font-size: 22px; font-weight: 700; }
+.pk-ntm { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--ink2); } .pk-ntm input { width: 60px; }
 .pk-list { max-height: 260px; overflow-y: auto; margin: 0 -4px; position: relative; }
 .pk-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) 54px 44px; gap: 6px; padding: 3px 4px; border-radius: 4px; cursor: pointer; font-size: 12px; color: var(--ink2); align-items: center; }
 .pk-row:hover { background: var(--well); } .pk-row.on { background: var(--raise); color: var(--ink); }
@@ -91,11 +100,19 @@ function mount(el, ctx) {
         <div class="pk-bar">
           <div class="pk-legend"><span><i style="border-color:var(--you)"></i>your picks</span><span><i style="border-color:var(--data)"></i>suggested</span>
             <span><i style="border-color:var(--good)"></i>Pick all result</span><span style="color:var(--bad)">✕ removed suggestion</span></div>
-          <label class="tog" style="margin:0 0 0 auto"><input type="checkbox" id="pk-show" checked> Show picks (H)</label>
+          <button id="pk-brush" style="margin-left:auto" title="eraser: drag over picks and suggestions to remove them all at once (E); Shift + wheel: its size">Eraser (E)</button>
+          <label class="tog" style="margin:0" title="eraser size, in particle diameters">size <input type="range" id="pk-brs" min="0.5" max="8" step="0.25" style="width:70px"></label>
+          <label class="tog" style="margin:0" title="display only: slow grey-level changes (ice thickness) taken out"><input type="checkbox" id="pk-flat"> Flatten</label>
+          <label class="tog" style="margin:0"><input type="checkbox" id="pk-show" checked> Show picks (H)</label>
           <label class="tog" style="margin:0" title="Gaussian low-pass of the displayed micrograph">Low-pass <input type="range" id="pk-lp" min="0" max="60" step="1" style="width:90px"> <span id="pk-lpv"></span></label>
         </div>
       </div>
       <div class="pk-side">
+        <div class="pk-card" id="pk-size" style="display:none"><h4>Particle size <span id="pk-szv"></span></h4>
+          <canvas class="pk-loupe" id="pk-loupe" width="440" height="440" aria-label="magnified view of the circle"></canvas>
+          <div class="pk-th"><label for="pk-szs">Diameter</label><input type="range" id="pk-szs" min="30" max="600" step="1"><input type="number" id="pk-szn" min="10" max="5000" step="1" style="width:72px" aria-label="diameter in Å"></div>
+          <div class="pk-btns" style="margin-top:8px"><button id="pk-szok" class="go">Use this size</button><button id="pk-szx">Cancel</button></div>
+          <div class="pk-note" id="pk-szh"></div></div>
         <div class="pk-card"><h4>Picks <span id="pk-diam"></span></h4><div class="pk-kpi" id="pk-kpi"></div></div>
         <div class="pk-card"><h4>Picker</h4>
           <div class="pk-btns">
@@ -103,9 +120,11 @@ function mount(el, ctx) {
             <button id="pk-more" title="pick the next micrographs with the current templates (S)">Suggest more (S)</button>
             <button id="pk-this" title="pick this micrograph with the templates (P)">This one (P)</button>
           </div>
+          <div class="pk-ntm"><label for="pk-ntm">Templates</label><input type="number" id="pk-ntm" min="1" max="50" step="1"><span>2D classes of your picks at the next training (at most one per ~10 picks)</span></div>
           <div id="pk-tm"></div>
           <div id="pk-thr" style="display:none;margin-top:8px">
-            <div class="pk-th"><label for="pk-ths" style="font-size:12px;color:var(--ink2)">Threshold</label><input type="range" id="pk-ths" min="0" max="1" step="0.002"><span id="pk-thv"></span></div>
+            <div class="pk-th"><label for="pk-ths">Lowest score</label><input type="range" id="pk-ths" min="0" max="1" step="0.002"><span id="pk-thv"></span></div>
+            <div class="pk-th"><label for="pk-thh" title="candidates scoring above this are left out: dark contamination often scores higher than particles">Highest score</label><input type="range" id="pk-thh" min="0" max="1" step="0.002"><span id="pk-thhv"></span></div>
             <canvas class="pk-hist" id="pk-hist" width="600" height="112" aria-label="score distribution"></canvas>
             <div class="pk-note" id="pk-thn"></div>
           </div>
@@ -121,7 +140,9 @@ function mount(el, ctx) {
           <span><kbd>←</kbd> <kbd>→</kbd></span><span>previous / next micrograph</span>
           <span><kbd>Enter</kbd></span><span>accept the suggestions, next to check</span>
           <span><kbd>T</kbd> <kbd>S</kbd> <kbd>P</kbd></span><span>train &amp; suggest · suggest more · this one</span>
-          <span><kbd>[</kbd> <kbd>]</kbd></span><span>threshold down / up</span>
+          <span><kbd>[</kbd> <kbd>]</kbd></span><span>lowest score down / up (sizing: circle smaller / larger)</span>
+          <span><kbd>{</kbd> <kbd>}</kbd></span><span>highest score down / up</span>
+          <span><kbd>E</kbd></span><span>eraser: drag to remove many picks / suggestions (<kbd>Shift</kbd> + wheel: size)</span>
           <span><kbd>U</kbd> <kbd>Ctrl Z</kbd></span><span>undo on this micrograph</span>
           <span><kbd>H</kbd></span><span>hide / show picks</span></div></div>
       </div>
@@ -132,11 +153,17 @@ function mount(el, ctx) {
   let M = null;                  // /mic of the shown micrograph (+ local edits)
   let idx = 0, filter = 'all', th = null, show = true, dirty = false, saveTimer = null, alive = true, pollTimer = null;
   let undo = [];
-  let measure = null, remeasure = false;   // measuring the particle: drag across one (no diameter yet, or "change")
-  const sized = () => S && S.settings.diameter_a > 0, measuring = () => S && S.status === 'waiting' && (!sized() || remeasure);
+  // sizing the particle (no diameter yet, or "change size"): a circle the user places and resizes, d in A
+  let sizing = null, resizeReq = false, thHi = null;
+  // the eraser: a brush (diameter in particle diameters) that removes every pick / suggestion it passes over
+  let brush = false, brushAt = null, brushing = false, brushN = 0;
+  const editable0 = () => S && !['queued', 'running'].includes(S.status);
+  const sized = () => S && S.settings.diameter_a > 0, measuring = () => editable0() && (!sized() || resizeReq);
   const key = `celeris-mp-${job}`;
   const ls = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } };
   let lp = +(ls('celeris-lowpass') ?? 20); if (!(lp >= 0)) lp = 20;
+  let flat = ls('celeris-mp-flat') !== '0';                 // display only: the background flattened
+  let brushD = +(ls('celeris-mp-brush') ?? 2); if (!(brushD > 0)) brushD = 2;
   const editable = () => S && !['queued', 'running'].includes(S.status);
 
   // ------------------------------------------------------------------ geometry: A <-> binned image pixels
@@ -150,9 +177,9 @@ function mount(el, ctx) {
   const visibleSuggestions = () => {
     if (!M || M.state !== 'suggested' || !M.suggest) return [];
     const D = S.settings.diameter_a, rej = M.rejected, pk = M.picks, md = S.settings.min_dist_frac * D, out = [];
-    const g = M.suggest;
+    const g = M.suggest, off = new Set(S.off || []);
     for (let i = 0; i < g.xy.length; i++) {
-      if (!g.ok[i] || g.score[i] < th) continue;
+      if (!g.ok[i] || g.score[i] < th || (thHi !== null && g.score[i] > thHi) || (g.template && off.has(g.template[i]))) continue;
       const q = g.xy[i];
       if (rej.some(r => near(r, q, 0.3 * D)) || pk.some(p => near(p, q, md))) continue;
       out.push(q);
@@ -175,6 +202,14 @@ function mount(el, ctx) {
     b.filter = sigma > 0.3 ? `blur(${sigma.toFixed(2)}px)` : 'none';
     b.drawImage(img, 0, 0); b.filter = 'none';
     const im = b.getImageData(0, 0, W, H), a = im.data, h = new Uint32Array(256);
+    if (flat) {                                              // background flattened: ice gradients out (~2 diameters)
+      const sb = 2 * ((S && S.settings.diameter_a) || 200) / px, bc = document.createElement('canvas');
+      bc.width = W; bc.height = H;
+      const bx = bc.getContext('2d', {willReadFrequently: true});
+      bx.fillStyle = '#808080'; bx.fillRect(0, 0, W, H); bx.filter = `blur(${sb.toFixed(1)}px)`; bx.drawImage(img, 0, 0);
+      const bg = bx.getImageData(0, 0, W, H).data;
+      for (let i = 0; i < a.length; i += 4) a[i] = Math.max(0, Math.min(255, a[i] - bg[i] + 128));
+    }
     const m = Math.max(2, Math.round(Math.min(W, H) * 0.03));              // stretch from the inside (blur darkens edges)
     for (let y = m; y < H - m; y += 2) for (let x = m; x < W - m; x += 2) h[a[(y * W + x) * 4]]++;
     let tot = h.reduce((x, y) => x + y, 0), lo = 0, hi = 255, acc = 0;
@@ -208,14 +243,15 @@ function mount(el, ctx) {
     g.setTransform(s, 0, 0, s, -view.ox * s, -view.oy * s);
     g.drawImage(base, 0, 0);
     const lw = Math.max(1.2, 1.6 * dpr) / s;
-    if (measure && measure.b) {                         // the measurement: line, the circle it makes, its size
-      const [x0, y0] = measure.a, [x1, y1] = measure.b, rr = Math.hypot(x1 - x0, y1 - y0) / 2, fs = 15 * dpr / s;
-      g.strokeStyle = css('--you'); g.lineWidth = lw * 1.4; g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1);
-      g.moveTo((x0 + x1) / 2 + rr, (y0 + y1) / 2); g.arc((x0 + x1) / 2, (y0 + y1) / 2, rr, 0, 2 * Math.PI); g.stroke();
-      const t = Math.round(2 * rr * M.apix * M.bin) + ' Å', tx = (x0 + x1) / 2 + rr + fs / 2, ty = (y0 + y1) / 2 + fs / 3;
+    if (sizing && sizing.c) {                           // the sizing circle, its centre and its diameter
+      const [x0, y0] = sizing.c, rr = szR(), fs = 15 * dpr / s, c = 4 * dpr / s;
+      g.strokeStyle = css('--you'); g.lineWidth = lw * 1.4; g.beginPath(); g.arc(x0, y0, rr, 0, 2 * Math.PI);
+      g.moveTo(x0 - c, y0); g.lineTo(x0 + c, y0); g.moveTo(x0, y0 - c); g.lineTo(x0, y0 + c); g.stroke();
+      const t = Math.round(sizing.d) + ' Å', tx = x0 + rr + fs / 2, ty = y0 + fs / 3;
       g.font = `600 ${fs}px sans-serif`; g.lineWidth = fs / 4; g.strokeStyle = 'rgba(0,0,0,.75)'; g.fillStyle = css('--you');
       g.strokeText(t, tx, ty); g.fillText(t, tx, ty);
     }
+    drawLoupe();
     if (!show || !sized()) return;
     const r = rImg();
     const ring = (pts, col, w = lw, dash = null) => {
@@ -234,7 +270,12 @@ function mount(el, ctx) {
       M.rejected.forEach(q => { const x = toImg(q[0]), y = toImg(q[1]); g.moveTo(x - c, y - c); g.lineTo(x + c, y + c); g.moveTo(x + c, y - c); g.lineTo(x - c, y + c); });
       g.stroke();
     }
-    if (hover) { g.strokeStyle = '#fff'; g.lineWidth = lw * 2; g.beginPath(); g.arc(toImg(hover[0]), toImg(hover[1]), r * 1.12, 0, 2 * Math.PI); g.stroke(); }
+    if (hover && !brush) { g.strokeStyle = '#fff'; g.lineWidth = lw * 2; g.beginPath(); g.arc(toImg(hover[0]), toImg(hover[1]), r * 1.12, 0, 2 * Math.PI); g.stroke(); }
+    if (brush && brushAt) {
+      g.strokeStyle = css('--bad'); g.lineWidth = lw * 1.5; g.setLineDash([6 / s, 4 / s]); g.beginPath();
+      g.arc(brushAt[0], brushAt[1], brushR(), 0, 2 * Math.PI); g.stroke(); g.setLineDash([]);
+      g.fillStyle = 'rgba(255,80,80,.10)'; g.fill();
+    }
   };
 
   // ------------------------------------------------------------------ pointer: click to pick / remove, drag to pan, wheel to zoom
@@ -274,16 +315,71 @@ function mount(el, ctx) {
     }
     hover = null; edited();
   };
+  const brushR = () => rImg() * brushD;
+  const eraseAt = (u, v) => {                              // every pick / suggestion under the brush: removed
+    const R2 = brushR() ** 2, inB = q => (toImg(q[0]) - u) ** 2 + (toImg(q[1]) - v) ** 2 < R2;
+    let n = 0;
+    if (M.output && M.state !== 'reviewed' && M.state !== 'suggested') {    // a Pick all result: it becomes yours
+      if (!M.output.some(inB)) return 0;
+      M.picks = M.output.map(q => [q[0], q[1], 1]); M.output = null; M.state = 'reviewed';
+    }
+    const sug = visibleSuggestions().filter(inB), keep = [];
+    M.picks.forEach(p => { if (inB(p)) { n++; if (p[2] !== 0) M.rejected.push([p[0], p[1]]); } else keep.push(p); });
+    M.picks = keep;
+    sug.forEach(q => { M.rejected.push([q[0], q[1]]); n++; });      // removed suggestions: negatives for the threshold
+    return n;
+  };
+  const setBrush = on => {
+    brush = on; brushAt = null; Q('#pk-brush').classList.toggle('pk-brush-on', brush);
+    Q('#pk-brush').textContent = brush ? 'Eraser on (E)' : 'Eraser (E)'; draw();
+  };
   let down = null;
+  const szR = () => sizing.d / 2 / (M.apix * M.bin);                     // the circle's radius in image px
+  const clampD = d => Math.max(10, Math.min(5000, Math.round(d)));
+  const tolImg = () => { const b = cv.getBoundingClientRect(); return 9 * (cv.width / b.width) / scale(); };
+  const newSizing = () => { sizing = {c: null, d: S.settings.diameter_a || 150, mode: null}; };
   cv.addEventListener('pointerdown', ev => {
     if (!view) return; cv.setPointerCapture(ev.pointerId);
-    if (measuring()) { measure = {a: imgAt(ev), b: null}; return; }
+    if (measuring()) {                                   // sizing: click a centre, drag the edge, drag inside to move
+      if (!M) return;
+      if (!sizing) newSizing();
+      const p = imgAt(ev);
+      if (sizing.c) {
+        const dd = Math.hypot(p[0] - sizing.c[0], p[1] - sizing.c[1]), r = szR();
+        if (Math.abs(dd - r) < tolImg()) { sizing.mode = 'resize'; return; }
+        if (dd < r) { sizing.mode = 'move'; sizing.off = [p[0] - sizing.c[0], p[1] - sizing.c[1]]; return; }
+      }
+      sizing.c = p; sizing.p0 = p; sizing.mode = 'new'; draw(); renderSize();
+      return;
+    }
+    if (brush && ev.button === 0 && M && sized()) {
+      if (!editable()) return err('Pick all is running: the picks can change when it has finished.');
+      snapshot(); brushing = true; brushAt = imgAt(ev); brushN = eraseAt(...brushAt); draw();
+      return;
+    }
     down = {x: ev.clientX, y: ev.clientY, ox: view.ox, oy: view.oy, moved: false};
   });
   cv.addEventListener('pointermove', ev => {
     if (!view || !M) return;
-    if (measure) { measure.b = imgAt(ev); draw(); return; }
-    if (measuring()) return;
+    if (sizing && sizing.mode) {
+      const p = imgAt(ev);
+      if (sizing.mode === 'move') sizing.c = [p[0] - sizing.off[0], p[1] - sizing.off[1]];
+      else if (sizing.mode === 'resize' || Math.hypot(p[0] - sizing.p0[0], p[1] - sizing.p0[1]) > tolImg()) {
+        sizing.mode = 'resize'; sizing.d = clampD(2 * Math.hypot(p[0] - sizing.c[0], p[1] - sizing.c[1]) * M.apix * M.bin);
+      }
+      draw(); renderSize(); return;
+    }
+    if (measuring()) {
+      if (sizing && sizing.c) { const p = imgAt(ev), dd = Math.hypot(p[0] - sizing.c[0], p[1] - sizing.c[1]);
+        cv.style.cursor = Math.abs(dd - szR()) < tolImg() ? 'nwse-resize' : dd < szR() ? 'move' : ''; }
+      return;
+    }
+    cv.style.cursor = '';
+    if (brush && !down) {
+      brushAt = imgAt(ev);
+      if (brushing) brushN += eraseAt(...brushAt);
+      draw(); return;
+    }
     if (down) {
       const dx = ev.clientX - down.x, dy = ev.clientY - down.y;
       if (Math.hypot(dx, dy) > 4) down.moved = true;
@@ -297,29 +393,77 @@ function mount(el, ctx) {
     if (q !== hover) { hover = q; cv.classList.toggle('hit', !!q); draw(); }
   });
   cv.addEventListener('pointerup', async ev => {
-    if (measure) {                                       // a measurement: the job's particle diameter
-      const m = measure; measure = null;
-      const d = m.b ? Math.round(Math.hypot(m.b[0] - m.a[0], m.b[1] - m.a[1]) * M.apix * M.bin) : 0;
-      if (d < 20) { draw(); return err('Drag across a whole particle, edge to edge, to measure it.'); }
-      err('');
-      try { await api('/api/project/settings', {job, settings: {diameter_a: d}}); } catch (e) { draw(); return err(e.message); }
-      S.settings.diameter_a = d; remeasure = false; renderKpi(); renderNext(); draw();
-      return;
-    }
+    if (sizing && sizing.mode) { sizing.mode = null; renderSize(); return; }
+    if (brushing) { brushing = false; if (brushN) edited(); else undo.pop(); brushN = 0; return; }
     if (!down) return;
     const moved = down.moved; down = null; cv.classList.remove('drag');
     if (!moved && ev.button === 0) onClick(...imgAt(ev));
   });
-  cv.addEventListener('pointerleave', () => { if (hover) { hover = null; draw(); } });
+  cv.addEventListener('pointerleave', () => { if (hover || brushAt) { hover = null; if (!brushing) brushAt = null; draw(); } });
   cv.addEventListener('wheel', ev => {
     if (!view) return;
     ev.preventDefault();
+    if (brush && ev.shiftKey) {                             // Shift + wheel: the eraser's size
+      brushD = Math.min(8, Math.max(0.5, brushD * (ev.deltaY < 0 ? 1.15 : 0.87)));
+      Q('#pk-brs').value = brushD; ls('celeris-mp-brush', brushD.toFixed(2)); draw(); return;
+    }
     const [u, v] = imgAt(ev), z = Math.min(8, Math.max(1, view.z * (ev.deltaY < 0 ? 1.25 : 0.8)));
     view.ox = u - (u - view.ox) * view.z / z; view.oy = v - (v - view.oy) * view.z / z; view.z = z; clampView(); draw();
   }, {passive: false});
   cv.addEventListener('contextmenu', ev => ev.preventDefault());
   const onResize = () => { fit(); draw(); };
   window.addEventListener('resize', onResize);
+
+  // ------------------------------------------------------------------ particle size: circle, magnifier, slider
+  const drawLoupe = () => {
+    const c = Q('#pk-loupe');
+    if (!c || !measuring()) return;
+    const x = c.getContext('2d'), W = c.width;
+    x.fillStyle = '#000'; x.fillRect(0, 0, W, W);
+    if (!sizing || !sizing.c || !base.width || !M) {
+      x.fillStyle = css('--ink3'); x.font = '22px sans-serif'; x.textAlign = 'center';
+      x.fillText('Click the centre of a particle', W / 2, W / 2); x.textAlign = 'start'; return;
+    }
+    const r = szR(), span = Math.max(4 * r, 12), k = W / span;
+    x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
+    x.drawImage(base, sizing.c[0] - span / 2, sizing.c[1] - span / 2, span, span, 0, 0, W, W);
+    x.strokeStyle = css('--you'); x.lineWidth = 3; x.beginPath(); x.arc(W / 2, W / 2, r * k, 0, 2 * Math.PI); x.stroke();
+    x.lineWidth = 1.5; x.setLineDash([6, 6]); x.strokeStyle = 'rgba(255,255,255,.45)';
+    x.beginPath(); x.moveTo(W / 2, 0); x.lineTo(W / 2, W); x.moveTo(0, W / 2); x.lineTo(W, W / 2); x.stroke(); x.setLineDash([]);
+    const t = Math.round(sizing.d) + ' Å';
+    x.font = '600 24px sans-serif'; x.lineWidth = 5; x.strokeStyle = 'rgba(0,0,0,.8)'; x.fillStyle = css('--you');
+    x.strokeText(t, 12, W - 14); x.fillText(t, 12, W - 14);
+  };
+  const renderSize = () => {
+    const card = Q('#pk-size'), on = measuring();
+    card.style.display = on ? '' : 'none';
+    if (!on) return;
+    if (!sizing) newSizing();
+    const d = Math.round(sizing.d), sl = Q('#pk-szs');
+    sl.max = Math.max(600, 2 * d); sl.value = d;
+    if (document.activeElement !== Q('#pk-szn')) Q('#pk-szn').value = d;
+    Q('#pk-szv').textContent = `${d} Å`;
+    Q('#pk-szx').style.display = sized() ? '' : 'none';
+    Q('#pk-szok').textContent = sized() && d === S.settings.diameter_a ? 'Keep this size' : `Use ${d} Å`;
+    Q('#pk-szh').innerHTML = `<b style="color:var(--you)">Click the centre of a particle</b>, then drag the circle's edge (or use the slider) until it just encloses the particle; drag inside the circle to move it. Zoom with the wheel. <kbd>[</kbd> <kbd>]</kbd> smaller / larger, <kbd>Enter</kbd> uses it.`
+      + (S.version ? '<br><span style="color:var(--you)">A new size drops the templates (they are made at the particle\'s size): train again afterwards. Your picks stay.</span>' : '');
+    drawLoupe();
+  };
+  const setSize = d => { if (!sizing) newSizing(); sizing.d = clampD(d); renderSize(); draw(); };
+  const applySize = async () => {
+    if (!sizing) return;
+    const d = clampD(sizing.d);
+    if (sized() && d === S.settings.diameter_a) return cancelSize();
+    err('');
+    try { await api(BASE + '/settings', {job, diameter_a: d}); } catch (e) { return err(e.message); }
+    sizing = null; resizeReq = false;
+    await loadState(); render();
+  };
+  const cancelSize = () => { if (!sized()) return; sizing = null; resizeReq = false; renderSize(); renderKpi(); renderNext(); draw(); };
+  Q('#pk-szs').oninput = e => setSize(+e.target.value);
+  Q('#pk-szn').onchange = e => setSize(+e.target.value);
+  Q('#pk-szok').onclick = applySize;
+  Q('#pk-szx').onclick = cancelSize;
 
   // ------------------------------------------------------------------ server
   const busy = (t) => { const b = Q('#pk-busy'); b.textContent = t || ''; b.classList.toggle('on', !!t); };
@@ -342,6 +486,7 @@ function mount(el, ctx) {
   const loadState = async () => {
     S = await api(`${BASE}/state?job=${enc(job)}`);
     if (th === null || S.threshold !== null && Math.abs((S.threshold ?? 0) - (th ?? 0)) > 1e-6 && !thDragging) th = S.threshold;
+    if (!thDragging) thHi = S.threshold_hi ?? null;
     return S;
   };
   let loadSeq = 0;
@@ -425,17 +570,30 @@ function mount(el, ctx) {
     }
     if (idx + 1 < n) open(idx + 1);
   };
-  const setThreshold = async (v, persist) => {
-    th = +v; Q('#pk-thv').textContent = th.toFixed(3); renderHist(); draw(); renderInfo();
-    if (persist && editable()) { try { await api(BASE + '/threshold', {job, threshold: th}); S.threshold = th; } catch (e) { err(e.message); } }
+  // the score range of the suggestions: lowest (th) and highest (thHi, null: none); undefined keeps one
+  const setRange = async (lo, hi, persist) => {
+    if (lo !== undefined) th = +lo;
+    if (hi !== undefined) thHi = hi === null ? null : +hi;
+    if (thHi !== null && th !== null && thHi <= th) { if (hi !== undefined) th = thHi - 0.002; else thHi = th + 0.002; }
+    rangeText(); renderHist(); draw(); renderInfo();
+    if (persist && editable()) {
+      const b = {job, threshold: th, upper: thHi};
+      try { const d = await api(BASE + '/threshold', b); S.threshold = d.threshold; S.threshold_hi = d.threshold_hi; } catch (e) { err(e.message); }
+    }
+  };
+  const setThreshold = (v, persist) => setRange(+v, undefined, persist);
+  const rangeText = () => {
+    Q('#pk-thv').textContent = th === null ? '–' : (+th).toFixed(3);
+    Q('#pk-thhv').textContent = thHi === null ? 'none' : thHi.toFixed(3);
+    if (!thDragging) { if (th !== null) Q('#pk-ths').value = th; Q('#pk-thh').value = thHi === null ? Q('#pk-thh').max : thHi; }
   };
   const runAll = async () => {
     await save(); err('');
-    const rev = S.mics.filter(r => r.state === 'reviewed').length;
-    const msg = S.version ? `Pick all ${S.mics.length} micrographs: the ${rev} reviewed ones keep your picks, the others are picked with the templates at threshold ${(th ?? 0).toFixed(3)}. It runs through the queue.`
-      : `No templates: only your ${rev} reviewed micrographs get picks. Finish with your picks only?`;
+    const rev = S.mics.filter(r => r.state === 'reviewed').length, nOff = (S.off || []).length;
+    const msg = S.version ? `Pick all ${S.mics.length} micrographs: the ${rev} reviewed ones keep your picks exactly, the others are picked with the templates${nOff ? ` (${nOff} switched off)` : ''} at scores ${(th ?? 0).toFixed(3)}${thHi !== null ? ` to ${thHi.toFixed(3)}` : ' and above'}, keeping your picks and removals there. It runs through the queue.`
+      : `No templates: only the micrographs you picked get picks. Finish with your picks only?`;
     if (!confirm(msg)) return;
-    if (S.version && th !== S.threshold) await setThreshold(th, true);
+    if (S.version && (th !== S.threshold || thHi !== (S.threshold_hi ?? null))) await setRange(th, thHi, true);
     try { await api(BASE + '/run', {job}); } catch (e) { return err(e.message); }
     await loadState(); render(); poll();
   };
@@ -456,8 +614,8 @@ function mount(el, ctx) {
   const step = () => {
     if (!S) return 0;
     if (['queued', 'running', 'finished'].includes(S.status)) return 4;
-    const picks = S.mics.reduce((a, r) => a + (r.state === 'reviewed' ? r.picks : 0), 0);
-    return S.version ? 3 : picks >= 20 ? 2 : 1;
+    const picks = S.mics.reduce((a, r) => a + r.picks, 0);
+    return !sized() ? 1 : S.version ? 3 : picks >= 20 ? 2 : 1;
   };
   const renderSteps = () => {
     const k = step();
@@ -467,12 +625,13 @@ function mount(el, ctx) {
   const renderNext = () => {
     renderSteps();
     if (!S) return;
-    const rev = S.mics.filter(r => r.state === 'reviewed'), picks = rev.reduce((a, r) => a + r.picks, 0);
+    const rev = S.mics.filter(r => r.picks), picks = rev.reduce((a, r) => a + r.picks, 0);
     const todo = S.mics.filter(r => r.state === 'suggested').length;
-    const changed = S.train && rev.some(r => r.picks) && picks !== S.train.picks;
+    const changed = S.train && rev.length && picks !== S.train.picks;
     let t;
-    if (measuring()) t = sized() ? `<b>Drag across a particle</b> to measure it again (now ${S.settings.diameter_a} Å).`
-      : '<b>First, measure the particle</b>: drag across one particle on the micrograph, edge to edge (its short side). Then click particles to pick them.';
+    if (measuring()) t = sized() ? `<b>Set the particle size again</b> (now ${S.settings.diameter_a} Å): click the centre of a particle and size the circle to it (panel on the right).`
+      : '<b>First, set the particle size</b>: click the centre of a particle, then drag the circle\'s edge until it just encloses the particle — the magnifier on the right shows it close up. Then pick.';
+    else if (sized() && S.train === null && S.version === 0 && picks >= 5 && S.mics.some(r => r.suggested)) t = `The particle size changed: <b>Train &amp; suggest (T)</b> again — your ${picks} picks stay.`;
     else if (S.status === 'queued') t = '<b>Pick all is queued</b>: it starts when the GPU is free. The picks can change again when it has finished.';
     else if (S.status === 'running') t = '<b>Picking all micrographs…</b> Progress on the right.';
     else if (S.status === 'finished' && !S.edited_after_run) t = `<b>Done.</b> Green circles: what Pick all found. Make an <b>Extract</b> job from this job (New job → Extract) to cut the particles, or keep correcting and Pick all again.`;
@@ -489,11 +648,11 @@ function mount(el, ctx) {
   const renderKpi = () => {
     if (!S) return;
     const rev = S.mics.filter(r => r.state === 'reviewed');
-    const picks = rev.reduce((a, r) => a + r.picks, 0), todo = S.mics.filter(r => r.state === 'suggested').length;
-    Q('#pk-kpi').innerHTML = [[picks, 'your picks'], [`${rev.length}<small style="font-size:12px;color:var(--ink3)"> / ${S.mics.length}</small>`, 'reviewed'], [todo, 'to check']]
+    const picks = S.mics.reduce((a, r) => a + r.picks, 0), todo = S.mics.filter(r => r.state === 'suggested').length;
+    Q('#pk-kpi').innerHTML = [[picks, 'picks (train)'], [`${rev.length}<small style="font-size:12px;color:var(--ink3)"> / ${S.mics.length}</small>`, 'reviewed'], [todo, 'to check']]
       .map(([v, c]) => `<div><div class="v">${typeof v === 'number' ? v.toLocaleString() : v}</div><div class="c">${c}</div></div>`).join('');
-    Q('#pk-diam').innerHTML = sized() ? `⌀ ${S.settings.diameter_a} Å${S.status === 'waiting' ? ` <button class="pk-link" id="pk-meas" title="measure the particle again">${remeasure ? 'cancel' : 'change'}</button>` : ''}` : '';
-    const mb = Q('#pk-meas'); if (mb) mb.onclick = () => { remeasure = !remeasure; renderKpi(); renderNext(); };
+    Q('#pk-diam').innerHTML = sized() ? `⌀ ${S.settings.diameter_a} Å${editable0() ? ` <button class="pk-link" id="pk-meas" title="set the particle size again">${resizeReq ? 'cancel' : 'change size'}</button>` : ''}` : '';
+    const mb = Q('#pk-meas'); if (mb) mb.onclick = () => { if (resizeReq) return cancelSize(); resizeReq = true; newSizing(); renderKpi(); renderNext(); renderSize(); draw(); };
   };
   const renderInfo = () => {
     if (!M || !S) return;
@@ -526,17 +685,27 @@ function mount(el, ctx) {
     const ed = editable(), tr = S.train;
     Q('#pk-train').disabled = !ed || !!S.busy; Q('#pk-more').disabled = !ed || !S.version; Q('#pk-this').disabled = !ed || !S.version;
     Q('#pk-train').textContent = S.version ? 'Train again & suggest (T)' : 'Train & suggest (T)';
-    Q('#pk-tm').innerHTML = tr ? `<div class="pk-note">${tr.n} template${tr.n > 1 ? 's' : ''} from ${tr.picks} picks on ${tr.micrographs} micrograph${tr.micrographs > 1 ? 's' : ''} (${tr.seconds} s)${tr.missing ? `; ${tr.missing} of your picks look unlike any template` : ''}.</div>
-      <div class="pk-tm"><img src="${BASE}/templates.png?job=${enc(job)}&v=${S.version}" alt="templates" style="height:64px;width:auto;max-width:100%"></div>
-      <div class="pk-note" style="margin-top:2px">picks per template: ${tr.counts.join(' · ')}</div>`
-      : '<div class="pk-note">Templates appear here after training: averages of your picks, centred and rotationally aligned (2D classes).</div>';
+    const off = new Set(S.off || []);
+    const ntm = Q('#pk-ntm'); if (document.activeElement !== ntm) ntm.value = S.settings.templates; ntm.disabled = !ed;
+    Q('#pk-tm').innerHTML = tr ? `<div class="pk-note">${tr.n} template${tr.n > 1 ? 's' : ''} from ${tr.picks} picks (${tr.accepted ?? 0} accepted suggestions) on ${tr.micrographs} micrograph${tr.micrographs > 1 ? 's' : ''} (${tr.seconds} s)${tr.missing ? `; ${tr.missing} of your picks look unlike any template` : ''}.</div>
+      <div class="pk-tm">${tr.counts.map((c, k) => `<button type="button" class="pk-tmb ${off.has(k) ? 'off' : ''}" data-k="${k}" ${ed ? '' : 'disabled'}
+          title="${off.has(k) ? 'switched off: its candidates are not picked. Click to use it again.' : 'click to switch this template off (e.g. it looks like ice, carbon or an edge)'}"><img src="${BASE}/templates.png?job=${enc(job)}&k=${k}&v=${S.version}" alt="template ${k + 1}"><span>${c} picks</span></button>`).join('')}</div>
+      <div class="pk-note" style="margin-top:2px">Click a template to switch it off: what it finds is not picked.</div>`
+      : '<div class="pk-note">Templates appear here after training: averages of your picks (clicked and accepted), centred and rotationally aligned (2D classes).</div>';
+    Q('#pk-tm').querySelectorAll('.pk-tmb').forEach(b => b.onclick = async () => {
+      const k = +b.dataset.k, o = new Set(S.off || []);
+      o.has(k) ? o.delete(k) : o.add(k);
+      if (o.size >= tr.counts.length) return err('At least one template must stay on.');
+      try { const d = await api(BASE + '/off', {job, off: [...o]}); S.off = d.off; } catch (e) { return err(e.message); }
+      renderSide(); renderInfo(); draw();
+    });
     Q('#pk-thr').style.display = S.version ? '' : 'none';
     if (S.version) {
-      const vals = [...(tr ? tr.pos : []), ...(tr ? tr.neg : [])];
-      const lo = Math.max(0, Math.floor((Math.min(...vals, th ?? 1) - 0.08) * 20) / 20), hi = Math.min(1, Math.ceil((Math.max(...vals, th ?? 0) + 0.05) * 20) / 20);
-      const s = Q('#pk-ths'); s.min = lo; s.max = Math.max(hi, lo + 0.1); s.disabled = !ed;
-      if (th !== null && !thDragging) s.value = th;
-      Q('#pk-thv').textContent = th === null ? '–' : (+th).toFixed(3);
+      const sg = M && M.suggest ? M.suggest.score.filter((_, i) => M.suggest.ok[i]) : [];
+      const vals = [...(tr ? tr.pos : []), ...(tr ? tr.neg : [])], top = Math.max(...vals, ...sg.slice(0, 5000), th ?? 0, thHi ?? 0);
+      const lo = Math.max(0, Math.floor((Math.min(...vals, th ?? 1) - 0.08) * 20) / 20), hi = Math.min(1, Math.ceil((top + 0.03) * 20) / 20);
+      [Q('#pk-ths'), Q('#pk-thh')].forEach(s => { s.min = lo; s.max = Math.max(hi, lo + 0.1); s.disabled = !ed; });
+      rangeText();
       renderHist();
     }
     // finish
@@ -548,7 +717,7 @@ function mount(el, ctx) {
       const sm = S.summary || {};
       f = (S.status === 'finished' && sm.picks != null ? `<div class="pk-note" style="margin:0 0 8px">Last run: <b style="color:var(--ink)">${(+sm.picks).toLocaleString()}</b> picks on ${sm.micrographs} micrographs (${sm.reviewed} reviewed, ${(+sm.manual_picks).toLocaleString()} yours) in ${sm.seconds} s.</div>` : '')
         + `<button id="pk-run" class="${S.version ? 'go' : ''}" style="width:100%" ${ed && (S.version || rev) ? '' : 'disabled'}>${S.status === 'finished' ? 'Pick all again' : S.version ? 'Pick all micrographs' : 'Finish with my picks only'}</button>
-          <div class="pk-note">${S.version ? `Every micrograph: the ${rev} reviewed keep your picks exactly, the other ${S.mics.length - rev} are picked with the templates at the threshold. Runs through the queue; the output goes to Extract like a Pick job's.` : 'Without templates only the micrographs you picked get picks. Train first to pick the rest.'}</div>`;
+          <div class="pk-note">${S.version ? `Every micrograph: the ${rev} reviewed keep your picks exactly, the other ${S.mics.length - rev} are picked with the templates in the score range (your picks and removals there stay). Runs through the queue; the output goes to Extract like a Pick job's.` : 'Without templates only the micrographs you picked get picks. Train first to pick the rest.'}</div>`;
     }
     if (S.error && S.status !== 'finished') f += `<div class="pk-err">${esc(S.error)}</div>`;
     f = `<div class="pk-banner" style="display:${S.status === 'finished' && S.edited_after_run ? '' : 'none'}">You changed picks after the last Pick all: run it again to update the job's output.</div>` + f;
@@ -568,16 +737,22 @@ function mount(el, ctx) {
       h.forEach((v, i) => { const bh = (H - 14) * v / mx; x.fillRect(i * W / nb + 1, H - 12 - bh, W / nb - 2, bh); });
     });
     x.globalAlpha = 1;
-    if (th !== null) { const tx = (th - lo) / (hi - lo) * W; x.fillStyle = '#fff'; x.fillRect(tx - 1.5, 0, 3, H - 10); }
+    const X = v => (v - lo) / (hi - lo) * W;
+    x.fillStyle = 'rgba(0,0,0,.5)';                        // outside the range: shaded
+    if (th !== null) x.fillRect(0, 0, Math.max(0, X(th)), H - 10);
+    if (thHi !== null) x.fillRect(X(thHi), 0, W - X(thHi), H - 10);
+    if (th !== null) { x.fillStyle = '#fff'; x.fillRect(X(th) - 1.5, 0, 3, H - 10); }
+    if (thHi !== null) { x.fillStyle = css('--you'); x.fillRect(X(thHi) - 1.5, 0, 3, H - 10); }
     x.fillStyle = css('--ink3'); x.font = '20px sans-serif'; x.textBaseline = 'bottom';
     x.fillText(lo.toFixed(2), 2, H); const t = hi.toFixed(2); x.fillText(t, W - x.measureText(t).width - 2, H);
-    const pos = tr.pos.length ? tr.pos.filter(v => v >= th).length / (tr.pos.length + tr.missing) : null;
-    const neg = tr.neg.filter(v => v >= th).length;
+    const inR = v => v >= th && (thHi === null || v <= thHi);
+    const pos = tr.pos.length ? tr.pos.filter(inR).length / (tr.pos.length + tr.missing) : null;
+    const neg = tr.neg.filter(inR).length, above = thHi === null ? 0 : sg.filter(v => v > thHi).length;
     Q('#pk-thn').innerHTML = `<span style="color:var(--you)">■</span> your picks (scored by templates from the other half) · <span style="color:var(--bad)">■</span> removed · <span style="color:var(--ink3)">■</span> candidates here<br>`
-      + (pos !== null ? `This threshold keeps <b style="color:var(--ink)">${Math.round(100 * pos)}%</b> of your picks` : '') + (tr.neg.length ? ` and ${neg} of the ${tr.neg.length} you removed.` : '.')
-      + (M && M.state === 'suggested' ? ` Here: ${visibleSuggestions().length} suggestions.` : '');
+      + (pos !== null ? `This range keeps <b style="color:var(--ink)">${Math.round(100 * pos)}%</b> of your picks` : '') + (tr.neg.length ? ` and ${neg} of the ${tr.neg.length} you removed.` : '.')
+      + (M && M.state === 'suggested' ? ` Here: ${visibleSuggestions().length} suggestions${above ? `, ${above} candidates above the highest score left out` : ''}.` : '');
   };
-  const render = () => { renderSide(); renderList(); renderInfo(); draw(); };
+  const render = () => { renderSide(); renderList(); renderInfo(); renderSize(); draw(); };
 
   // ------------------------------------------------------------------ controls
   Q('#pk-prev').onclick = () => open(idx - 1);
@@ -589,12 +764,24 @@ function mount(el, ctx) {
   Q('#pk-more').onclick = () => suggestMore();
   Q('#pk-this').onclick = () => suggestMore([S.mics[idx].stem]);
   Q('#pk-show').onchange = e => { show = e.target.checked; draw(); };
+  Q('#pk-brush').onclick = () => setBrush(!brush);
+  Q('#pk-flat').checked = flat;
+  Q('#pk-flat').onchange = e => { flat = e.target.checked; ls('celeris-mp-flat', flat ? '1' : '0'); process(); draw(); };
+  Q('#pk-brs').value = brushD;
+  Q('#pk-brs').oninput = e => { brushD = +e.target.value; ls('celeris-mp-brush', brushD); draw(); };
   const lpText = () => { Q('#pk-lp').value = lp; Q('#pk-lpv').textContent = lp ? lp + ' Å' : 'off'; };
   lpText();
   Q('#pk-lp').oninput = e => { lp = +e.target.value; lpText(); ls('celeris-lowpass', lp); process(); draw(); };
   const ths = Q('#pk-ths');
-  ths.oninput = e => { thDragging = true; setThreshold(e.target.value, false); };
-  ths.onchange = e => { thDragging = false; setThreshold(e.target.value, true); };
+  ths.oninput = e => { thDragging = true; setRange(+e.target.value, undefined, false); };
+  ths.onchange = e => { thDragging = false; setRange(+e.target.value, undefined, true); };
+  const thh = Q('#pk-thh'), hiOf = v => v >= +thh.max - 1e-9 ? null : v;       // at the right end: no upper limit
+  thh.oninput = e => { thDragging = true; setRange(undefined, hiOf(+e.target.value), false); };
+  thh.onchange = e => { thDragging = false; setRange(undefined, hiOf(+e.target.value), true); };
+  Q('#pk-ntm').onchange = async e => {
+    try { const d = await api(BASE + '/settings', {job, templates: +e.target.value}); S.settings.templates = d.templates; e.target.value = d.templates; err(''); }
+    catch (er) { err(er.message); }
+  };
   Q('#pk-filt').querySelectorAll('button').forEach(b => b.onclick = () => { filter = b.dataset.f; renderList(); });
   const undoOne = () => {
     if (!undo.length || !editable()) return;
@@ -608,11 +795,18 @@ function mount(el, ctx) {
     if (!el.offsetParent) return;                           // not shown
     const k = ev.key;
     const step_ = () => +(ths.step) * 5;
+    if (measuring()) {                                      // sizing: [ ] size, Enter use it, Escape cancel
+      const f = {'[': () => setSize((sizing ? sizing.d : 150) * 0.97), ']': () => setSize((sizing ? sizing.d : 150) * 1.03), Enter: applySize, Escape: cancelSize}[k];
+      if (f) { ev.preventDefault(); f(); return; }
+    }
     const map = {
       ArrowLeft: () => open(idx - 1), ArrowRight: () => open(idx + 1), Enter: accept,
       t: train, s: () => suggestMore(), p: () => suggestMore([S.mics[idx].stem]),
       h: () => { show = !show; Q('#pk-show').checked = show; draw(); },
+      e: () => setBrush(!brush), Escape: () => brush && setBrush(false),
       '[': () => S.version && setThreshold(Math.max(+ths.min, th - step_()), true), ']': () => S.version && setThreshold(Math.min(+ths.max, th + step_()), true),
+      '{': () => S.version && setRange(undefined, Math.max(+ths.min, (thHi ?? +thh.max) - step_()), true),
+      '}': () => S.version && setRange(undefined, hiOf(Math.min(+thh.max, (thHi ?? +thh.max) + step_())), true),
       u: undoOne, z: () => ev.ctrlKey && undoOne(), '0': () => { if (view) { view.z = 1; view.ox = view.oy = 0; draw(); } },
       '+': () => { if (view) { view.z = Math.min(8, view.z * 1.25); clampView(); draw(); } }, '-': () => { if (view) { view.z = Math.max(1, view.z / 1.25); clampView(); draw(); } },
     };

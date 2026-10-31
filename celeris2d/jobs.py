@@ -1104,7 +1104,7 @@ def run_refine3d(project: Project, job, log=print) -> dict:
 class HeteroRefineSettings:
     references: tuple = ()          # maps, one per class: job numbers ("12") or "job:class" ("25:2" = InitialModel
                                     # model 2, "30:3" = HeteroRefine class 3); a reference can be given several times;
-                                    # "decoy": a junk class (cryoSPARC's decoy references) - the first reference with
+                                    # "decoy": a junk class (cryoSPARC's decoy references) - the first map with
                                     # its phases randomised beyond decoy_res_a (its size and power, no structure), so
                                     # particles that fit no structure gather there; use with global_search. Which
                                     # class ends up clean is decided by the data, not by the reference it started
@@ -1149,6 +1149,8 @@ def hetero_refine_job(project: Project, particles, poses, s: HeteroRefineSetting
         raise ValueError("heterogeneous refinement needs at least two reference maps")
     p, q = project.job(particles), project.job(poses)
     refs = [project.job(str(r).split(":")[0]) for r in s.references if str(r) != "decoy"]
+    if not refs:
+        raise ValueError("heterogeneous refinement needs at least one map among the references (decoys are made from it)")
     ins = [p, q] + [r for i, r in enumerate(refs) if r.id not in [x.id for x in [p, q] + refs[:i]]]
     return project.new_job("HeteroRefine", dict(params_of(s), references=[str(r) for r in s.references], particles=p.id,
                                                 poses=q.id), ins, label or f"K{len(s.references)}_on{p.id:03d}")
@@ -1218,41 +1220,46 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
     job = project.job(job)
     s = settings_of(job, HeteroRefineSettings)
     pj, qj = project.job(job.params["particles"]), project.job(job.params["poses"])
-    src, poses, t_start, half, n_dup, dist = _posed_particles(project, job, pj, qj, (), log)
+    # symmetry-expanded poses (a SymExpand job, or a refinement of one): one row per copy, each image loaded once
+    src, poses, t_start, half, n_dup, dist, img = _posed_particles(project, job, pj, qj, (), log,
+                                                                   expand=qj.type not in CLASS_JOBS)
     max_res = s.max_res_a or 2.0 * src.apix
     t0 = time.time()
     ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log, nyquist_margin=1.0, max_c64_gb=1.5,
                          image_mask_a=-1.0)      # reconstruct from unmasked images (alignment masks them)
     clf = ses.clf
     clf._wait_loaded(clf.N)
-    dev, box_a, n = clf.dev, clf.box_a, clf.N
+    dev, box_a, n = clf.dev, clf.box_a, len(img)
     K = len(s.references)
     b = ab.working_box(clf, n_acc=2 * K, n_ft=2 * K, log=log)
     apix = box_a / b
     A0 = ab.euler_to_matrix(torch.as_tensor(poses["rot"]), torch.as_tensor(poses["tilt"]),
                             torch.as_tensor(poses["psi"])).float()
     t = torch.as_tensor(t_start).float()
-    idx = torch.arange(n)
-    if half is None:
-        half = (torch.randperm(n, generator=torch.Generator().manual_seed(1)) % 2).numpy()
+    idx = torch.as_tensor(img)
+    if half is None:                                  # per image: the copies of a particle in the same half
+        half = (torch.randperm(clf.N, generator=torch.Generator().manual_seed(1)) % 2).numpy()[img]
     half_t = torch.as_tensor(half).long()
-    # references: same box and pixel size; the first scaled to the particles at their poses, the others to the
-    # first's Fourier amplitudes at low resolution (they may be in other frames, so poses cannot scale them)
-    vols, names = [], []
-    if str(s.references[0]) == "decoy":
-        raise ValueError("the first reference must be a map (decoys are made from it)")
+    # references: same box and pixel size; the first map scaled to the particles at their poses, the others to its
+    # Fourier amplitudes at low resolution (they may be in other frames, so poses cannot scale them); decoys are
+    # made from the first map, wherever they are in the list
+    vols, names = [None] * K, [None] * K
+    maps = [i for i, r in enumerate(s.references) if str(r) != "decoy"]
+    if not maps:
+        raise ValueError("references need at least one map (decoys are made from it)")
+    for i in maps:
+        v, a, nm = _reference(project, s.references[i])
+        vols[i], names[i] = map_to_box(v, a, b, apix), nm
+    f = maps[0]
     for i, r in enumerate(s.references):
         if str(r) == "decoy":
-            vols.append(decoy_map(vols[0], box_a, s.decoy_res_a, clf.p.diameter_a, seed=s.seed + 11 * i))
-            names.append(f"decoy ({s.decoy_res_a:g} A)")
-            continue
-        v, a, nm = _reference(project, r)
-        vols.append(map_to_box(v, a, b, apix))
-        names.append(nm)
-    vols[0] = vols[0] * _scale_to_data(clf, idx, A0, t, vols[0], b, max(s.res_start_a, 10.0))
-    a0 = _amplitude(vols[0], box_a, 2 * s.res_start_a, s.res_start_a)
-    for i in range(1, K):
-        vols[i] = vols[i] * (a0 / max(_amplitude(vols[i], box_a, 2 * s.res_start_a, s.res_start_a), 1e-20))
+            vols[i] = decoy_map(vols[f], box_a, s.decoy_res_a, clf.p.diameter_a, seed=s.seed + 11 * i)
+            names[i] = f"decoy ({s.decoy_res_a:g} A)"
+    vols[f] = vols[f] * _scale_to_data(clf, idx, A0, t, vols[f], b, max(s.res_start_a, 10.0))
+    a0 = _amplitude(vols[f], box_a, 2 * s.res_start_a, s.res_start_a)
+    for i in range(K):
+        if i != f:
+            vols[i] = vols[i] * (a0 / max(_amplitude(vols[i], box_a, 2 * s.res_start_a, s.res_start_a), 1e-20))
     inits = []
     g = torch.Generator().manual_seed(s.seed + 3)
     for i, v in enumerate(vols):
@@ -1296,12 +1303,13 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
     A_start = A_init[torch.arange(n), z.cpu()]
     z = z.cpu().numpy()
     rot, tilt, psi = ab.matrix_to_euler(A.cpu())
-    _write_results(project, job, src, np.arange(n), dict(
+    _write_results(project, job, src, img, dict(
         rot=rot.numpy().astype(np.float32), tilt=tilt.numpy().astype(np.float32), psi=psi.numpy().astype(np.float32),
         shift_x_a=t[:, 0].cpu().numpy().astype(np.float32), shift_y_a=t[:, 1].cpu().numpy().astype(np.float32),
         cls=z.astype(np.int16), fit=fit, half=np.asarray(half).astype(np.uint8), used=used,
         **{f"prob_{k + 1}": post[:, k].astype(np.float32) for k in range(K)},
-        **(iteration_columns(job, box_a) if s.save_iterations else {})))
+        **(iteration_columns(job, box_a) if s.save_iterations else {}),
+        **({"copy": poses["copy"].astype(np.int16)} if "copy" in poses and "celCopy" not in src.parts else {})))
     table, fsc, masks, res_cls = [], {}, [], []
     for k in range(K):
         nk = int((z == k).sum())
