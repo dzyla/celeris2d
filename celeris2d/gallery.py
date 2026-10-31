@@ -68,9 +68,11 @@ def class_gallery(project: Project, job) -> dict:
         pops = np.bincount(np.asarray(t["cls"]).astype(int)[np.asarray(t["cls"]) >= 0], minlength=len(imgs))
         n = max(int(pops.sum()), 1)
         out.update(kind="2d", apix=apix, particles=n)
+        tab = {int(r["cls"]): r for r in summ.get("table", []) if isinstance(r, dict) and "cls" in r}
         for k in np.argsort(-pops):
+            r = tab.get(int(k) + 1, {})
             out["classes"].append(dict(cls=int(k) + 1, n=int(pops[k]), share=round(float(pops[k]) / n, 4),
-                                       images=[_thumb(imgs[k])]))
+                                       res=r.get("res_a"), conf=r.get("conf"), images=[_thumb(imgs[k])]))
     elif has_classes(src):
         rows = {int(r["cls"]): r for r in class_table(summ)}
         out.update(kind="3d", particles=int(summ.get("particles", 0)))

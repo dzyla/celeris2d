@@ -58,7 +58,7 @@ function renderPulse() {
 function renderAsks() {
   const w = queue.waiting.map(n => jobs.find(j => j.name === n)).filter(Boolean);
   $('#asks').innerHTML = w.length ? `<h2>Waiting for you</h2>` + w.map(j => `
-    <button class="ask" data-n="${esc(j.name)}"><strong>Choose the classes to keep</strong>
+    <button class="ask" data-n="${esc(j.name)}"><strong>${j.type === 'ManualPick' ? 'Pick particles by hand' : 'Choose the classes to keep'}</strong>
       <span>${esc(j.name)} · from ${esc((j.inputs || [])[0] || '')}</span></button>`).join('') : '';
   $('#asks').style.display = w.length ? '' : 'none';
   document.querySelectorAll('.ask').forEach(b => b.onclick = () => showJob(b.dataset.n));
@@ -286,17 +286,37 @@ function renderStage(j) {
 function stageLive(st, j) {
   st.className = 'stage';
   const t0 = (j.params || {}).run_started, skew = Date.now() / 1000 - (j.now || Date.now() / 1000);
-  st.innerHTML = `<div class="live"><div class="lhead"><span class="dot running pulse"></span><b>Running</b> <span id="lel" class="muted"></span>
-      <span id="llast" class="muted lastline"></span></div>
+  st.innerHTML = `<div class="live"><div class="runstrip" id="rstrip"><div class="rsteps" id="rsteps"><div class="rstep"><div class="rsh"><b>Starting</b></div><div class="bar"><div style="width:2%;background:var(--you)"></div></div></div></div>
+        <div class="reta"><b id="reta">–</b><span id="lel" class="muted"></span></div></div>
+      <div class="lhead"><span class="muted">Last line:</span> <span id="llast" class="lastline"></span></div>
       ${LIVE3D.includes(j.type) ? `<div id="l3d"><div class="muted" style="padding:14px 4px">The map appears here once the job has made one.</div></div>` : ''}
       ${j.type === 'Class2D' ? `<div id="lgal"><div class="muted" style="padding:18px 4px">The classes appear here after the first iteration.</div></div>` : ''}
       <div class="lbody"><pre class="log ltail" id="ltail">waiting for the first lines of the log…</pre>
       <figure class="lfig" id="lfig"><div class="muted" style="padding:30px;text-align:center">The job's figures appear here as it writes them.</div></figure></div></div>`;
   let offset = 0, text = '', lastFig = '', n = 0, liveAt = 0, at3d = 0;
+  // the run strip: the job's stages, done / current (with its step of n) / to come, and the time left at the current pace
+  const STAGES3D = {InitialModel: [['classes', 'Class averages'], ['sgd', 'Particle SGD'], ['refine', 'Refinement'], ['class3d', '3D classes']],
+    Refine3D: [['refine', 'Refinement']], LocalRefine: [['refine', 'Local refinement']], HeteroRefine: [['refine', 'Heterogeneous refinement'], ['class3d', 'Classes']],
+    Class3D: [['class3d', '3D classification']]};
+  const strip = (stages, cur, it, nIt, hist) => {
+    if (!$('#rsteps')) return;
+    const ci = Math.max(0, stages.findIndex(([k]) => k === cur));
+    $('#rsteps').innerHTML = stages.map(([k, lab], i) => {
+      const done = i < ci, now = i === ci, pct = done ? 100 : now ? Math.max(2, 100 * it / Math.max(nIt, 1)) : 0;
+      return `<div class="rstep ${done ? 'done' : now ? 'now' : ''}"><div class="rsh"><span class="rmark">${done ? '✓' : i + 1}</span><b>${esc(lab)}</b><span class="muted">${now ? `${it} of ${nIt}` : done ? 'done' : ''}</span></div>
+        <div class="bar"><div style="width:${pct.toFixed(1)}%;background:${done ? 'var(--good)' : 'var(--you)'}"></div></div></div>`;
+    }).join('');
+    const h = (hist || []).filter(x => x.stage === cur && x.t);
+    if (h.length > 2 && nIt > it) {
+      const dt = (h[h.length - 1].t - h[0].t) / Math.max(h[h.length - 1].it - h[0].it, 1), left = (nIt - it) * dt;
+      $('#reta').textContent = (left >= 90 ? '~' + Math.round(left / 60) + ' min' : '~' + Math.round(left) + ' s') + ' left' + (ci < stages.length - 1 ? ' in this stage' : '');
+    }
+  };
   const live3d = async () => {                       // a 3D job's current maps (live.py), as they change: every model
     const d = await api('/api/project/live3d?job=' + encodeURIComponent(name));
     if (!d.maps || d.updated === at3d || current !== name || !$('#l3d')) return;
     at3d = d.updated;
+    strip(STAGES3D[j.type] || [[d.stage, d.stage]], d.stage, d.it, d.n_iter, d.history);
     const stage = {sgd: 'Particle SGD', refine: 'Refinement', classes: 'From the class averages', class3d: '3D classification'}[d.stage] || d.stage;
     const K = d.maps.length, cnt = d.counts || [], tot = cnt.reduce((a, b) => a + (b || 0), 0);
     const views = await Promise.all(d.maps.map(m => api('/api/project/mapviews?path=' + encodeURIComponent(m)).catch(() => null)));
@@ -332,6 +352,7 @@ function stageLive(st, j) {
     const d = await api('/api/project/live?job=' + encodeURIComponent(name));
     if (!d.classes || d.updated === liveAt || current !== name || !$('#lgal')) return;
     liveAt = d.updated;
+    strip(d.round ? [['r', `Round ${d.round}${d.streaming ? ' (extraction running)' : ', final'}`]] : [['c', '2D classification']], d.round ? 'r' : 'c', d.it, d.n_iter, null);
     const rnd = d.round ? `Round <b>${d.round}</b> on ${fmt(d.particles)} particles${d.streaming ? ' (extraction still running)' : ' (all particles: final round)'} · ` : '';
     $('#lgal').innerHTML = `<div class="gal-tools"><div class="sum">${rnd}Iteration <b>${d.it}</b> of ${d.n_iter} · ${d.res} Å · ${d.changed}% changed class · ${d.classes.length} classes</div></div>
       <div class="gal" style="max-height:52vh">${d.classes.map(c => `<div class="cls" style="cursor:default"><img src="${c.images[0]}" alt="class ${c.cls}">
@@ -340,7 +361,7 @@ function stageLive(st, j) {
   const tick = async () => {
     clearTimeout(liveTimer);
     if (current !== name || !$('#ltail')) return;
-    if (t0) { const s = Math.max(0, Date.now() / 1000 - skew - t0); $('#lel').textContent = `for ${s >= 3600 ? Math.floor(s / 3600) + ' h ' : ''}${Math.floor(s % 3600 / 60)} min ${Math.floor(s % 60)} s`; }
+    if (t0) { const s = Math.max(0, Date.now() / 1000 - skew - t0); $('#lel').textContent = `running for ${s >= 3600 ? Math.floor(s / 3600) + ' h ' : ''}${Math.floor(s % 3600 / 60)} min ${Math.floor(s % 60)} s`; }
     try {
       if (j.type === 'Class2D') await liveClasses();
       if (LIVE3D.includes(j.type)) await live3d();
@@ -631,6 +652,8 @@ function stageMicPanel(st, j) {
   st.onkeydown = e => { if (e.key === 'ArrowLeft') show((sel || 1) - 1, true); if (e.key === 'ArrowRight') show((sel || 1) + 1, true); };
   tick();
 }
+// classes of a 2D / 3D classification: choose the ones to keep (a sticky bar says how much is kept), sort them,
+// select by resolution, see the class sizes; Save selection makes the Select job
 async function stageGallery(st, j) {
   st.className = 'stage';
   st.innerHTML = '<div class="launch">loading classes…</div>';
@@ -640,44 +663,66 @@ async function stageGallery(st, j) {
   if (current !== j.name) return;
   const sel = new Set(g.chosen || []);
   const editable = j.type !== 'Select' || g.waiting;
-  const is3 = g.kind === '3d';
-  st.innerHTML = `<div class="gal-tools">
-      <div class="sum" id="gsum"></div>
-      ${editable ? `<button class="quiet" data-a="all">All</button><button class="quiet" data-a="none">None</button><button class="quiet" data-a="inv">Invert</button>
-      <label class="muted" style="font-size:12px">size <input type="range" id="gsize" min="90" max="220" value="${is3 ? 90 : 132}" style="width:90px;vertical-align:middle"></label>
-      <button class="${g.waiting ? 'you' : 'go'}" id="gsave" disabled>${g.waiting ? 'Keep these classes' : 'Keep these classes (new Select job)'}</button>` : ''}
+  const is3 = g.kind === '3d', hasRes = g.classes.some(c => c.res);
+  const resOf = c => c.res ?? 99;
+  let sortBy = 'size';
+  const rs = g.classes.map(resOf).filter(r => r < 99);
+  const rlo = rs.length ? Math.floor(Math.min(...rs)) : 5, rhi = rs.length ? Math.ceil(Math.max(...rs)) : 40;
+  st.innerHTML = `<div class="selbar">
+      <div class="sum" id="gsum"></div><div class="bar selb"><div id="gbar" style="width:0;background:var(--data)"></div></div>
+      ${editable ? `<span class="seg" role="group" aria-label="sort the classes"><button data-s="size" class="on">size</button>${hasRes ? '<button data-s="res">resolution</button>' : ''}<button data-s="num">number</button></span>
+      <button class="quiet" data-a="all">All</button><button class="quiet" data-a="none">None</button><button class="quiet" data-a="inv">Invert</button>
+      <button class="${g.waiting ? 'you' : 'go'}" id="gsave" disabled>${g.waiting ? 'Keep these classes' : 'Save selection'}</button>` : ''}
       ${is3 && g.classes.some(c => c.map) ? `<button id="g3d">Show the class maps in 3D</button>` : ''}
     </div>
-    <div class="gal ${is3 ? 'three' : ''}" id="gal">${g.classes.map(c => `
-      <div class="cls ${sel.size ? (sel.has(c.cls) ? 'on' : 'off') : ''}" data-c="${c.cls}" title="class ${c.cls}: ${c.n.toLocaleString()} particles${c.res ? ', ' + c.res + ' Å' : ''}">
-        ${c.images.length > 1 ? `<div class="three">${c.images.map(s => `<img src="${s}" alt="">`).join('')}</div>` : c.images.length ? `<img src="${c.images[0]}" alt="class ${c.cls}">` : '<div style="aspect-ratio:3/1"></div>'}
-        <div class="lab"><span>${c.cls}</span><span>${c.n.toLocaleString()}${c.share != null ? ' · ' + (100 * c.share).toFixed(1) + '%' : ''}${c.res ? ' · ' + c.res + ' Å' : ''}</span></div>
-      </div>`).join('')}</div>`;
-  const total = g.classes.reduce((a, c) => a + c.n, 0);
+    <div class="galwrap"><div class="gal ${is3 ? 'three' : ''}" id="gal"></div>
+      <aside class="galside">
+        ${editable && hasRes ? `<div class="card pad"><b>Quick select</b><label class="lp" style="margin-top:8px"><span>Resolution better than</span><b id="grv"></b>
+          <input type="range" id="grs" min="${rlo}" max="${rhi}" step="0.5" value="${rhi}"></label><div class="muted" style="font-size:12.5px;margin-top:6px">Selects the classes that pass; click any class to change it.</div></div>` : ''}
+        <div class="card pad"><b>Class sizes</b> <span class="muted">largest first, chosen in blue</span><svg id="gsz" viewBox="0 0 240 110" style="width:100%;height:auto;margin-top:6px" role="img" aria-label="class sizes"></svg></div>
+        <div class="card pad muted" style="font-size:12.5px">${editable ? 'Saving makes a Select job: Ab initio 3D, refinements and Extract take it as their particles.' : `The classes kept from ${esc(g.source)}.`}
+          <label class="muted" style="display:flex;gap:8px;align-items:center;margin-top:10px">Size <input type="range" id="gsize" min="90" max="220" value="${is3 ? 90 : 120}" style="flex:1"></label></div>
+      </aside></div>`;
+  const total = g.classes.reduce((a, c) => a + c.n, 0), maxN = Math.max(...g.classes.map(c => c.n), 1);
+  const draw = () => {
+    const cs = [...g.classes].sort(sortBy === 'res' ? (a, b) => resOf(a) - resOf(b) : sortBy === 'num' ? (a, b) => a.cls - b.cls : (a, b) => b.n - a.n);
+    $('#gal').innerHTML = cs.map(c => `<button class="cls" data-c="${c.cls}" aria-pressed="${sel.has(c.cls)}" title="class ${c.cls}: ${c.n.toLocaleString()} particles${c.res ? ', ' + (+c.res).toFixed(1) + ' Å' : ''}">
+        ${c.images.length > 1 ? `<span class="three">${c.images.map(s => `<img src="${s}" alt="">`).join('')}</span>` : c.images.length ? `<img src="${c.images[0]}" alt="class ${c.cls}">` : '<span style="display:block;aspect-ratio:3/1"></span>'}
+        <span class="lab"><span>${c.cls}</span><span>${c.share != null ? (100 * c.share).toFixed(1) + '%' : c.n.toLocaleString()}${c.res ? ' · ' + (+c.res).toFixed(c.res < 10 ? 1 : 0) + ' Å' : ''}</span></span></button>`).join('');
+    if (editable) document.querySelectorAll('#gal .cls').forEach(e => e.onclick = () => { const k = +e.dataset.c; sel.has(k) ? sel.delete(k) : sel.add(k); upd(); });
+    upd();
+  };
   const upd = () => {
-    const n = g.classes.filter(c => sel.has(c.cls)).reduce((a, c) => a + c.n, 0);
-    $('#gsum').innerHTML = editable ? (sel.size ? `<b>${sel.size}</b> of ${g.classes.length} classes, <b>${n.toLocaleString()}</b> particles (${(100 * n / Math.max(total, 1)).toFixed(1)}%)`
-      : `Click the classes to keep. ${g.classes.length} classes, ${total.toLocaleString()} particles`)
-      : `${sel.size} classes kept of ${esc(g.source)}`;
-    document.querySelectorAll('.cls').forEach(e => { const k = +e.dataset.c; e.classList.toggle('on', sel.has(k)); e.classList.toggle('off', sel.size > 0 && !sel.has(k)); });
+    const n = g.classes.filter(c => sel.has(c.cls)).reduce((a, c) => a + c.n, 0), pct = 100 * n / Math.max(total, 1);
+    $('#gsum').innerHTML = editable ? (sel.size ? `<b>${sel.size}</b> of ${g.classes.length} classes · <b>${n.toLocaleString()}</b> particles <span class="muted">(${pct.toFixed(1)}%)</span>`
+      : `Click the classes to keep · ${g.classes.length} classes, ${total.toLocaleString()} particles`) : `${sel.size} classes kept of ${esc(g.source)} · ${n.toLocaleString()} particles`;
+    $('#gbar').style.width = pct.toFixed(1) + '%';
+    document.querySelectorAll('#gal .cls').forEach(e => { const k = +e.dataset.c; e.classList.toggle('on', sel.has(k)); e.classList.toggle('off', sel.size > 0 && !sel.has(k)); e.setAttribute('aria-pressed', sel.has(k)); });
     const b = $('#gsave'); if (b) b.disabled = !sel.size;
+    const bars = [...g.classes].sort((a, b) => b.n - a.n), w = 240 / bars.length;
+    $('#gsz').innerHTML = bars.map((c, i) => `<rect x="${(i * w).toFixed(2)}" y="${(108 - 104 * c.n / maxN).toFixed(1)}" width="${Math.max(w - 0.8, 0.8).toFixed(2)}" height="${(104 * c.n / maxN).toFixed(1)}" fill="${sel.has(c.cls) ? css('--data') : css('--axis')}"><title>class ${c.cls}: ${c.n.toLocaleString()}</title></rect>`).join('');
   };
   if ($('#g3d')) $('#g3d').onclick = () => openViewer(st, j, g.classes.filter(c => c.map).map(c => ({path: c.map})), null);
+  $('#gsize').oninput = e => $('#gal').style.setProperty('--cell', e.target.value * (is3 ? 3 : 1) + 'px');
   if (editable) {
-    document.querySelectorAll('.cls').forEach(e => e.onclick = () => { const k = +e.dataset.c; sel.has(k) ? sel.delete(k) : sel.add(k); upd(); });
-    document.querySelectorAll('[data-a]').forEach(b => b.onclick = () => {
+    document.querySelectorAll('.selbar [data-s]').forEach(b => b.onclick = () => { sortBy = b.dataset.s; document.querySelectorAll('.selbar [data-s]').forEach(x => x.classList.toggle('on', x === b)); draw(); });
+    document.querySelectorAll('.selbar [data-a]').forEach(b => b.onclick = () => {
       const a = b.dataset.a;
       g.classes.forEach(c => { if (a === 'all') sel.add(c.cls); else if (a === 'none') sel.delete(c.cls); else sel.has(c.cls) ? sel.delete(c.cls) : sel.add(c.cls); });
       upd();
     });
-    $('#gsize').oninput = e => $('#gal').style.setProperty('--cell', e.target.value * (is3 ? 3 : 1) + 'px');
+    if ($('#grs')) {
+      const rv = () => $('#grv').textContent = (+$('#grs').value).toFixed(1) + ' Å';
+      $('#grs').oninput = () => { rv(); sel.clear(); g.classes.forEach(c => { if (resOf(c) <= +$('#grs').value) sel.add(c.cls); }); upd(); };
+      rv();
+    }
     $('#gsave').onclick = async () => {
       $('#gsave').disabled = true;
       try { const d = await api('/api/project/select', {job: j.name, classes: [...sel].sort((a, b) => a - b)}); await load(); showJob(d.job); }
       catch (e) { alert(e.message); $('#gsave').disabled = false; }
     };
   }
-  upd();
+  draw();
 }
 function stageVolume(st, j, maps) {
   st.className = 'stage';
@@ -819,8 +864,7 @@ function kv(obj, depth = 0) {
 }
 let interactive = true;
 try { interactive = localStorage.getItem('celeris-interactive') !== '0'; } catch (e) {}
-// a job's figures, by topic, each at one common scale (the figures are drawn at the same dpi and font size, so the
-// same scale gives every figure the same size of text: no figure squeezed into a column, none blown up)
+// a job's figures, by topic, in cards of one size
 const FIGSECTIONS = [
   ['Resolution', /(^|_)(fsc|postprocess|sharpen|localres|nu|ctfrefine|resolution)/],
   ['Classes', /(^|_)(class|classes|gallery|distribution|selection|occupancy)/],
@@ -828,7 +872,7 @@ const FIGSECTIONS = [
   ['Map', /(^|_)(map_views|mask|mode\d|variance|what_moves|latent|recenter)/],
   ['Progress', /(^|_)(progress|history|particles|iterations|overview|frames|stats)/],
 ];
-const FIGSCALE = 128;                                // CSS px per figure inch (figures are 110 dpi: shown ~1.16x)
+// two columns of equal cards; a figure much wider than tall (a strip of panels) takes the whole row
 function panePlots(p, j) {
   const figs = j.files.filter(f => /\.(png|gif)$/.test(f.path) && !/\.(light|dark)\.png$/.test(f.path) && !/\/movies\//.test(f.path));
   const hasJson = f => j.files.some(x => x.path === f.path.replace(/\.png$/, '.plot.json'));
@@ -841,19 +885,19 @@ function panePlots(p, j) {
       <div class="fig" id="card${i}"><div class="bar"><span>${esc(base(figs[i]).replace(/_/g, ' '))}</span>
       ${hasJson(figs[i]) ? `<span class="seg"><button data-i="${i}" data-m="live" class="${interactive ? 'on' : ''}">Interactive</button><button data-i="${i}" data-m="img" class="${interactive ? '' : 'on'}">Image</button></span>` : ''}</div>
       <div class="plot" id="fig${i}"></div></div>`).join('')}</div></section>`).join('');
-  const size = (i, wpx) => { $('#card' + i).style.width = `min(100%, ${Math.round(wpx)}px)`; };
+  const size = (i, ratio) => { $('#card' + i).classList.toggle('wide', ratio > 1.9); };
   const draw = async (i, live) => {
     const f = figs[i], box = $('#fig' + i);
     if (live && hasJson(f)) {
       box.innerHTML = '<p class="muted" style="padding:14px">drawing…</p>';
       try {
         const spec = await (await fetch(file(f.path.replace(/\.png$/, '.plot.json')))).json();
-        size(i, spec.width * FIGSCALE); box.innerHTML = '';
+        size(i, spec.width / spec.height); box.innerHTML = '';
         await CelerisPlots.render(box, spec, THEME());
       } catch (e) { box.innerHTML = `<img src="${file(f.path)}" alt=""><p class="muted">${esc(e.message)}</p>`; }
     } else {
       box.innerHTML = `<img loading="lazy" src="${file(f.path)}" alt="${esc(f.path)}">`;
-      const im = box.querySelector('img'); im.onload = () => size(i, im.naturalWidth * FIGSCALE / 110);
+      const im = box.querySelector('img'); im.onload = () => size(i, im.naturalWidth / im.naturalHeight);
     }
   };
   const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { io.unobserve(e.target); draw(+e.target.id.slice(3), interactive); } }), {rootMargin: '300px'});
@@ -943,7 +987,7 @@ function jobForm(type, params = {}) {
     <div class="pane form2" style="padding-top:4px">
       ${t.typical ? `<p class="muted typ">${esc(t.typical)}</p>` : ''}
       ${t.inputs.length ? `<section><h3>Input</h3>${t.inputs.map(i => `<div class="fr"><label for="in_${esc(i.name)}">${esc(i.label || i.name)}${i.optional ? '' : ' *'}</label>
-        <div><select id="in_${esc(i.name)}">${opt(i)}</select><div class="help">${esc(i.help || i.doc)}</div></div></div>`).join('')}</section>` : ''}
+        <div><select id="in_${esc(i.name)}">${opt(i)}</select><div class="help">${esc(i.help || i.doc)}</div><div class="cpick" id="cp_${esc(i.name)}"></div></div></div>`).join('')}</section>` : ''}
       ${basic.length ? `<section><h3>Settings</h3>${basic.map(row).join('')}</section>` : ''}
       ${adv.length ? `<details class="adv" ${changed ? 'open' : ''}><summary>More settings <span class="muted">${adv.length}${changed ? `, ${changed} changed from the default` : ''}</span></summary>
         ${secs.map(([g, fs]) => `<section><h4>${esc(g)}</h4>${fs.map(row).join('')}</section>`).join('')}</details>` : ''}
@@ -951,6 +995,39 @@ function jobForm(type, params = {}) {
       <p class="frun"><button class="go" id="frun">Add to the queue</button> <span class="muted">It runs when its inputs are ready.</span> <span class="err" id="ferr"></span></p></div>`;
   document.querySelectorAll('.sw input').forEach(c => c.onchange = () => c.nextElementSibling.textContent = c.checked ? 'on' : 'off');
   $('#fback').onclick = jobPicker;
+  // a multi-class job as the reference: its class maps to click (reference_class), or, for references lists
+  // (Heterogeneous refinement), maps added as "job:class"
+  const rc = $('#f_reference_class');
+  if (rc) {
+    rc.closest('.fr').style.display = 'none';
+    const target = ['reference', 'poses'].find(n => $('#in_' + n));
+    const watch = () => {
+      const r = $('#in_reference'), q = $('#in_poses'), src = (r && r.value) ? 'reference' : 'poses';
+      ['reference', 'poses'].forEach(n => { if ($('#cp_' + n)) $('#cp_' + n).innerHTML = ''; });
+      const el = $('#in_' + src); if (!el || !el.value) return;
+      classStrip($('#cp_' + src), el.value, [+rc.value || 0], (k, on) => { rc.value = on ? k : 0; }, true);
+    };
+    ['reference', 'poses'].forEach(n => { if ($('#in_' + n)) $('#in_' + n).addEventListener('change', watch); });
+    if (target) watch();
+  }
+  const refs = $('#f_references');
+  if (refs) {
+    const box = document.createElement('div'); box.className = 'cpick';
+    const multi = usable.filter(x => ['InitialModel', 'Refine3D', 'HeteroRefine', 'Class3D', 'LocalRefine', 'Sharpen', 'ModeMaps'].includes(x.type)).sort((a, b) => b.id - a.id);
+    box.innerHTML = `<div class="cprow"><span class="muted">Add maps from</span><select id="refsrc"><option value="">a job…</option>${multi.map(x => `<option value="${x.id}">${esc((types[x.type] || {}).name || x.type)} ${String(x.id).padStart(3, '0')}${x.key ? ' · ' + esc(x.key) : ''}</option>`).join('')}</select>
+      <button type="button" class="quiet" id="refdecoy" title="a junk reference: the first map's phases randomised (catches junk particles)">+ decoy</button></div><div id="refstrip"></div>`;
+    refs.parentNode.insertBefore(box, refs.nextSibling);
+    const list = () => refs.value.split(/[\s,]+/).filter(Boolean);
+    $('#refdecoy').onclick = () => { refs.value = [...list(), 'decoy'].join(', '); };
+    $('#refsrc').onchange = e => {
+      const id = e.target.value; if (!id) { $('#refstrip').innerHTML = ''; return; }
+      const has = () => list().filter(r => r.split(':')[0] === String(+id)).map(r => +(r.split(':')[1] || 0));
+      classStrip($('#refstrip'), id, has(), (k, on) => {
+        const tag = k ? `${+id}:${k}` : String(+id), cur = list().filter(r => r !== tag);
+        refs.value = (on ? [...cur, tag] : cur).join(', ');
+      }, false);
+    };
+  }
   $('#frun').onclick = async () => {
     const inputs = {}, settings = {};
     t.inputs.forEach(i => { const v = $('#in_' + i.name).value; if (v) inputs[i.name] = Number(v); });
@@ -963,6 +1040,31 @@ function jobForm(type, params = {}) {
     try { const d = await api('/api/project/new', {type, inputs, settings, label: $('#flabel').value}); await load(); showJob(d.job); }
     catch (e) { $('#ferr').textContent = e.message; $('#frun').disabled = false; }
   };
+}
+// the class maps of a job (projections, particles, resolution) to click: single = one class at most; a job without
+// classes shows its one map (k = 0)
+async function classStrip(box, jobId, chosen, onPick, single) {
+  if (!box) return;
+  box.innerHTML = '<span class="muted">reading the classes…</span>';
+  const jj = jobs.find(x => x.id === +jobId);
+  let g = null;
+  try { g = await api('/api/project/classes?job=' + encodeURIComponent(jj ? jj.name : jobId)); } catch (e) { g = null; }
+  if (!g || g.kind !== '3d' || !g.classes.length) { box.innerHTML = single ? '' : `<span class="muted">${esc(jj ? jj.name : jobId)} has one map.</span> <button type="button" class="quiet" id="cp1">Add it</button>`;
+    if ($('#cp1')) $('#cp1').onclick = () => onPick(0, true); return; }
+  const on = new Set(chosen.filter(Boolean));
+  const draw = () => {
+    box.innerHTML = `<div class="muted cphint">${single ? 'Start from which class? Click one (none chosen: the class most of the particles are in).' : 'Click the classes to use as references.'}</div>
+      <div class="cpgrid">${g.classes.map(c => `<button type="button" class="cpc ${on.has(c.cls) ? 'on' : ''}" data-k="${c.cls}">
+        <span class="three">${c.images.slice(0, 3).map(s => `<img src="${s}" alt="">`).join('')}</span>
+        <span class="cpl"><b>Class ${c.cls}</b> ${c.n.toLocaleString()}${c.share != null ? ' · ' + (100 * c.share).toFixed(0) + '%' : ''}${c.res ? ' · ' + (+c.res).toFixed(1) + ' Å' : ''}</span></button>`).join('')}</div>`;
+    box.querySelectorAll('.cpc').forEach(b => b.onclick = () => {
+      const k = +b.dataset.k, was = on.has(k);
+      if (single) on.clear();
+      was ? on.delete(k) : on.add(k);
+      onPick(k, !was); draw();
+    });
+  };
+  draw();
 }
 $('#newjob').onclick = jobPicker;
 $('#home').onclick = e => { e.preventDefault(); showHome(); };
