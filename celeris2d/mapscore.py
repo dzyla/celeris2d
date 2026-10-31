@@ -85,6 +85,7 @@ class Scorer:
     def __init__(self, vol: np.ndarray, vol_apix: float, box: int, apix: float, optics, diameter_a: float,
                  res_a: float = 20.0, n_dirs: int = 150, psi_step: float = 10.0, shift_a: float = 10.0, dev=None):
         from .picking import _resample, _rotate2d, templates_from_map
+        dev = dev or gpu.default()
         self.dev, self.optics, self.box, self.apix = dev, optics, box, apix
         wa = max(apix, res_a / 2.2)                                   # working pixel: Nyquist a little past res_a
         self.bw = max(16, int(round(box * apix / wa / 2)) * 2)

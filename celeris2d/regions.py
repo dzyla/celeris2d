@@ -47,6 +47,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from . import gpu
+
 CLASSES = ("ice", "film", "thick", "edge", "contamination")
 WORK_APIX = 8.5              # input pixel size (A); the map is at 2x this
 WEIGHTS = os.path.join(os.path.dirname(__file__), "regions.pt")
@@ -92,7 +94,7 @@ _models: dict = {}
 
 def load_model(path: str | None = None, device=None) -> RegionNet:
     """The shipped network (or another weights file), cached per device, in eval mode."""
-    path = path or WEIGHTS
+    path, device = path or WEIGHTS, device or gpu.default()
     key = (path, str(device))
     if key not in _models:
         if not os.path.exists(path):
