@@ -122,8 +122,8 @@
   .head .acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
   .jhead { display: flex; align-items: center; gap: 14px; padding: 20px 28px 12px; flex-wrap: wrap; }
   .ico.big { width: 38px; height: 38px; border-radius: 10px; } .ico.big svg { width: 21px; height: 21px; }
-  .jhead .title { flex: 1; min-width: 260px; }
-  .jhead h1 { font-size: 22px; font-weight: 700; margin: 0; letter-spacing: -.3px; }
+  .jhead .title { flex: 1 1 380px; min-width: 0; }
+  .jhead h1 { font-size: 22px; font-weight: 700; margin: 0; letter-spacing: -.3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .jhead h1 .jn { color: var(--ink3); font-weight: 500; }
   .jhead .sub { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: center; color: var(--ink2); font-size: 13px; margin-top: 3px; }
   .jhead .state.finished { color: var(--good); } .jhead .state.running, .jhead .state.waiting { color: var(--you); } .jhead .state.failed { color: var(--bad); }
@@ -131,9 +131,9 @@
   .jhead .acts { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .jhead .menu summary { padding: 6px 12px; } .jhead .menu summary::after { content: ""; }
   button.stopb { border-color: #5A2A2C; color: #F2A5A7; } button.stopb:hover { background: var(--bad); color: #fff; border-color: var(--bad); }
-  .kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; padding: 0 28px 14px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 10px; padding: 0 28px 14px; }
   .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 11px 14px; min-width: 0; }
-  .kpi .v { font-size: 21px; font-weight: 700; letter-spacing: -.3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kpi .v { font-size: 20px; font-weight: 700; letter-spacing: -.3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .kpi .v small { font-size: 13px; font-weight: 500; color: var(--ink2); margin-left: 3px; }
   .kpi .c { color: var(--ink2); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .kpi .spark { width: 100%; height: 26px; display: block; margin-top: 4px; } .kpi .spark path { fill: none; stroke: var(--data); stroke-width: 1.5; }
@@ -300,7 +300,7 @@
   #pkcrops { margin-top: 12px; } .pkc { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 6px; margin-top: 10px; }
   .pkc figure { margin: 0; } .pkc img { width: 100%; display: block; border-radius: 5px; outline: 2px solid var(--axis); outline-offset: -2px; } .pkc figure.on img { outline-color: var(--data); }
   .pkc figcaption { font-size: 11px; color: var(--ink3); text-align: center; }
-  .mpkpi { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 4px 0 14px; }
+  .mpkpi { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 10px; margin: 4px 0 14px; }
   .mpkpi .v { font-size: 20px; font-weight: 600; } .mpkpi .c { font-size: 12px; color: var(--ink3); }
   .mpview { display: grid; grid-template-columns: auto auto minmax(220px, 1fr); gap: 14px; align-items: start; justify-content: start; }
   .mpmic, .mpps { margin: 0; background: #000; border-radius: 8px; overflow: hidden; }
