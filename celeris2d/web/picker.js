@@ -16,6 +16,7 @@ const STYLE = `
 .pk-next { flex: 1 1 320px; color: var(--ink); font-size: 13.5px; line-height: 1.4; min-width: 0; min-height: 3.9em; display: flex; align-items: center; }
 .pk-next > span { display: block; }
 .pk-next b { color: var(--you); font-weight: 600; }
+.pk-link { background: none; border: 0; padding: 0 2px; color: var(--data); font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline; }
 .pk-main { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 14px; align-items: start; }
 @media (max-width: 1100px) { .pk-main { grid-template-columns: 1fr; } }
 .pk-view { position: relative; min-width: 0; }
@@ -131,6 +132,8 @@ function mount(el, ctx) {
   let M = null;                  // /mic of the shown micrograph (+ local edits)
   let idx = 0, filter = 'all', th = null, show = true, dirty = false, saveTimer = null, alive = true, pollTimer = null;
   let undo = [];
+  let measure = null, remeasure = false;   // measuring the particle: drag across one (no diameter yet, or "change")
+  const sized = () => S && S.settings.diameter_a > 0, measuring = () => S && S.status === 'waiting' && (!sized() || remeasure);
   const key = `celeris-mp-${job}`;
   const ls = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } };
   let lp = +(ls('celeris-lowpass') ?? 20); if (!(lp >= 0)) lp = 20;
@@ -204,8 +207,17 @@ function mount(el, ctx) {
     g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "high";
     g.setTransform(s, 0, 0, s, -view.ox * s, -view.oy * s);
     g.drawImage(base, 0, 0);
-    if (!show) return;
-    const r = rImg(), lw = Math.max(1.2, 1.6 * dpr) / s;
+    const lw = Math.max(1.2, 1.6 * dpr) / s;
+    if (measure && measure.b) {                         // the measurement: line, the circle it makes, its size
+      const [x0, y0] = measure.a, [x1, y1] = measure.b, rr = Math.hypot(x1 - x0, y1 - y0) / 2, fs = 15 * dpr / s;
+      g.strokeStyle = css('--you'); g.lineWidth = lw * 1.4; g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1);
+      g.moveTo((x0 + x1) / 2 + rr, (y0 + y1) / 2); g.arc((x0 + x1) / 2, (y0 + y1) / 2, rr, 0, 2 * Math.PI); g.stroke();
+      const t = Math.round(2 * rr * M.apix * M.bin) + ' Å', tx = (x0 + x1) / 2 + rr + fs / 2, ty = (y0 + y1) / 2 + fs / 3;
+      g.font = `600 ${fs}px sans-serif`; g.lineWidth = fs / 4; g.strokeStyle = 'rgba(0,0,0,.75)'; g.fillStyle = css('--you');
+      g.strokeText(t, tx, ty); g.fillText(t, tx, ty);
+    }
+    if (!show || !sized()) return;
+    const r = rImg();
     const ring = (pts, col, w = lw, dash = null) => {
       if (!pts.length) return;
       g.strokeStyle = col; g.lineWidth = w; g.setLineDash(dash ? dash.map(x => x / s) : []); g.beginPath();
@@ -263,9 +275,15 @@ function mount(el, ctx) {
     hover = null; edited();
   };
   let down = null;
-  cv.addEventListener('pointerdown', ev => { if (!view) return; cv.setPointerCapture(ev.pointerId); down = {x: ev.clientX, y: ev.clientY, ox: view.ox, oy: view.oy, moved: false}; });
+  cv.addEventListener('pointerdown', ev => {
+    if (!view) return; cv.setPointerCapture(ev.pointerId);
+    if (measuring()) { measure = {a: imgAt(ev), b: null}; return; }
+    down = {x: ev.clientX, y: ev.clientY, ox: view.ox, oy: view.oy, moved: false};
+  });
   cv.addEventListener('pointermove', ev => {
     if (!view || !M) return;
+    if (measure) { measure.b = imgAt(ev); draw(); return; }
+    if (measuring()) return;
     if (down) {
       const dx = ev.clientX - down.x, dy = ev.clientY - down.y;
       if (Math.hypot(dx, dy) > 4) down.moved = true;
@@ -278,7 +296,16 @@ function mount(el, ctx) {
     const [u, v] = imgAt(ev), h = hitAt(u, v), q = h ? h[2] : null;
     if (q !== hover) { hover = q; cv.classList.toggle('hit', !!q); draw(); }
   });
-  cv.addEventListener('pointerup', ev => {
+  cv.addEventListener('pointerup', async ev => {
+    if (measure) {                                       // a measurement: the job's particle diameter
+      const m = measure; measure = null;
+      const d = m.b ? Math.round(Math.hypot(m.b[0] - m.a[0], m.b[1] - m.a[1]) * M.apix * M.bin) : 0;
+      if (d < 20) { draw(); return err('Drag across a whole particle, edge to edge, to measure it.'); }
+      err('');
+      try { await api('/api/project/settings', {job, settings: {diameter_a: d}}); } catch (e) { draw(); return err(e.message); }
+      S.settings.diameter_a = d; remeasure = false; renderKpi(); renderNext(); draw();
+      return;
+    }
     if (!down) return;
     const moved = down.moved; down = null; cv.classList.remove('drag');
     if (!moved && ev.button === 0) onClick(...imgAt(ev));
@@ -444,7 +471,9 @@ function mount(el, ctx) {
     const todo = S.mics.filter(r => r.state === 'suggested').length;
     const changed = S.train && rev.some(r => r.picks) && picks !== S.train.picks;
     let t;
-    if (S.status === 'queued') t = '<b>Pick all is queued</b>: it starts when the GPU is free. The picks can change again when it has finished.';
+    if (measuring()) t = sized() ? `<b>Drag across a particle</b> to measure it again (now ${S.settings.diameter_a} Å).`
+      : '<b>First, measure the particle</b>: drag across one particle on the micrograph, edge to edge (its short side). Then click particles to pick them.';
+    else if (S.status === 'queued') t = '<b>Pick all is queued</b>: it starts when the GPU is free. The picks can change again when it has finished.';
     else if (S.status === 'running') t = '<b>Picking all micrographs…</b> Progress on the right.';
     else if (S.status === 'finished' && !S.edited_after_run) t = `<b>Done.</b> Green circles: what Pick all found. Make an <b>Extract</b> job from this job (New job → Extract) to cut the particles, or keep correcting and Pick all again.`;
     else if (!picks) t = `<b>Click on particles to pick them</b> — every particle you are sure of on this micrograph. Pick <b>20–50</b> on 2–3 micrographs, then press <b>Train &amp; suggest</b>.`;
@@ -463,7 +492,8 @@ function mount(el, ctx) {
     const picks = rev.reduce((a, r) => a + r.picks, 0), todo = S.mics.filter(r => r.state === 'suggested').length;
     Q('#pk-kpi').innerHTML = [[picks, 'your picks'], [`${rev.length}<small style="font-size:12px;color:var(--ink3)"> / ${S.mics.length}</small>`, 'reviewed'], [todo, 'to check']]
       .map(([v, c]) => `<div><div class="v">${typeof v === 'number' ? v.toLocaleString() : v}</div><div class="c">${c}</div></div>`).join('');
-    Q('#pk-diam').textContent = `⌀ ${S.settings.diameter_a} Å`;
+    Q('#pk-diam').innerHTML = sized() ? `⌀ ${S.settings.diameter_a} Å${S.status === 'waiting' ? ` <button class="pk-link" id="pk-meas" title="measure the particle again">${remeasure ? 'cancel' : 'change'}</button>` : ''}` : '';
+    const mb = Q('#pk-meas'); if (mb) mb.onclick = () => { remeasure = !remeasure; renderKpi(); renderNext(); };
   };
   const renderInfo = () => {
     if (!M || !S) return;

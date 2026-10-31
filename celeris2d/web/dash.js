@@ -1094,10 +1094,10 @@ function jobForm(type, params = {}, edit = null) {
       <p class="frun"><button class="go" id="frun">${edit ? 'Save settings' : 'Add to the queue'}</button> <span class="muted" id="fnote">${edit ? `Job ${esc(edit.slice(0, 3))} keeps its number and inputs.` : 'It runs when its inputs are ready.'}</span> <span class="err" id="ferr"></span></p></div>`;
   // a Pick job may be made before the micrographs exist: without a particle size it waits for you to measure one
   const sizeField = {Pick: 'diameter_a', ManualPick: 'diameter_a'}[type], sz = sizeField && $('#f_' + sizeField);
-  if (sz && type === 'Pick') {
-    sz.placeholder = 'empty: measure it on a micrograph later';
+  if (sz) {
+    sz.placeholder = type === 'Pick' ? 'empty: measure it on a micrograph later' : 'empty: measure it in the picker';
     if (!(+sz.value > 0)) sz.value = '';
-    const note = () => { if (!edit) $('#fnote').textContent = +sz.value > 0 ? 'It runs when its inputs are ready.' : 'It waits for you to set the particle size on its page, once there are micrographs.'; };
+    const note = () => { if (!edit && type === 'Pick') $('#fnote').textContent = +sz.value > 0 ? 'It runs when its inputs are ready.' : 'It waits for you to set the particle size on its page, once there are micrographs.'; };
     sz.addEventListener('input', note); note();
   }
   const pa = type === 'Extract' && $('#f_particle_a');

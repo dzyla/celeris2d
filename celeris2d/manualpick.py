@@ -39,8 +39,9 @@ from .project import Job, Project, logged
 
 @dataclass
 class ManualPickSettings:
-    diameter_a: float                   # particle diameter (A): the circle drawn around each pick, the templates'
-                                        # window and the spacing of picks (as a Pick job's)
+    diameter_a: float = 0.0             # particle diameter (A): the circle drawn around each pick, the templates'
+                                        # window and the spacing of picks (as a Pick job's); 0: measured in the picker
+                                        # first (scheduler.change_settings)
     dark: bool = True                   # particles darker than the background (cryo); False for negative stain
     templates: int = 4                  # templates trained from the picks: 2D classes of them (one per ~10 picks
                                         # while there are few)
@@ -53,10 +54,22 @@ MATCH = 0.3                             # x diameter: a pick and a candidate thi
 MAX_TRAIN = 3000                        # picks used for templates at most (random subset beyond)
 
 
+def manualpick_label(s: ManualPickSettings) -> str:
+    return f"d{s.diameter_a:g}" if s.diameter_a > 0 else ""
+
+
+def sized(job: Job) -> ManualPickSettings:
+    """The job's settings; an error while it has no particle diameter."""
+    s = settings(job)
+    if not s.diameter_a > 0:
+        raise ValueError(f"{job.name}: measure the particle first (drag across one on a micrograph)")
+    return s
+
+
 def manualpick_job(project: Project, micrographs, s: ManualPickSettings, label: str = "") -> Job:
     """A ManualPick job, waiting for the user (the dashboard's picker); Pick all queues it."""
     mc = project.job(micrographs)
-    j = project.new_job("ManualPick", dict(asdict(s), micrographs=mc.id), [mc], label or f"d{s.diameter_a:g}")
+    j = project.new_job("ManualPick", dict(asdict(s), micrographs=mc.id), [mc], label or manualpick_label(s))
     project.set_status(j, "waiting", dict(waiting="pick particles by hand, train the picker, check its suggestions, "
                                                   "then Pick all"))
     return j
@@ -411,7 +424,7 @@ def train(project: Project, job, log=print) -> dict:
     from .pipeline import optics_of
     job = project.job(job)
     _editable(job)
-    s = settings(job)
+    s = sized(job)
     mc = project.job(job.params["micrographs"])
     optics = optics_of(project, mc)
     t0 = time.time()
@@ -495,7 +508,7 @@ def suggest(project: Project, job, stems=None, after: str = "", n: int | None = 
     from .pipeline import optics_of
     job = project.job(job)
     _editable(job)
-    s = settings(job)
+    s = sized(job)
     tm, ta = templates_of(job)
     if tm is None:
         raise ValueError("no templates yet: Train first")
@@ -601,7 +614,7 @@ def run_manualpick(project: Project, job, log=print) -> dict:
     from concurrent.futures import ThreadPoolExecutor
     from .pipeline import optics_of
     job = project.job(job)
-    s = settings(job)
+    s = sized(job)
     mc = project.job(job.params["micrographs"])
     optics = optics_of(project, mc)
     st = load_state(job)

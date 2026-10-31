@@ -94,7 +94,8 @@ def change_settings(project: Project, job, values: dict) -> Job:
     moved = [k for k in refs if getattr(new, k) != getattr(old, k)]
     if moved:
         raise ValueError(f"{', '.join(moved)} names another job: make a new job for that")
-    labels = {"Pick": pl.pick_label}
+    from .manualpick import manualpick_label
+    labels = {"Pick": pl.pick_label, "ManualPick": manualpick_label}
     auto = labels[j.type](old) if j.type in labels else None
     project.update_params(j, **asdict(new))
     if j.type == "Extract":                      # the box follows the particle size

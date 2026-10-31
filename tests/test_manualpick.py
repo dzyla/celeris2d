@@ -185,3 +185,12 @@ def test_manualpick_api_and_picks_only(tmp_path):
     mp.run_manualpick(prj, j2)
     assert [int(prj.picks(j2, k)["keep"].sum()) for k in (1, 2, 3)] == [0, 5, 0]
     assert "picks" in c.get("/api/project").json()["jobs"][-1]["key"]
+    # no diameter yet: the picker measures it first; training waits for it, the label follows it
+    from celeris2d import scheduler
+    j3 = mp.manualpick_job(prj, mc, mp.ManualPickSettings())
+    assert j3.status == "waiting" and j3.label == ""
+    with pytest.raises(ValueError, match="measure the particle"):
+        mp.train(prj, j3)
+    assert c.post("/api/project/settings", json={"job": j3.name, "settings": {"diameter_a": D}}).json()["status"] == "waiting"
+    j3 = prj.job(j3.id)
+    assert j3.params["diameter_a"] == D and j3.label == f"d{D:g}" and mp.sized(j3).diameter_a == D

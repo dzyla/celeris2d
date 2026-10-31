@@ -268,7 +268,8 @@ TYPES["ManualPick"] = dict(
     inputs={"micrographs": I("Micrographs", "The Motion correction & CTF job whose micrographs you pick.")},
     fields={
         "diameter_a": B("Particle diameter (Å)", "The circle drawn around each pick, the templates' window and the "
-                                                 "spacing of picks."),
+                                                 "spacing of picks. Leave it empty to measure it on the first "
+                                                 "micrograph in the picker."),
         "dark": F("Particles darker than background", "On for cryo-EM (dark protein); off for negative stain.",
                   section="Picking"),
         "templates": F("Templates to learn", "How many templates (2D classes of your picks) the boxer trains; fewer "
