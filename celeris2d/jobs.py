@@ -31,7 +31,7 @@ import torch
 
 from .engine import release_cache
 from .jobspec import Input, JobSpec, _n, params_of, settings_of, warn_mark
-from .project import CLASS_JOBS, PARTICLE_JOBS, Job, Project, logged
+from .project import CLASS_JOBS, PARTICLE_JOBS, Job, Project, class_table, has_classes, logged
 
 
 # ------------------------------------------------------------------------------------------ particle sources
@@ -154,6 +154,47 @@ def iteration_columns(job: Job, box_a: float) -> dict:
         cols.update({f"d_angle_it{i + 1:02d}": it["angle"][i], f"d_shift_it{i + 1:02d}": it["shift"][i],
                      f"fit_it{i + 1:02d}": it["fit"][i]})
     return cols
+
+
+def class_outputs(job: Job, history: list, table: list, tag: str) -> list:
+    """The record every multi-class 3D job (Class3D, HeteroRefine, InitialModel with n_models > 1) keeps of its
+    classes per iteration: data/jNNN_class_history.json (per iteration it, pops, share, res per class, and res_limit_a
+    when the iterations' resolution is capped by their box) and figures/jNNN_class_history.png (class distribution and
+    per-class resolution, the final maps' values after the last iteration). history: per iteration it, pops, res (in
+    the table's class numbering); table: the summary's class_table. Returns the history as written (the summary's
+    class_history)."""
+    from . import plots3d
+    hist = []
+    for h in history:
+        pops = [int(x) for x in h["pops"]]
+        n = max(sum(pops), 1)
+        e = dict(it=int(h["it"]), pops=pops, share=[round(x / n, 4) for x in pops],
+                 res=[None if r is None or r != r else round(float(r), 2) for r in (h.get("res") or [None] * len(pops))])
+        if h.get("res_limit_a"):
+            e["res_limit_a"] = h["res_limit_a"]
+        hist.append(e)
+    final = [r.get("resolution_solvent_mask_a") or r.get("resolution_a") for r in table]
+    with open(job.out("class_history.json"), "w") as fh:
+        json.dump(dict(classes=len(table), iterations=hist,
+                       final=[dict(cls=r["cls"], particles=r["particles"], share=r.get("share"), resolution_a=f)
+                              for r, f in zip(table, final)]), fh)
+    if hist:
+        plots3d.class_history_figure(job.out("class_history.png"), hist, tag,
+                                     final_res=[np.nan if f is None else f for f in final])
+    return hist
+
+
+def class_summary(project: Project, job: Job, table: list, history: list) -> dict:
+    """The summary keys every multi-class 3D job shares: classes (K), class_table (rows: cls 1-based, particles,
+    share, resolution_a, resolution_solvent_mask_a, map - the class's masked map, ...), best_resolution_a (the best
+    class's corrected solvent-masked resolution), class_history (class_outputs)."""
+    for r in table:
+        p = job.find(f"class{r['cls']:02d}_map.mrc")
+        r["map"] = project.rel(p) if p else None
+    best = [r.get("resolution_solvent_mask_a") or r.get("resolution_a") for r in table if r.get("particles")]
+    best = [x for x in best if x]
+    return dict(classes=len(table), class_table=table, best_resolution_a=min(best) if best else None,
+                class_history=history)
 
 
 def _write_results(project: Project, job: Job, src, idx, cols: dict, name="particles"):
@@ -322,7 +363,8 @@ def select_classes(project: Project, class2d, classes: list[int], label: str = "
     t = project.table(c, "particles").read(["uid", "cls"])
     keep = np.isin(t["cls"], np.asarray(classes, int) - 1)
     chosen = sorted(int(k) for k in classes)
-    K = len(project.summary_of(c).get("table", [])) or int(t["cls"].max()) + 1
+    sc = project.summary_of(c)
+    K = len(sc.get("table") or class_table(sc)) or int(t["cls"].max()) + 1
     job = project.select(c, t["uid"][keep], label=label or f"{len(classes)}cls_of{c.id:03d}",
                          note=note or f"classes {chosen} of {c.name}", rejected=t["uid"][~keep], job=job)
     rejected = [k for k in range(1, K + 1) if k not in chosen]
@@ -461,21 +503,94 @@ def run_initial_model(project: Project, job, log=print) -> dict:
     prm = ab.AbinitioParams(sym=s.sym, n_models=s.n_models, seed=s.seed,
                             solvent_mask="auto" if str(s.mask).lower() in ("auto", "dynamic") else "sphere")
     summ = ab.run(ses.clf, r, job.path, prm, classes=mask, log=log, src=None)
-    z = np.load(os.path.join(job.path, "poses.npz"))
-    _write_results(project, job, src, z["idx"], dict(
-        rot=z["rot"].astype(np.float32), tilt=z["tilt"].astype(np.float32), psi=z["psi"].astype(np.float32),
-        shift_x_a=z["shift_a"][:, 0].astype(np.float32), shift_y_a=z["shift_a"][:, 1].astype(np.float32),
-        used=z["used"].astype(bool), model=z["model"].astype(np.int16)))
+    with np.load(os.path.join(job.path, "poses.npz")) as f_:
+        z = dict(f_)
+    M = max(1, int(s.n_models))
+    cols = dict(rot=z["rot"].astype(np.float32), tilt=z["tilt"].astype(np.float32), psi=z["psi"].astype(np.float32),
+                shift_x_a=z["shift_a"][:, 0].astype(np.float32), shift_y_a=z["shift_a"][:, 1].astype(np.float32),
+                used=z["used"].astype(bool), model=z["model"].astype(np.int16))
+    if M > 1:                   # the 3D class (0-based, 0 = most particles), as in a Class3D: Select, classes=
+        cols["cls"] = z["model"].astype(np.int16)
+    _write_results(project, job, src, z["idx"], cols)
     os.remove(os.path.join(job.path, "poses.npz"))                     # the sharded table replaces it
+    if M > 1:
+        _initial_model_class_files(job, M)
     job.organize()                                                     # ab.run writes flat: into the job layout
-    keep = {k: summ[k] for k in ("particles", "particles_used", "resolution_a", "resolution_solvent_mask_a",
-                                 "resolution_unmasked_a", "apix", "box", "seconds_total")}
-    keep.update(sym=s.sym, map=project.rel(job.find("map.mrc")), duplicates_removed=n_dup,
-                duplicate_distance_a=round(dist, 1))
+    keep = dict(particles=summ["particles"], apix=summ["apix"], box=summ["box"], seconds_total=summ["seconds_total"],
+                seconds=summ["seconds_total"], sym=s.sym, duplicates_removed=n_dup, duplicate_distance_a=round(dist, 1))
+    if M == 1:
+        keep.update({k: summ[k] for k in ("particles_used", "resolution_a", "resolution_solvent_mask_a",
+                                          "resolution_unmasked_a")}, map=project.rel(job.find("map.mrc")))
+    else:                       # the classes are the result; the consensus they were classified from is kept apart
+        n_all = max(1, sum(m["particles"] for m in summ["models"]))
+        table = [dict(cls=m["model"], particles=m["particles"], share=round(m["particles"] / n_all, 4),
+                      resolution_a=m["resolution_a"] if m["particles"] else None,
+                      resolution_solvent_mask_a=m.get("resolution_solvent_mask_a")) for m in summ["models"]]
+        tag = f"{job.name} · {summ['particles']:,} particles · {M} classes · {s.sym}"
+        _initial_model_class_figures(job, table, z, tag, s.sym)
+        hist = class_outputs(job, summ.get("class_history") or [], table, tag)
+        cons = dict(summ.get("consensus") or {})
+        cons.update(map=project.rel(job.find("consensus_map.mrc")) if job.find("consensus_map.mrc") else None,
+                    map_nomask=project.rel(job.find("consensus_map_nomask.mrc"))
+                    if job.find("consensus_map_nomask.mrc") else None)
+        keep.update(class_summary(project, job, table, hist), consensus=cons,
+                    particles_used=(summ.get("consensus") or {}).get("particles_used"))
+        log("[3d] classes: " + ", ".join(f"class {x['cls']} {x['particles']:,} ({x['share'] * 100:.1f}%, "
+                                         f"{x['resolution_solvent_mask_a'] or '-'} A)" for x in table)
+            + f"; consensus {cons.get('resolution_solvent_mask_a')} A ({cons.get('map')})")
     project.set_status(job, "finished", keep)
     ses.clf = None
     release_cache()
     return keep
+
+
+def _initial_model_class_files(job: Job, M: int):
+    """An InitialModel with n_models > 1: abinitio.run's flat files (map_1.mrc, half1_unfil_1.mrc, angdist_1.bild, ...,
+    and map.mrc = a copy of model 1) -> the layout of the other multi-class jobs (class01_map.mrc, class01_map_nomask.mrc,
+    class01_mask.mrc, class01_half1_unfil.mrc, class01_angdist.bild, ...), so Select, Refine3D / Class3D classes=,
+    MaskCreate / Subtract cls and the class gallery treat it as one; the consensus as consensus_map(_nomask).mrc and
+    consensus_mask.mrc."""
+    ren = {"consensus.mrc": "consensus_map_nomask.mrc"}
+    for r in range(1, M + 1):
+        for nm in ("map", "map_nomask", "mask", "half1_unfil", "half2_unfil"):
+            ren[f"{nm}_{r}.mrc"] = f"class{r:02d}_{nm}.mrc"
+        ren[f"angdist_{r}.bild"] = f"class{r:02d}_angdist.bild"
+    for a, b in ren.items():
+        if os.path.exists(os.path.join(job.path, a)):
+            os.replace(os.path.join(job.path, a), os.path.join(job.path, b))
+    for f in ["map.mrc"] + [f"from_classes_{r}.mrc" for r in range(1, M + 1)]:    # copies (of class 1 / of
+        if os.path.exists(os.path.join(job.path, f)):                              # from_classes.mrc)
+            os.remove(os.path.join(job.path, f))
+
+
+def _initial_model_class_figures(job: Job, table: list, z, tag: str, sym: str):
+    """The figures the other multi-class jobs have: map_views.png as the class summary (projections and sections per
+    class with its size and resolution) and views_classes.png (angular distribution per class); per-class scf in the
+    table."""
+    import mrcfile
+    from . import abinitio as ab
+    from . import diagnostics as dg
+    from . import plots3d
+    maps = []
+    for r in table:
+        p = job.find(f"class{r['cls']:02d}_map_nomask.mrc")
+        with mrcfile.open(p, permissive=True) as f:
+            maps.append(np.asarray(f.data, np.float32))
+    labels = [f"class {r['cls']}" for r in table]
+    plots3d.class_summary_figure(job.out("map_views.png"), maps, labels, [r["particles"] for r in table],
+                                 [r["resolution_solvent_mask_a"] or r["resolution_a"] or float("nan") for r in table], tag)
+    model = np.asarray(z["model"])
+    A = ab.euler_to_matrix(torch.as_tensor(z["rot"]).float(), torch.as_tensor(z["tilt"]).float(),
+                           torch.as_tensor(z["psi"]).float())
+    groups = []
+    for i, r in enumerate(table):
+        sel = model == r["cls"] - 1
+        if sel.sum() >= 10:
+            st = dg.angular_stats(A[torch.as_tensor(sel)], sym)
+            groups.append((labels[i], np.asarray(z["rot"])[sel], np.asarray(z["tilt"])[sel], st))
+            r["scf"] = st["scf"]
+    if groups:
+        plots3d.views_grid_figure(job.out("views_classes.png"), groups, tag)
 
 
 def _sharpen_job_maps(project: Project, job: Job, s, classes=(0,), log=print) -> dict:
@@ -739,10 +854,10 @@ def _reference_map(rj: Job, cls: int = 0) -> tuple[np.ndarray, float, str]:
     """A job's map before masking: a HeteroRefine / Class3D class (1-based cls; 0: the class with most particles),
     else map_nomask.mrc / map.mrc."""
     import mrcfile
-    if rj.type in CLASS_JOBS:
+    if has_classes(rj):
         if not cls:
             sp = os.path.join(rj.path, "summary.json")
-            cl = json.load(open(sp)).get("classes", []) if os.path.isfile(sp) else []
+            cl = class_table(json.load(open(sp))) if os.path.isfile(sp) else []
             cls = max(cl, key=lambda c: c.get("particles", 0))["cls"] if cl else 1
         names = [f"class{cls:02d}_map_nomask.mrc"]
     else:
@@ -824,7 +939,7 @@ def run_refine3d(project: Project, job, log=print) -> dict:
                            torch.as_tensor(poses["psi"])).float() if qj is not None else torch.eye(3).repeat(len(img), 1, 1)
     t = torch.as_tensor(t_start).float()
     ref_cls = 0
-    if rj is not None and rj.type in CLASS_JOBS:       # the class the particles come from (the largest of them)
+    if rj is not None and has_classes(rj):             # the class the particles come from (the largest of them)
         if qj is None:
             ref_cls = int(s.classes[0]) if s.classes else 0
         else:
@@ -833,8 +948,8 @@ def run_refine3d(project: Project, job, log=print) -> dict:
     if rj is not None:
         ref, ref_apix, _ = _reference_map(rj, ref_cls)
         rsum = project.summary_of(rj)
-        r_ref = rsum.get("resolution_a", 8.0) if rj.type not in CLASS_JOBS else \
-            next((c["resolution_a"] for c in rsum.get("classes", []) if c["cls"] == ref_cls), None) or 8.0
+        r_ref = rsum.get("resolution_a", 8.0) if not has_classes(rj) else \
+            next((c["resolution_a"] for c in class_table(rsum) if c["cls"] == ref_cls), None) or 8.0
     if qj is None:
         r_ref = 30.0
     if s.reference_map:                              # an external map (e.g. a deposited one), low-passed to start
@@ -992,9 +1107,9 @@ def _reference(project: Project, ref: str):
     import mrcfile
     jid, _, k = str(ref).partition(":")
     rj = project.job(jid)
-    if rj.type in CLASS_JOBS:
+    if has_classes(rj):
         return (*_reference_map(rj, int(k or 1))[:2], f"{rj.name} class {k or 1}")
-    if k and rj.type == "InitialModel":
+    if k and rj.type == "InitialModel":             # (several models, made before the class layout)
         path = rj.find(f"map_nomask_{int(k)}.mrc")
         if not path:
             raise ValueError(f"{rj.name} has no model {k}")
@@ -1168,9 +1283,11 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
         sr = sharp.get(str(row["cls"]), {})
         if "resolution_a" in sr:
             row.update(sharpened_resolution_a=sr["resolution_a"], b_factor=sr["b_factor"])
-    summ = dict(particles=int(n), classes=table, duplicates_removed=n_dup, duplicate_distance_a=round(dist, 1),
+    hist = class_outputs(job, [dict(it=h["it"], pops=h["pops"], res=h.get("res")) for h in report.get("history", [])
+                               if "pops" in h], table, tag)
+    summ = dict(particles=int(n), duplicates_removed=n_dup, duplicate_distance_a=round(dist, 1),
                 sym=s.sym, apix=round(apix, 4), box=b, seconds=round(seconds, 1), **report,
-                **({"sharpened": sharp} if sharp else {}))
+                **({"sharpened": sharp} if sharp else {}), **class_summary(project, job, table, hist))
     project.set_status(job, "finished", summ)
     log("[hetero] " + ", ".join(f"class {r['cls']}: {r['particles']} ({r['resolution_solvent_mask_a']} A)" for r in table))
     ses.clf = None
@@ -1252,7 +1369,7 @@ def _res_key(s: dict) -> str:
 
 
 def _hetero_key(s: dict) -> str:
-    c = s.get("classes") or []
+    c = class_table(s)
     if not c:
         return ""
     best = min((x.get("resolution_solvent_mask_a") or x.get("resolution_a") or float("inf")) for x in c)
@@ -1260,8 +1377,8 @@ def _hetero_key(s: dict) -> str:
 
 
 def _class3d_key(s: dict) -> str:
-    c = s.get("classes") or []
-    if not c or not isinstance(c, list):
+    c = class_table(s)
+    if not c:
         return ""
     n = sum(x.get("particles", 0) for x in c) or 1
     big = max(c, key=lambda x: x.get("particles", 0))
@@ -1298,8 +1415,9 @@ def registry() -> dict[str, JobSpec]:
         JobSpec("InitialModel", "ab initio 3D from 2D classes and their particles", InitialModelSettings,
                 (Input("class2d", ("Class2D", "Select"), doc="the 2D classification (classes chosen in settings), or a "
                                                              "selection of its classes"),),
-                initial_model_job, run_initial_model, key=_res_key,
-                figures=("map_views.png", "fsc.png", "views.png", "reprojections.png")),
+                initial_model_job, run_initial_model, key=lambda s: _class3d_key(s) if class_table(s) else _res_key(s),
+                figures=("map_views.png", "class_history.png", "fsc.png", "views.png", "views_classes.png",
+                         "reprojections.png")),
         JobSpec("Refine3D", "local 3D refinement with gold-standard halves", Refine3DSettings,
                 (Input("particles", _PARTICLES, doc="particles (e.g. re-centred, full box)"),
                  Input("poses", _POSES_CLS, optional=True,
@@ -1314,7 +1432,7 @@ def registry() -> dict[str, JobSpec]:
                  Input("poses", tuple(x for x in _POSES_CLS if x != "SymExpand"),
                        doc="starting orientations, matched by particle uid")),
                 hetero_refine_job, run_hetero_refine, key=_hetero_key,
-                figures=("map_views.png", "views_classes.png", "fsc.png", "progress.png")),
+                figures=("map_views.png", "class_history.png", "views_classes.png", "fsc.png", "progress.png")),
         JobSpec("Class3D", "3D classification without alignment: K maps at the consensus poses (optionally focused "
                 "on a mask, symmetry-expanded)", Class3DSettings,
                 (Input("particles", _PARTICLES, doc="particles"),
@@ -1322,7 +1440,7 @@ def registry() -> dict[str, JobSpec]:
                  Input("reference", _POSES, optional=True,
                        doc="consensus map for init=consensus and signal subtraction (default: the poses job's)")),
                 class3d_job, run_class3d, key=_class3d_key,
-                figures=("map_views.png", "progress.png", "fsc.png", "views_classes.png")),
+                figures=("map_views.png", "class_history.png", "progress.png", "fsc.png", "views_classes.png")),
         JobSpec("Polish", "per-particle motion tracks and per-frame dose weights from a refinement", PolishSettings,
                 (Input("refine", ("Refine3D",), doc="the refinement (its particles and map)"),),
                 polish_job, run_polish,

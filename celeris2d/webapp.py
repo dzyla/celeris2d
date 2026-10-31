@@ -926,7 +926,8 @@ def create(workdir, project_dir=None):
         j = prj.job(job)
         files = []
         for dp, dn, fn in os.walk(j.path):
-            dn[:] = sorted(d for d in dn if d not in ("particles", "picks", "rejected", "session", "staging", "movies"))
+            dn[:] = sorted(d for d in dn if d not in ("particles", "picks", "rejected", "session", "staging", "movies",
+                                                         "live"))
             for f in sorted(fn):
                 if f.endswith((".png", ".gif", ".mrc", ".mrcs", ".star", ".cs", ".csg", ".json", ".xml", ".csv", ".md")) \
                         and f not in ("job.json", "summary.json"):
@@ -1295,17 +1296,19 @@ def create(workdir, project_dir=None):
 
     @app.get("/api/project/live3d")
     def project_live3d(job: str):
-        """A running 3D job's current maps (live.py): stage, iteration, resolution, history and the map files."""
+        """A running 3D job's current maps (live.py): stage, iteration, resolution and particles per model, history
+        and the map files."""
+        from .live import live_dir
         j = _prj().job(job)
-        p = os.path.join(j.path, "live3d.json")
-        if j.status != "running" or not os.path.isfile(p):
+        d_ = next((x for x in (live_dir(j), j.path) if os.path.isfile(os.path.join(x, "live3d.json"))), None)
+        if j.status != "running" or d_ is None:      # (j.path: written there by a job process of an older version)
             return {}
         try:
-            with open(p) as fh:
+            with open(os.path.join(d_, "live3d.json")) as fh:
                 d = json.load(fh)
         except (OSError, ValueError):
             return {}
-        d["maps"] = [_prj().rel(os.path.join(j.path, f"live3d_m{k + 1}.mrc")) for k in range(int(d.get("models", 1)))]
+        d["maps"] = [_prj().rel(os.path.join(d_, f"live3d_m{k + 1}.mrc")) for k in range(int(d.get("models", 1)))]
         return d
 
     @app.get("/api/project/live")

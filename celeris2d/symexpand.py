@@ -21,7 +21,7 @@ import numpy as np
 import torch
 
 from .jobspec import params_of, settings_of
-from .project import CLASS_JOBS, Job, Project, logged
+from .project import Job, Project, has_classes, logged
 
 POSE_JOBS = ("Refine3D", "HeteroRefine", "Class3D", "LocalRefine")
 
@@ -91,7 +91,7 @@ def run_symexpand(project: Project, job, log=print) -> dict:
                 psi=psi.numpy().astype(np.float32), shift_x_a=t[i, 0].astype(np.float32),
                 shift_y_a=t[i, 1].astype(np.float32), half=np.asarray(half)[i].astype(np.uint8),
                 fit=np.asarray(fit, np.float32)[i], used=np.ones(len(i), bool))
-    if "cls" in poses and qj.type in CLASS_JOBS:
+    if "cls" in poses and has_classes(qj):
         cols["cls"] = np.asarray(poses["cls"])[i].astype(np.int16)
     parts = src.parts
     project.table(job, "particles").write(dict(uid=parts["celUid"].to_numpy(np.int64)[i], **cols),

@@ -1,9 +1,9 @@
 """Data the dashboard shows directly (not figures): class galleries to choose classes from, and maps for the 3D
 viewer.
 
-class_gallery(project, job): the classes of a Class2D job (its class averages) or of a HeteroRefine / Class3D job
-(three projections of each class map), largest first, with particles, share and resolution; for a Select job, the
-classes of its source and which it keeps.
+class_gallery(project, job): the classes of a Class2D job (its class averages) or of a HeteroRefine / Class3D /
+ModeMaps / InitialModel-with-several-classes job (three projections of each class map), largest first, with particles,
+share and resolution; for a Select job, the classes of its source and which it keeps.
 
 map_views(path): projections and central sections of a map, as pictures for the job page.
 
@@ -23,7 +23,7 @@ import time
 
 import numpy as np
 
-from .project import CLASS_JOBS, Project
+from .project import Project, class_table, has_classes
 
 
 def _thumb(img: np.ndarray, px: int = 128) -> str:
@@ -58,9 +58,9 @@ def class_gallery(project: Project, job) -> dict:
     else:
         src = j
     summ = project.summary_of(src)
-    out = dict(job=j.name, source=src.name, waiting=waiting, chosen=chosen, classes=[])
-    t = project.table(src, "particles").read(["cls"]) if src.type in ("Class2D", *CLASS_JOBS) else None
+    out = dict(job=j.name, source=src.name, source_type=src.type, waiting=waiting, chosen=chosen, classes=[])
     if src.type == "Class2D":
+        t = project.table(src, "particles").read(["cls"])
         path = src.find("classes.mrcs")
         if not path:
             raise ValueError(f"{src.name} has no class averages")
@@ -71,9 +71,11 @@ def class_gallery(project: Project, job) -> dict:
         for k in np.argsort(-pops):
             out["classes"].append(dict(cls=int(k) + 1, n=int(pops[k]), share=round(float(pops[k]) / n, 4),
                                        images=[_thumb(imgs[k])]))
-    elif src.type in CLASS_JOBS:
-        rows = {int(r["cls"]): r for r in summ.get("classes", [])}
+    elif has_classes(src):
+        rows = {int(r["cls"]): r for r in class_table(summ)}
         out.update(kind="3d", particles=int(summ.get("particles", 0)))
+        if summ.get("consensus"):                 # an InitialModel's: the map the classes were classified from
+            out["consensus"] = summ["consensus"]
         order = sorted(rows, key=lambda c: -rows[c].get("particles", 0))
         for c in order:
             r = rows[c]
@@ -84,9 +86,11 @@ def class_gallery(project: Project, job) -> dict:
                 ims = [_thumb(v.sum(a)) for a in (0, 1, 2)]
             out["classes"].append(dict(cls=c, n=int(r.get("particles", 0)), share=r.get("share"),
                                        res=r.get("resolution_solvent_mask_a") or r.get("resolution_a"),
-                                       res_sharpened=r.get("sharpened_resolution_a"), images=ims))
+                                       res_sharpened=r.get("sharpened_resolution_a"), images=ims,
+                                       map=project.rel(p) if p else None))
     else:
-        raise ValueError(f"{src.name} is not a classification (Class2D, HeteroRefine, Class3D)")
+        raise ValueError(f"{src.name} is not a classification (Class2D, HeteroRefine, Class3D, ModeMaps, InitialModel "
+                         "with several classes)")
     return out
 
 

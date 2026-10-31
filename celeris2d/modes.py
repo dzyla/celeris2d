@@ -1503,7 +1503,8 @@ def mode_maps(project, job, s: ModeMapsSettings, log=print) -> dict:
         ok_maps = [m_ for m_ in maps if m_ is not None]
         if frames:
             write_cxc(job.out("bins.mrc")[:-4] + ".cxc", frames, surface_level(ok_maps[0], vmask))
-    summ = dict(kind=s.kind, modes3d=v.name, particles=int(n), modes=sel_modes, classes=table, sym=s.sym,
+    summ = dict(kind=s.kind, modes3d=v.name, particles=int(n), modes=sel_modes, classes=len(table), class_table=table,
+                sym=s.sym,
                 box=b, apix=round(apix, 4), duplicates_removed=n_dup, seconds=round(time.time() - t0, 1))
     if g is not None:
         summ.update(bic=round(g["bic"], 1), cluster_means=[[round(float(x), 3) for x in m] for m in g["means"]],
@@ -1538,10 +1539,11 @@ def key(s: dict) -> str:
 
 def maps_key(s: dict) -> str:
     from .jobspec import _n
-    c = s.get("classes") or []
+    from .project import class_table
+    c = class_table(s)
     if s.get("kind") == "series":
         return "series"
-    if not c or not isinstance(c, list):
+    if not c:
         return ""
     best = min((x.get("resolution_a") or float("inf")) for x in c)
     return f"{s.get('kind', '')} {len(c)}" + (f" · best {_n(best, 2)} Å" if best < float("inf") else "")

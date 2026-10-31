@@ -335,6 +335,57 @@ def class3d_progress_figure(path: str, history: list[dict], post: np.ndarray, ti
 
 
 @themed
+def class_history_figure(path: str, history: list[dict], title_: str, final_res: list | None = None,
+                         heading: str = "3D classes per iteration"):
+    """Every multi-class 3D job (Class3D, HeteroRefine, InitialModel with several classes): the class distribution per
+    iteration (share of the particles, stacked; class number and final size at the right) and each class's resolution
+    per iteration on a plain axis (finer = lower = down), with the final maps' values (final_res, A per class) after
+    the last iteration. history: per iteration it, pops (K), res (K, None = unknown / merged), optionally res_limit_a
+    (the iteration box's Nyquist: a 3D classification's per-iteration FSC cannot go finer)."""
+    from matplotlib.ticker import MaxNLocator
+    it = np.array([h["it"] for h in history], float)
+    P = np.array([h["pops"] for h in history], float)
+    K = P.shape[1]
+    S = P / np.maximum(P.sum(1, keepdims=True), 1) * 100
+    fig, axs = plt.subplots(1, 2, figsize=(11.6, 3.9))
+    fig.subplots_adjust(left=0.06, right=0.86, top=top(fig, 0.8), bottom=0.15, wspace=0.42)
+    a = axs[0]
+    lo = np.zeros(len(it))
+    for m in range(K):
+        a.fill_between(it, lo, lo + S[:, m], color=T.series[m % 8], lw=0, label=f"class {m + 1}")
+        if S[-1, m] >= 4:
+            a.text(it[-1] + 0.25, lo[-1] + S[-1, m] / 2, f"{m + 1} · {int(P[-1, m]):,}", ha="left", va="center",
+                   fontsize=8, color=T.ink2)
+        lo += S[:, m]
+    a.set(title="Class distribution", xlabel="iteration", ylabel="% of particles", ylim=(0, 100))
+    a.set_xlim(it[0], it[-1] if it[-1] > it[0] else it[0] + 1)
+    a = axs[1]
+    R = np.array([[np.nan if r is None else r for r in (h.get("res") or [None] * K)] for h in history], float)
+    x_fin = it[-1] + max(1.5, 0.12 * (it[-1] - it[0]))
+    for m in range(K):
+        a.plot(it, R[:, m], "o-", ms=3.5, lw=1.6, color=T.series[m % 8], label=f"class {m + 1}")
+        f = final_res[m] if final_res is not None and m < len(final_res) else None
+        if f is not None and np.isfinite(f):
+            a.plot([x_fin], [f], "D", ms=6, color=T.series[m % 8], mec=T.surface, mew=1.2)
+    lim = [h.get("res_limit_a") for h in history if h.get("res_limit_a")]
+    if lim:
+        a.axhline(min(lim), color=T.ink3, lw=1, ls=(0, (4, 3)), zorder=1,
+                  label=f"iterations' limit\n{min(lim):.1f} Å (Nyquist\nof their box)")
+    ticks = list(MaxNLocator(integer=True, nbins=6).tick_values(it[0], it[-1]))
+    ticks = [t for t in ticks if it[0] <= t <= it[-1]]
+    if final_res is not None:
+        a.set_xticks(ticks + [x_fin], [f"{t:g}" for t in ticks] + ["final"])
+        a.set_xlim(it[0] - 0.5, x_fin + 0.6)
+    a.set(title="Resolution per class (finer = lower)", xlabel="iteration", ylabel="Å (FSC 0.143)")
+    grid_y(a)
+    a.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), fontsize=8)
+    axs[0].xaxis.set_major_locator(MaxNLocator(integer=True))
+    title(fig, heading, title_ + f" · {len(history)} iterations")
+    fig.savefig(path)
+    plt.close(fig)
+
+
+@themed
 def particle_stats_figure(path: str, fit: np.ndarray, used: np.ndarray, shift_a: np.ndarray, moved_deg: np.ndarray,
                           title_: str, cls: np.ndarray | None = None):
     """Per-particle diagnostics: fit to the map (normalised correlation) of particles used and left out, distance of

@@ -50,7 +50,7 @@ import numpy as np
 import torch
 
 from .jobspec import params_of, settings_of
-from .project import CLASS_JOBS, PARTICLE_JOBS, Job, Project, logged
+from .project import PARTICLE_JOBS, Job, Project, class_table, has_classes, logged
 
 
 # --------------------------------------------------------------------------------------------- geometry
@@ -94,7 +94,7 @@ def _refinement_halves(project: Project, rj: Job, cls: int = 0):
     refinement: Refine3D / LocalRefine, or class cls (1-based) of a HeteroRefine."""
     import json
     import mrcfile
-    pre = f"class{cls:02d}_" if rj.type in CLASS_JOBS else ""
+    pre = f"class{cls:02d}_" if has_classes(rj) else ""
     out = []
     for name in ("half1_unfil.mrc", "half2_unfil.mrc", "mask.mrc"):
         p = rj.find(pre + name)
@@ -104,11 +104,11 @@ def _refinement_halves(project: Project, rj: Job, cls: int = 0):
             out.append(np.asarray(f.data, np.float32))
             apix = float(f.voxel_size.x)
     summ = project.summary_of(rj)
-    if rj.type in CLASS_JOBS:
+    if has_classes(rj):
         d = json.load(open(rj.find(f"class{cls:02d}_fsc.json")))
         fsc = np.asarray([0.0 if x is None else x for x in d["curves"]["corrected"]], np.float64)
         box_a = float(d["box_a"])
-        res = next((c.get("resolution_solvent_mask_a") or c.get("resolution_a") for c in summ.get("classes", [])
+        res = next((c.get("resolution_solvent_mask_a") or c.get("resolution_a") for c in class_table(summ)
                     if c["cls"] == cls), None) or float(d.get("resolution_a") or 8.0)
     else:
         fsc = np.asarray(summ["fsc_solvent"], np.float64)
@@ -252,7 +252,7 @@ def _rows(project: Project, job: Job):
         + np.stack([poses["shift_x_a"][r], poses["shift_y_a"][r]], 1)
     A = euler_to_matrix(torch.as_tensor(poses["rot"][r]), torch.as_tensor(poses["tilt"][r]),
                         torch.as_tensor(poses["psi"][r])).float()
-    cls = (poses["cls"][r].astype(np.int64) + 1) if (rj.type in CLASS_JOBS and "cls" in poses) else np.zeros(len(r), np.int64)
+    cls = (poses["cls"][r].astype(np.int64) + 1) if (has_classes(rj) and "cls" in poses) else np.zeros(len(r), np.int64)
     fit = poses["fit"][r].astype(np.float32) if "fit" in poses else np.ones(len(r), np.float32)
     o = np.lexsort((P["slice"].to_numpy(), P["movie_id"].to_numpy()))              # by micrograph, then stack slice
     P = P.iloc[o].reset_index(drop=True)
@@ -489,7 +489,7 @@ def run_subtract(project: Project, job, log=print) -> dict:
                     defocus_angle=P["defocus_angle"].to_numpy(np.float32)[src_i[rr]])
         if copy is not None:
             cols["copy"] = copy[rr].astype(np.float32)
-        if rj.type in CLASS_JOBS:
+        if has_classes(rj):
             cols["cls"] = (cls_r[rr] - 1).astype(np.float32)
         project.add_particles(job, int(m), c_new, imgs, apix, dtype=s.dtype,
                               uid=P["uid"].to_numpy(np.int64)[src_i[rr]], pick_xy_a=pick, columns=cols)
@@ -629,7 +629,7 @@ def _halves_frame(rj: Job, cls: int, n_big: int, apix: float, c_vox, b: int):
     """A refinement's half maps resampled to apix in an n_big box, moved to the focus frame, cut to b^3 (or None)."""
     import mrcfile
     from .jobs import map_to_box
-    pre = f"class{cls:02d}_" if rj.type in CLASS_JOBS else ""
+    pre = f"class{cls:02d}_" if has_classes(rj) else ""
     out = []
     for h in (1, 2):
         p = rj.find(f"{pre}half{h}_unfil.mrc")
@@ -664,7 +664,7 @@ def run_local_refine(project: Project, job, log=print) -> dict:
     apix = box_a / b
     n = len(img)
     ref_cls = 0
-    if rj.type in CLASS_JOBS:
+    if has_classes(rj):
         cl = poses["cls"] if "cls" in poses else np.zeros(n, int)
         ref_cls = int(np.bincount(cl).argmax()) + 1
     ref, ref_apix, _ = _reference_map(rj, ref_cls)
@@ -681,8 +681,8 @@ def run_local_refine(project: Project, job, log=print) -> dict:
         warnings.append(f"{lost * 100:.1f}% of the focus mask lies outside the {b} px box around its centre")
     init = _roll_crop(vol_big, c_vox, b) * fmask
     rsum = project.summary_of(rj)
-    r_ref = rsum.get("resolution_a", 8.0) if rj.type not in CLASS_JOBS else \
-        next((c["resolution_a"] for c in rsum.get("classes", []) if c["cls"] == ref_cls), None) or 8.0
+    r_ref = rsum.get("resolution_a", 8.0) if not has_classes(rj) else \
+        next((c["resolution_a"] for c in class_table(rsum) if c["cls"] == ref_cls), None) or 8.0
     res0 = s.res_start_a or max(8.0, float(r_ref))
     A = ab.euler_to_matrix(torch.as_tensor(poses["rot"]), torch.as_tensor(poses["tilt"]),
                            torch.as_tensor(poses["psi"])).float()

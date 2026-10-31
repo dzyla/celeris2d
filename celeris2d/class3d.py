@@ -47,8 +47,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .abinitio import (Volume, _free, _real_space_constraints, _regularise_solve, _to_box, auto_pad, fsc_maps,
-                       lowpass, resolution_from_fsc, sphere_mask, symmetry_ops)
+from .abinitio import (Volume, _free, _live, _real_space_constraints, _regularise_solve, _to_box, auto_pad,
+                       fsc_maps, lowpass, resolution_from_fsc, sphere_mask, symmetry_ops)
 from .engine import TWO_PI, ctf_2d, freqs, release_cache
 from .project import logged
 
@@ -462,13 +462,18 @@ def classify(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, n_classes
         last = converged or it == n_iter
         if not last:
             refs, res = mstep(W)
+        # res: each class's half-map FSC at the iteration box, so never finer than its Nyquist (res_limit_a); the
+        # final maps (box bf) give the real per-class resolution
         history.append(dict(it=it, pops=pops, weights=[round(float(w), 1) for w in W.sum(0)], changed=round(moved, 4),
                             max_posterior=round(mp, 4), T=round(T, 3),
-                            res=[round(r, 2) if r == r else None for r in res], seconds=round(time.time() - t0, 1)))
+                            res=[round(r, 2) if r == r else None for r in res], res_limit_a=round(2 * box_a / be, 2),
+                            seconds=round(time.time() - t0, 1)))
         log(f"[class3d] it {it}/{n_iter}: per class {pops}, {moved * 100:.1f}% changed, mean max posterior {mp:.3f}, "
-            f"T {T:.1f}, res {' / '.join(f'{r:.1f}' if r == r else '-' for r in res)} A ({time.time() - t0:.1f}s)")
+            f"T {T:.1f}, res {' / '.join(f'{r:.1f}' if r == r else '-' for r in res)} A (limit {2 * box_a / be:.1f} A at "
+            f"box {be}) ({time.time() - t0:.1f}s)")
         if last:
             break
+        _live("class3d", it, n_iter, [refs[k] for k in range(K)], res, box_a / be, counts=pops)
     refs = None
     release_cache()
     # ---- final half maps per class at the final box, as many classes per data pass as fit
@@ -501,6 +506,8 @@ def classify(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, n_classes
     log(f"[class3d] final maps (box {bf}): " + ", ".join(
         f"class {k + 1} {int((z == k).sum())} ({res_f[k]:.1f} A)" if res_f[k] == res_f[k] else f"class {k + 1} empty"
         for k in range(K)) + f" ({time.time() - t0:.1f}s)")
+    _live("class3d", it, it, [m if m is not None else torch.zeros((bf,) * 3) for m in maps], res_f, box_a / bf,
+          counts=torch.bincount(z, minlength=K).tolist())
     return Class3DResult(z=z.cpu(), post=post.cpu(), A=Az.cpu(), fit=fit.cpu(), maps=maps, halves=halves, fsc=fscs,
                          res=res_f, history=history, box=bf, box_iter=be, iterations=it, converged=converged)
 
@@ -578,9 +585,10 @@ def class3d_job(project, particles, poses, reference, s: Class3DSettings, label:
 def _consensus(rj, qj, poses, log):
     """The consensus map of a job before masking (a class job: the class most of these particles are in, if it is
     the poses job, else its class 1)."""
-    from .jobs import CLASS_JOBS, _reference_map
+    from .jobs import _reference_map
+    from .project import has_classes
     k = 0
-    if rj.type in CLASS_JOBS:
+    if has_classes(rj):
         mine = rj.id == qj.id and "cls" in poses and len(poses["cls"])
         k = int(np.bincount(poses["cls"].astype(np.int64)).argmax()) + 1 if mine else 1
     vol, apix, path = _reference_map(rj, k)
@@ -709,19 +717,20 @@ def run_class3d(project, job, log=print) -> dict:
                         "distinguishable at this resolution / in this mask")
     for row in table:
         row["scf"] = figs["class_views"].get(row["cls"])
-    from .jobs import _sharpen_job_maps
+    from .jobs import _sharpen_job_maps, class_outputs, class_summary
     sharp = _sharpen_job_maps(project, job, s, classes=tuple(x["cls"] for x in table if x["particles"] >= 100), log=log)
     for row in table:
         sr = sharp.get(str(row["cls"]), {})
         if "resolution_a" in sr:
             row.update(sharpened_resolution_a=sr["resolution_a"], b_factor=sr["b_factor"])
-    summ = dict(particles=int(n), rows=int(n_rows), classes=table, duplicates_removed=n_dup,
+    hist = class_outputs(job, r.history, table, tag)
+    summ = dict(particles=int(n), rows=int(n_rows), duplicates_removed=n_dup,
                 duplicate_distance_a=round(dist, 1), sym=s.sym, sym_expand=s.sym_expand.upper() or None,
                 res_a=s.res_a, reg_t=s.reg_t, mask=s.mask or None, subtract=bool(focus is not None and s.subtract),
                 init=s.init, soft=s.soft, apix=round(apix, 4), box=b, box_iter=r.box_iter, iterations=r.iterations,
                 converged=r.converged, median_max_posterior=round(mmp, 3), seconds=round(seconds, 1),
                 seconds_load=round(t_load, 1), history=r.history, figures=figs["figures"], warnings=warnings,
-                **({"sharpened": sharp} if sharp else {}))
+                **({"sharpened": sharp} if sharp else {}), **class_summary(project, job, table, hist))
     project.set_status(job, "finished", summ)
     log("[class3d] " + ", ".join(f"class {x['cls']}: {x['particles']} ({x['resolution_solvent_mask_a']} A)"
                                  for x in table) + f"; {seconds:.0f}s")

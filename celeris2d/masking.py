@@ -237,7 +237,7 @@ def mask_report(mask: torch.Tensor, apix: float, vmap: torch.Tensor | None = Non
 # ------------------------------------------------------------------------------------------------ MaskCreate job
 from dataclasses import dataclass  # noqa: E402
 
-from .project import CLASS_JOBS  # noqa: E402
+from .project import has_classes  # noqa: E402
 
 
 @dataclass
@@ -270,7 +270,7 @@ def parse_region(text: str) -> dict:
 def mask_job(project, source, s: MaskCreateSettings, label: str = ""):
     from .jobspec import params_of
     src = project.job(source)
-    if src.type in CLASS_JOBS and not s.cls:
+    if has_classes(src) and not s.cls:
         raise ValueError(f"{src.name}: choose the class to mask (cls)")
     for r in tuple(s.include) + tuple(s.exclude):
         parse_region(r)
@@ -283,7 +283,7 @@ def _source_maps(project, src, cls: int):
     """(average map, half 1, half 2 or None, apix, resolution) of a job's map."""
     import mrcfile
     rj = project.job(src.params["refine"]) if src.type == "Sharpen" else src
-    pre = f"class{cls:02d}_" if rj.type in CLASS_JOBS else ""
+    pre = f"class{cls:02d}_" if has_classes(rj) else ""
 
     def rd(name):
         p = rj.find(pre + name)
