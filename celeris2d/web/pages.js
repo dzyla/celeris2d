@@ -105,3 +105,64 @@ async function stageExtract(st, j) {
   $('#exmore').onclick = () => { seed++; gallery(); };
   tick();
 }
+
+// Project home: where each stage stands, what runs now, what waits for you, what to do next
+async function showHome() {
+  current = null; renderList(); clearTimeout(liveTimer);
+  history.replaceState(null, '', location.pathname);
+  const fin = t => jobs.filter(j => j.status === 'finished' && (Array.isArray(t) ? t.includes(j.type) : j.type === t)).sort((a, b) => b.id - a.id);
+  const num = (k, re) => { const m = String(k || '').match(re); return m ? m[1] : null; };
+  const mc = fin('MotionCtf')[0], ex = fin('Extract')[0], sel = fin('Select')[0], c2 = fin('Class2D')[0];
+  const r3 = fin(['Refine3D', 'LocalRefine', 'Sharpen', 'InitialModel', 'HeteroRefine', 'Class3D'])
+    .map(j => [j, parseFloat(num(j.key, /([\d.]+) Å/))]).filter(([, r]) => r > 0).sort((a, b) => a[1] - b[1])[0];
+  const count = cats => jobs.filter(j => cats.includes(KIND[j.type])).length;
+  const stages = [
+    ['mic', 'Micrographs', mc ? num(mc.key, /([\d,]+) mics/) || '–' : '–', mc ? `Motion & CTF ${mc.name.slice(0, 3)}` : 'Import movies, then Motion correction & CTF', count(['mic']), mc],
+    ['ptc', 'Particles', ex ? num(ex.key, /([\d,]+) ptcls/) || '–' : '–', ex ? `Extract ${ex.name.slice(0, 3)}${ex.label ? ' · ' + ex.label : ''}` : 'Pick and extract', count(['ptc']), ex],
+    ['d2', '2D', sel ? num(sel.key, /([\d,]+) kept/) || '–' : c2 ? num(c2.key, /K(\d+)/) + ' classes' : '–', sel ? `kept in Select ${sel.name.slice(0, 3)}` : c2 ? `2D classification ${c2.name.slice(0, 3)}: choose classes` : '2D classification', count(['d2']), sel || c2],
+    ['d3', '3D', r3 ? r3[1].toFixed(2) + ' Å' : '–', r3 ? `best: ${(types[r3[0].type] || {}).name || r3[0].type} ${r3[0].name.slice(0, 3)}` : 'Ab initio 3D from selected classes', count(['d3', 'map']), r3 && r3[0]],
+  ];
+  const run = queue.running.map(n => jobs.find(j => j.name === n)).filter(Boolean);
+  const wait = queue.waiting.map(n => jobs.find(j => j.name === n)).filter(Boolean);
+  const last = jobs.filter(j => j.status === 'finished').sort((a, b) => b.id - a.id)[0];
+  const next = last ? Object.values(types).filter(t => (t.inputs || []).some(i => !i.optional && i.types.includes(last.type))).sort((a, b) => (a.order ?? 99) - (b.order ?? 99)).slice(0, 3) : Object.values(types).filter(t => t.type === 'Import');
+  $('#main').innerHTML = `<div class="home">
+    <div class="homehead"><h1>${esc($('#pname').textContent)}</h1><p class="muted">${jobs.length} jobs. Each stage shows where the data stands; click one to open its newest job.</p></div>
+    <section class="stages4">${stages.map(([k, name, big, sub, n, j]) => `<button class="stc k-${k}" ${j ? `data-n="${esc(j.name)}"` : 'disabled'}>
+      <span class="sth"><span class="sq"></span><b>${name}</b><span class="muted">${n} job${n === 1 ? '' : 's'}</span></span>
+      <span class="stbig">${esc(big)}</span><span class="muted">${esc(sub)}</span></button>`).join('')}</section>
+    <section class="homerow">
+      <div class="card pad"><div class="hh"><span class="dot ${run.length ? 'running pulse' : 'finished'}"></span><b>${run.length ? 'Running now' : 'Nothing running'}</b>
+        ${run.length ? `<span class="muted">${run.map(j => esc(((types[j.type] || {}).name || j.type) + ' ' + j.name.slice(0, 3))).join(' → ')}</span><a href="#${run[0].name.slice(0, 3)}" style="margin-left:auto">Open</a>` : `<span class="muted">${queue.queued.length ? queue.queued.length + ' queued, waiting for inputs' : 'the queue is empty'}</span>`}</div>
+        <div id="homerun" class="homerun"></div></div>
+      ${wait.length ? `<div class="card pad youcard"><b class="you">Waiting for you</b>${wait.map(j => `<div class="wj"><span>${esc(j.type === 'ManualPick' ? 'Pick particles by hand' : 'Choose the classes to keep')}: ${esc(((types[j.type] || {}).name || j.type))} ${j.name.slice(0, 3)}</span><button class="you" data-n="${esc(j.name)}">Open</button></div>`).join('')}</div>` : ''}
+    </section>
+    <section><h2 class="h2">Suggested next${last ? ` after ${esc((types[last.type] || {}).name || last.type)} ${last.name.slice(0, 3)}` : ''}</h2>
+      <div class="jts">${next.map(t => `<button class="jt" data-t="${esc(t.type)}">${icon(t.type)}<span class="jtn">${esc(t.name || t.type)}</span><span class="jtb">${esc(t.blurb || '')}</span></button>`).join('')}</div></section>
+  </div>`;
+  document.querySelectorAll('.stc[data-n], .youcard button').forEach(b => b.onclick = () => showJob(b.dataset.n));
+  document.querySelectorAll('.home .jt').forEach(b => b.onclick = () => jobForm(b.dataset.t));
+  if (run.length) homeRun(run);
+}
+// the running jobs' progress: a movie chain per member (micrographs done of the movies), else the log's last line
+async function homeRun(run) {
+  const box = $('#homerun'); if (!box) return;
+  const j = run[0];
+  let html = '';
+  try {
+    if (['MotionCtf', 'Pick', 'Extract'].includes(j.type)) {
+      const d = await api('/api/project/mics?job=' + encodeURIComponent(j.name));
+      const tot = d.total || d.rows.length || 1, n = d.rows.length;
+      const done = {mc: n, pick: d.rows.filter(r => r.picks != null).length, extract: d.rows.filter(r => r.particles != null).length};
+      html = `<div class="chainbars">${['mc', 'pick', 'extract'].filter(k => d.family[k]).map(k => `<div><div class="cbh"><span>${{mc: 'Motion & CTF', pick: 'Pick', extract: 'Extract'}[k]}</span><span class="muted">${done[k]} / ${tot}</span></div>
+        <div class="bar"><div style="width:${(100 * done[k] / tot).toFixed(1)}%;background:var(--k-${k === 'mc' ? 'mic' : 'ptc'})"></div></div></div>`).join('')}</div>`;
+      const ctf = d.rows.map(r => r.ctf_fit_a).filter(x => x != null).sort((a, b) => a - b);
+      if (ctf.length) html += `<div class="muted" style="margin-top:10px">median CTF fit so far <b style="color:var(--ink)">${ctf[Math.floor(ctf.length / 2)].toFixed(2)} Å</b></div>`;
+    } else {
+      const lg = await api(`/api/project/log?job=${encodeURIComponent(j.name)}&offset=0`);
+      const ls = (lg.text || '').trimEnd().split('\n');
+      html = `<div class="muted lastl">${esc(ls[ls.length - 1].replace(/^\S+ \S+ /, ''))}</div>`;
+    }
+  } catch (e) { html = ''; }
+  if ($('#homerun')) $('#homerun').innerHTML = html;
+}

@@ -601,6 +601,8 @@ class LocalRefineSettings:
     save_iterations: bool = False   # keep every iteration's FSC curves (data/..._iterations.json) and each particle's
                                     # angle / shift change and fit per iteration (particle table columns d_angle_itNN,
                                     # d_shift_itNN, fit_itNN): convergence, particles that keep jumping
+    reference_class: int = 0        # the reference job has classes (3D classification, multi-class ab initio, ...): start
+                                    # from this class's map (1-based); 0: the class most of the particles are in
     gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
 
@@ -664,7 +666,9 @@ def run_local_refine(project: Project, job, log=print) -> dict:
     apix = box_a / b
     n = len(img)
     ref_cls = 0
-    if has_classes(rj):
+    if has_classes(rj) and s.reference_class:
+        ref_cls = int(s.reference_class)
+    elif has_classes(rj):
         cl = poses["cls"] if "cls" in poses else np.zeros(n, int)
         ref_cls = int(np.bincount(cl).argmax()) + 1
     ref, ref_apix, _ = _reference_map(rj, ref_cls)

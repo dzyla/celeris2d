@@ -196,7 +196,7 @@ function numbers(j) {
   add(s.micrographs ?? s.movies, '', s.micrographs ? 'micrographs' : 'movies');
   add(s.classes && typeof s.classes !== 'object' ? s.classes : undefined, '', 'classes');
   add(s.seconds ? (s.seconds >= 120 ? Math.round(s.seconds / 60) : Math.round(s.seconds)) : undefined, s.seconds >= 120 ? 'min' : 's', 'run time');
-  return out.slice(0, 6);
+  return out.slice(0, 7);
 }
 async function showJob(name, scroll = true) {
   current = name; renderList();
@@ -210,30 +210,38 @@ async function showJob(name, scroll = true) {
   const warns = s.warnings || [];
   const canRerun = !['Import', 'Select'].includes(j.type);
   const runLabel = ['failed', 'cancelled'].includes(j.status) ? 'Restart' : ['MotionCtf', 'Pick', 'Extract'].includes(j.type) ? 'Continue with new movies' : 'Run again';
+  const tname = (types[j.type] || {}).name || j.type, dur = s.seconds ? (s.seconds >= 120 ? Math.round(s.seconds / 60) + ' min' : Math.round(s.seconds) + ' s') : '';
+  const stateText = {running: 'running', finished: dur ? 'finished in ' + dur : 'finished', waiting: 'waiting for you', queued: 'queued', failed: 'failed', cancelled: 'stopped'}[j.status] || j.status;
+  const from = (j.lineage || []).length > 1 ? (jobs.find(x => x.name === j.name) || {}).inputs || [] : [];
+  const fromText = from.map(n => { const x = jobs.find(y => y.name === n); return x ? `${(types[x.type] || {}).name || x.type} ${n.slice(0, 3)}` : n; }).join(' and ');
+  const kp = ['Import', 'MotionCtf', 'Pick', 'Extract', 'ManualPick'].includes(j.type) ? [] : numbers(j);
   $('#main').innerHTML = `
-    <div class="head">
-      <div class="title"><h1>${esc(j.type)} <span class="jn">${esc(j.name.slice(0, 3))}</span></h1>
-        <div class="sub"><span class="state ${esc(j.status)}"><span class="dot ${esc(j.status)}"></span>${esc(j.status === 'waiting' ? 'waiting for your choice' : j.status)}</span>
-          ${meta.label ? `<span class="lab">${esc(meta.label)}</span>` : ''}${j.final ? '<span class="fin">★ final</span>' : ''}</div></div>
-      <div class="nums">${numbers(j).map(([v, u, c]) => `<div class="num"><div class="v">${fmt(v)}${u ? `<small>${u}</small>` : ''}</div><div class="c">${esc(c)}</div></div>`).join('')}</div>
+    <div class="jhead">
+      ${icon(j.type).replace('class="ico', 'class="ico big')}
+      <div class="title"><h1>${esc(tname)} <span class="jn">${esc(j.name.slice(0, 3))}</span>${j.final ? ' <span class="fin" title="' + esc(j.final_note || '') + '">★ final</span>' : ''}</h1>
+        <div class="sub"><span class="state ${esc(j.status)}"><span class="dot ${esc(j.status)} ${j.status === 'running' ? 'pulse' : ''}"></span>${esc(stateText)}</span>
+          ${meta.label ? `<span>${esc(meta.label)}</span>` : ''}${fromText ? `<span class="muted">from ${esc(fromText)}</span>` : ''}</div></div>
       <div class="acts">
+        ${j.status === 'running' ? `<button id="stop" class="stopb" title="end the job's process now; it is kept, marked stopped, and can be restarted">Stop</button>` : ''}
+        ${['queued', 'waiting'].includes(j.status) ? `<button id="cancel">Cancel</button>` : ''}
         ${canRerun ? `<button id="rerun" class="${['failed', 'cancelled'].includes(j.status) ? 'go' : ''}" ${['running', 'queued', 'waiting'].includes(j.status) ? 'disabled' : ''} title="a new job with the same inputs and settings, through the queue">${runLabel}</button>` : ''}
         ${types[j.type] ? `<button id="edit" title="the New job form with this job's inputs and settings">Change settings…</button>` : ''}
-        ${['queued', 'waiting'].includes(j.status) ? `<button id="cancel">Cancel</button>` : ''}
-        ${j.status === 'running' ? `<button id="stop" class="danger" title="end the job's process now; it is kept, marked cancelled, and can be restarted">Stop</button>` : ''}
-        <button id="final" title="final jobs and everything they came from make the publication report">${j.final ? '★ Final' : '☆ Mark final'}</button>
-        <button id="del" class="danger" ${j.status === 'running' ? 'disabled' : ''} title="move the job to the project's Trash folder">Delete</button>
+        <details class="menu"><summary aria-label="more actions">⋯</summary><div class="menu-list">
+          <button id="final" title="final jobs and everything they came from make the publication report">${j.final ? '★ Unmark final' : '☆ Mark final (for the report)'}</button>
+          <button id="del" ${j.status === 'running' ? 'disabled' : ''} title="move the job to the project's Trash folder">Delete…</button></div></details>
       </div>
     </div>
+    ${kp.length ? `<div class="kpis">${kp.map(([v, u, c]) => `<div class="kpi"><div class="v">${u === 'Å' && typeof v === 'number' ? v.toFixed(2) : fmt(v)}${u ? `<small>${u}</small>` : ''}</div><div class="c">${esc(c)}</div></div>`).join('')}</div>` : ''}
     ${j.error || s.error ? `<div class="warn err">${esc(j.error || s.error)}</div>` : ''}
     ${warns.map(w => `<div class="warn">${esc(w)}</div>`).join('')}
     <div id="stage"></div>
-    <div class="tabs" role="tablist">${['plots', 'files', 'log', 'settings', 'lineage'].map(t => `<button data-t="${t}" class="${t === tab ? 'on' : ''}" role="tab">${{plots: 'Plots', files: 'Files', log: 'Log', settings: 'Settings', lineage: 'Made from'}[t]}</button>`).join('')}</div>
+    <div class="tabs" role="tablist">${['plots', 'log', 'settings', 'files', 'lineage'].map(t => `<button data-t="${t}" class="${t === tab ? 'on' : ''}" role="tab">${{plots: 'Results', files: 'Files', log: 'Log', settings: 'Settings', lineage: 'Made from'}[t]}</button>`).join('')}</div>
     <div class="pane" id="pane"></div>`;
   document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { tab = b.dataset.t; document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b)); renderPane(j); });
   renderStage(j);
   renderPane(j);
   const on = (id, fn) => { const b = $('#' + id); if (b) b.onclick = fn; };
+  document.querySelectorAll('.jhead .menu-list button').forEach(b => b.addEventListener('click', () => b.closest('details').open = false));
   on('rerun', async () => { try { const d = await api('/api/project/rerun', {job: j.name}); current = d.job; await load(); showJob(d.job); } catch (e) { alert(e.message); } });
   on('edit', () => jobForm(j.type, j.params));
   on('stop', async () => {
@@ -677,18 +685,15 @@ function stageVolume(st, j, maps) {
   maps.sort((a, b) => (rank(a.path) < 0 ? 9 : rank(a.path)) - (rank(b.path) < 0 ? 9 : rank(b.path)));
   const localres = j.files.find(f => /localres\.mrc$/.test(f.path));
   const preview = j.files.find(f => /map_views\.png$/.test(f.path)) || j.files.find(f => /postprocess\.png$/.test(f.path));
-  const names = ['projection z', 'projection y', 'projection x', 'section z', 'section y', 'section x'];
-  st.innerHTML = `<div class="launch">
-      <div class="views" id="mviews">${names.map(n => `<figure><div class="tile"></div><figcaption>${n}</figcaption></figure>`).join('')}</div>
-      <div><button class="go" id="go3d">Show the map in 3D</button>
-      <div class="muted" id="mvname" style="font-size:12px;margin-top:6px">${maps.length} map${maps.length > 1 ? 's' : ''} in this job; the viewer loads a downsampled copy (~8 MB)</div></div></div>`;
-  $('#go3d').onclick = () => openViewer(st, j, maps, localres);
+  // the map itself first (the viewer opens at once), then its projections, central sections and Fourier sections
+  st.innerHTML = `<div id="v3host" class="v3host"></div>
+    <div class="vstrip"><div class="vrow" id="mviews">${Array.from({length: 9}, () => '<figure><div class="tile"></div></figure>').join('')}</div>
+      <div class="fnote muted" id="mvname"></div></div>`;
+  openViewer($('#v3host'), j, maps, localres);
   api('/api/project/mapviews?path=' + encodeURIComponent(maps[0].path)).then(d => {
     if (!$('#mviews')) return;
-    $('#mviews').innerHTML = d.views.map(v => `<figure><div class="tile"><img src="${v.src}" alt="${esc(v.label)}"></div><figcaption>${esc(v.label)}</figcaption></figure>`).join('') +
-      (d.fourier || []).map(v => `<figure><div class="tile four"><img src="${v.src}" alt="${esc(v.label)}"></div><figcaption>${esc(v.label)}</figcaption></figure>`).join('') +
-      (d.fourier ? `<div class="fnote"><b>Fourier sections</b> (amplitudes, log scale; edge = Nyquist, ${d.nyquist_a} Å). Even, round discs mean the map has detail in every direction; streaks, a missing wedge or a squashed disc mean preferred views or over-fitting along one direction.</div>` : '');
-    $('#mvname').textContent = `${d.name} · box ${d.box[0]} · ${d.apix.toFixed(2)} Å/px · ${maps.length} map${maps.length > 1 ? 's' : ''} in this job; the 3D viewer loads a downsampled copy`;
+    $('#mviews').innerHTML = [...d.views, ...(d.fourier || [])].map(v => `<figure><div class="tile ${/Fourier/.test(v.label) ? 'four' : ''}"><img src="${v.src}" alt="${esc(v.label)}"></div><figcaption>${esc(v.label.replace('Fourier section', 'Fourier'))}</figcaption></figure>`).join('');
+    $('#mvname').innerHTML = `${esc(d.name)} · box ${d.box[0]} at ${d.apix.toFixed(2)} Å/px.` + (d.fourier ? ` <b>Fourier sections</b> (log amplitudes, edge = Nyquist ${d.nyquist_a} Å): even, round discs mean detail in every direction; streaks, a missing wedge or a squashed disc mean preferred views.` : '');
   }).catch(() => {
     if ($('#mviews') && preview) $('#mviews').outerHTML = `<img class="fallback" src="${file(preview.path)}" alt="map preview">`;
   });
@@ -960,6 +965,7 @@ function jobForm(type, params = {}) {
   };
 }
 $('#newjob').onclick = jobPicker;
+$('#home').onclick = e => { e.preventDefault(); showHome(); };
 $('#report').onclick = async () => {
   current = null; renderList();
   $('#main').innerHTML = '<div class="empty">Making the report…</div>';
@@ -976,7 +982,7 @@ $('#open').onclick = async () => {
   const root = prompt('Project folder (the one with project.db). Windows paths such as E:\\linux\\celeris\\inx6 work too:', '');
   if (!root) return;
   try { await api('/api/project/open', {root}); } catch (e) { alert(e.message); return; }
-  current = null; $('#main').innerHTML = '<div class="empty"><h1>Choose a job on the left</h1></div>'; load();
+  current = null; load().then(showHome);
 };
 $('#create').onclick = async () => {
   const root = prompt('Folder for the new project (new or empty). Windows paths such as E:\\linux\\celeris\\new work too:', '');
@@ -988,4 +994,4 @@ $('#create').onclick = async () => {
 window.addEventListener('hashchange', () => { const h = decodeURIComponent(location.hash.slice(1)); const m = jobs.find(j => j.name.startsWith(h)); if (m && m.name !== current) showJob(m.name); });
 loadTypes();
 if (location.hash.length > 1) current = decodeURIComponent(location.hash.slice(1));
-load().then(() => { if (current) { const m = jobs.find(j => j.name.startsWith(current)); if (m) showJob(m.name); } });
+load().then(() => { const m = current && jobs.find(j => j.name.startsWith(current)); if (m) showJob(m.name); else showHome(); });

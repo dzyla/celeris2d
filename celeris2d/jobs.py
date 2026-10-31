@@ -88,7 +88,7 @@ def _centres(project: Project, particle_job, uids: np.ndarray, copies: np.ndarra
 def duplicate_distance(project: Project, particle_job) -> float:
     """Two particles whose aligned centres are closer than this are one particle picked twice: half the picking
     diameter (the particle's short dimension; two distinct particles cannot be that close)."""
-    pick = project.ancestor(particle_job, "Pick")
+    pick = project.ancestor(particle_job, ("Pick", "ManualPick"))
     return 0.5 * pick.params["diameter_a"] if pick else project.job(particle_job).params.get("particle_a", 0) / 4
 
 
@@ -630,6 +630,8 @@ class Refine3DSettings:
                                     # centre (0: a tenth of the particle diameter), on a grid of a quarter of res_start_a
     diameter_a: float = 0.0         # particle diameter for the mask (0: from the extraction)
     classes: tuple = ()             # poses from a HeteroRefine: only the particles of these 1-based classes
+    reference_class: int = 0        # the reference job has classes (3D classification, multi-class ab initio, ...): start
+                                    # from this class's map (1-based); 0: the class most of the particles are in
     mask: str = "auto"              # solvent mask during refinement: "auto" (dynamic: made from the map every iteration
                                     # below 15 A, masking.auto_mask), "static" (made once from the starting map, then
                                     # fixed), "none" (the soft particle sphere only), or a MaskCreate job / .mrc path
@@ -939,7 +941,9 @@ def run_refine3d(project: Project, job, log=print) -> dict:
                            torch.as_tensor(poses["psi"])).float() if qj is not None else torch.eye(3).repeat(len(img), 1, 1)
     t = torch.as_tensor(t_start).float()
     ref_cls = 0
-    if rj is not None and has_classes(rj):             # the class the particles come from (the largest of them)
+    if rj is not None and has_classes(rj) and s.reference_class:      # the class map chosen
+        ref_cls = int(s.reference_class)
+    elif rj is not None and has_classes(rj):           # the class the particles come from (the largest of them)
         if qj is None:
             ref_cls = int(s.classes[0]) if s.classes else 0
         else:

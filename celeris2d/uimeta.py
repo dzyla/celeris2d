@@ -21,7 +21,7 @@ from __future__ import annotations
 # --------------------------------------------------------------------------------------------- groups and order
 GROUPS = (
     ("Movies & micrographs", ("Import", "MotionCtf", "Curate")),
-    ("Particles", ("Pick", "Extract", "ImportParticles")),
+    ("Particles", ("Pick", "ManualPick", "Extract", "ImportParticles")),
     ("2D", ("Class2D", "MapScore")),
     ("3D", ("InitialModel", "Refine3D", "HeteroRefine", "Class3D", "LocalRefine")),
     ("Particle corrections", ("CtfRefine", "Polish")),
@@ -257,6 +257,28 @@ TYPES["Pick"] = dict(
                      free=True),
     })
 
+TYPES["ManualPick"] = dict(
+    name="Pick by hand, then train",
+    blurb="Click particles on a few micrographs; the boxer learns templates from them in seconds, suggests picks on "
+          "the next micrographs for you to check, then picks every micrograph.",
+    needs="Micrographs from Motion correction & CTF.",
+    typical="When a blob pick fails (odd shapes, crowded or dirty ice), or to start template picking without a 2D "
+            "classification. 30-50 picks of different views are enough.",
+    inputs={"micrographs": I("Micrographs", "The Motion correction & CTF job whose micrographs you pick.")},
+    fields={
+        "diameter_a": B("Particle diameter (Å)", "The circle drawn around each pick, the templates' window and the "
+                                                 "spacing of picks."),
+        "dark": F("Particles darker than background", "On for cryo-EM (dark protein); off for negative stain.",
+                  section="Picking"),
+        "templates": F("Templates to learn", "How many templates (2D classes of your picks) the boxer trains; fewer "
+                                             "while there are few picks.", section="Boxer"),
+        "suggest": F("Micrographs per round of suggestions", "How many new micrographs the boxer picks for you to "
+                                                             "check each time.", section="Boxer"),
+        "min_dist_frac": F("Minimum distance between picks (× diameter)", "Picks closer than this fraction of the "
+                                                                          "diameter are merged.", section="Picking"),
+    },
+)
+
 TYPES["Extract"] = dict(
     name="Extract particles",
     blurb="Cuts the particle images out of the micrographs at the picked positions (box sized for the particle and "
@@ -404,6 +426,9 @@ TYPES["Refine3D"] = dict(
                                               "found from the reference map alone (global search)."),
             "reference": P_REFERENCE},
     fields={
+        "reference_class": B("Reference class", "When the reference (or poses) job has several classes or models: "
+                                                "which class map to start from (1-based; the page shows the classes to "
+                                                "click). 0: the class most of the particles are in."),
         "sym": SYM(),
         "mask": B("Solvent mask", "Automatic: made from the map every iteration below 15 Å. Static: made once from "
                                   "the starting map. None: soft sphere only. Or a Create mask job number / .mrc "
@@ -516,6 +541,9 @@ TYPES["Class3D"] = dict(
             "reference": I("Consensus map", "Used for the consensus start and for signal subtraction. Empty: the "
                                             "poses job's map.")},
     fields={
+        "reference_class": B("Reference class", "When the reference (or poses) job has several classes or models: "
+                                                "which class map to start from (1-based; the page shows the classes to "
+                                                "click). 0: the class most of the particles are in."),
         "n_classes": B("Number of classes", "How many 3D classes."),
         "mask": B("Focus mask", "A Create mask job number or .mrc path: only the masked region is compared. Empty: "
                                 "the whole particle.", choices=[["", "None (whole particle)"]], free=True,
@@ -562,6 +590,9 @@ TYPES["LocalRefine"] = dict(
             "mask": I("Focus mask", "A Create mask job around the region to refine."),
             "reference": P_REFERENCE},
     fields={
+        "reference_class": B("Reference class", "When the reference (or poses) job has several classes or models: "
+                                                "which class map to start from (1-based; the page shows the classes to "
+                                                "click). 0: the class most of the particles are in."),
         "sym": SYM("Symmetry imposed on the focused region (C1 for symmetry-expanded copies)."),
         "max_angle_deg": B("Maximum rotation (°)", "Orientations are searched only within this angle of the input "
                                                    "pose."),

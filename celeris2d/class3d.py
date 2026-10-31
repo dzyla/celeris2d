@@ -544,6 +544,8 @@ class Class3DSettings:
     classes: tuple = ()             # poses from a HeteroRefine / Class3D: only the particles of these 1-based classes
     max_res_a: float = 0.0          # finest resolution loaded and of the final maps / FSC (0: Nyquist of the particles)
     diameter_a: float = 0.0         # particle diameter for the sphere mask (0: from the extraction)
+    reference_class: int = 0        # the reference job has classes (3D classification, multi-class ab initio, ...): use
+                                    # this class's map as the consensus (1-based); 0: the class most of the particles are in
     seed: int = 0                   # random seed (starting subsets, noise, half split if the poses have none)
     sharpen: bool = True            # sharpen the final half maps with the job's own mask and compute their local
                                     # resolution (as a Sharpen job with mask "refine"; no separate job needed)
@@ -582,13 +584,15 @@ def class3d_job(project, particles, poses, reference, s: Class3DSettings, label:
                            label or f"{tag}_on{p.id:03d}")
 
 
-def _consensus(rj, qj, poses, log):
+def _consensus(rj, qj, poses, log, cls: int = 0):
     """The consensus map of a job before masking (a class job: the class most of these particles are in, if it is
     the poses job, else its class 1)."""
     from .jobs import _reference_map
     from .project import has_classes
     k = 0
-    if has_classes(rj):
+    if has_classes(rj) and cls:
+        k = int(cls)
+    elif has_classes(rj):
         mine = rj.id == qj.id and "cls" in poses and len(poses["cls"])
         k = int(np.bincount(poses["cls"].astype(np.int64)).argmax()) + 1 if mine else 1
     vol, apix, path = _reference_map(rj, k)
@@ -638,7 +642,7 @@ def run_class3d(project, job, log=print) -> dict:
         log(f"[class3d] focus mask {s.mask}: {float((focus > 0.5).float().mean()) * 100:.1f}% of the box")
     cons = None
     if s.init == "consensus" or (focus is not None and s.subtract):
-        ref, ref_apix = _consensus(rj, map_job(project, qj), poses, log)
+        ref, ref_apix = _consensus(rj, map_job(project, qj), poses, log, s.reference_class)
         cons = map_to_box(ref, ref_apix, b, apix)
         cons = cons * _scale_to_data(clf, torch.as_tensor(img), A, t, cons, b, max(s.res_a, 10.0))
     rows, A_r, t_r, copy_ = (torch.as_tensor(img), A, t, torch.as_tensor(poses["copy"]).long()) if pre_expanded \
