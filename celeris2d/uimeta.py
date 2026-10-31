@@ -662,6 +662,10 @@ TYPES["CtfRefine"] = dict(
         "plane": F("Per-micrograph plane", "Use a plane fitted to the particles' defocus on each micrograph instead "
                                            "of every particle's own value (less noisy for few particles per "
                                            "micrograph).", section="Search"),
+        "shrink": F("Pull noisy offsets to the plane", "Measure how noisy each particle's offset is (from two halves "
+                                                       "of its Fourier pixels) and pull it toward its micrograph's "
+                                                       "plane by that much: offsets that are mostly noise go to the "
+                                                       "plane, well-measured ones stay.", section="Search"),
         "batch": F("Batch size", "Particles per GPU batch (reduced automatically if memory is short).",
                    section="Performance"),
         "gpus": GPUS(),

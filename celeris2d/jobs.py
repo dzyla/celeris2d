@@ -634,7 +634,9 @@ class Refine3DSettings:
     max_res_a: float = 0.0          # finest resolution loaded (0: Nyquist)
     n_local: int = 1                # local search rounds per iteration
     min_step_deg: float = 0.5       # finest angular step (deg); the step halves once < 30% of particles move
-    drop_frac: float = 0.1          # share of worst-fitting particles left out of each reconstruction
+    drop_frac: float = 0.0          # share of worst-fitting particles left out of each reconstruction. 0.1 bought nothing:
+                                    # INX-6 C8 3.61 A either way (unmasked 3.89 with 0.1, 3.84 with 0), beta-gal 2.87 A
+                                    # either way - and 10 % of the particles were silently missing from the map
     global_iters: int = 0           # first iterations that also search all orientations (for starts with pose errors;
                                     # without a poses job at least 2, the first also searching shifts)
     global_res_a: float = 12.0      # resolution of that search (not finer than the current one)

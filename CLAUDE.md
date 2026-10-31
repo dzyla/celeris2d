@@ -71,7 +71,7 @@ Layers, bottom to top:
    candidates keep their scores so thresholds change without re-picking), box size from CTF delocalisation,
    batched GPU extraction. `project.py` + `pipeline.py` (+ `jobs.py`: Class2D / Select / InitialModel / Refine3D / HeteroRefine and the job registry, `polish.py`: Polish,
    `sharpen.py`: Sharpen, `ctfrefine.py`: per-particle defocus (CtfRefine, a particle job that points at the
-   stacks it refined; `Project.particles` prefers per-particle defocus columns), `masking.py`: solvent masks
+   stacks it refined; offsets shrunk toward each micrograph's plane by their score peak's sharpness, `_shrink`; `Project.particles` prefers per-particle defocus columns), `masking.py`: solvent masks
    (`auto_mask` also runs inside `refine_particles` every iteration: Refine3D `mask="auto"`; `make_mask` with user
    regions / segments; `masks.py` is Sharpen's wrapper; MaskCreate job), `nufilter.py`: non-uniform regularisation
    (Refine3D `nu=True`: references filtered region by region, cutoffs by cross-validation - strict by default, from two

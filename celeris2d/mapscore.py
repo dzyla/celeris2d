@@ -91,6 +91,15 @@ class Scorer:
         self.bw = max(16, int(round(box * apix / wa / 2)) * 2)
         self.wa = box * apix / self.bw
         self.box_a = box * apix
+        # every template stays on the GPU: real images, their spectra and the transients of building them (~5 floats
+        # per pixel), and the correlation of one particle with all of them; refused here instead of running out of
+        # memory (8 A, 1200 directions, 5 deg: 86,400 templates)
+        n_t = n_dirs * len(torch.arange(0, 360, psi_step))
+        need = n_t * self.bw * self.bw * 4 * 6
+        if gpu.is_gpu(dev) and need > 0.8 * gpu_free(torch.device(dev)):
+            raise ValueError(f"MapScore: {n_t:,} templates ({n_dirs} directions x {360 / psi_step:.0f} in-plane angles) at "
+                             f"{self.bw} px need ~{need / 1e9:.1f} GB of GPU memory, {gpu_free(torch.device(dev)) / 1e9:.1f} GB "
+                             f"free: use fewer directions (n_dirs), a coarser psi_step or res_a")
         pr, pa = templates_from_map(vol, vol_apix, n_dirs, wa=self.wa)
         pr = _resample(torch.as_tensor(pr, device=dev), pa, self.wa)
         o = (pr.shape[-1] - self.bw) // 2

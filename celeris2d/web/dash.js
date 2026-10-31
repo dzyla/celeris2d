@@ -293,7 +293,10 @@ function numbers(j) {
   if (j.type === 'CtfRefine') {
     add(s.delta_median_a, 'Å', 'defocus change, median');
     add(s.per_particle_scatter_about_plane_a, 'Å', 'scatter about each micrograph\'s plane');
-    if (typeof s.cc_improved_share === 'number') add((100 * s.cc_improved_share).toFixed(1), '%', 'particles that fit better');
+    if (s.shrink && typeof s.shrink.tau_a === 'number') {
+      add(s.shrink.tau_a, 'Å', 'real spread about the planes (the rest is noise)');
+      if (typeof s.shrink.weight_median === 'number') add((100 * s.shrink.weight_median).toFixed(0), '%', 'of its own offset each particle keeps (median)');
+    } else if (typeof s.cc_improved_share === 'number') add((100 * s.cc_improved_share).toFixed(1), '%', 'particles that fit better');
   }
   const sec = s.seconds ?? s.seconds_total;
   add(sec ? (sec >= 120 ? Math.round(sec / 60) : Math.round(sec)) : undefined, sec >= 120 ? 'min' : 's', 'run time');

@@ -33,6 +33,9 @@ class CtfRefineSettings:
     res_lo_a: float = 20.0          # band used: from this resolution ...
     res_hi_a: float = 0.0           # ... to this one (0: the refinement's resolution, sphere-masked FSC 0.143)
     plane: bool = False             # use the per-micrograph plane fit of the offsets instead of the per-particle values
+    shrink: bool = True             # per-particle offsets pulled toward their micrograph's plane by how well each is
+                                    # measured (the sharpness of its score peak; empirical Bayes): raw per-particle
+                                    # offsets scattered 174 A about the planes on INX-6 and cost 0.04 A (3.61 -> 3.65)
     batch: int = 256                # particles per GPU batch (fewer if memory is short)
     gpus: str = "auto"              # GPUs to use: "auto" or a list like "0,2"
 
@@ -148,41 +151,60 @@ def run_ctf_refine(project: Project, job, log=print) -> dict:
     delta = torch.zeros(n, device=dev)
     cc0 = torch.zeros(n, device=dev)
     cc1 = torch.zeros(n, device=dev)
+    curv = torch.zeros(n, device=dev)            # sharpness of each score peak: -d2 score / d(offset)^2 (per A^2)
     at_edge = torch.zeros(n, dtype=torch.bool, device=dev)
     F = int(band.sum())
     free = ab._free(dev)
     nd = 8                                                                       # offsets evaluated at once
     bt = int(max(16, min(s.batch, free * 0.3 / (nd * F * 4 * 4))))
 
-    def scores(Q, R, X2, chi0, env, D):
-        """Normalised weighted correlation (nb, len(D)) for defocus offsets D (nb, nd) or (nd,)."""
+    def scores(Q, R, X2, chi0, env, D, wv=None):
+        """Normalised weighted correlation (nb, len(D)) for defocus offsets D (nb, nd) or (nd,); wv: pixel weights."""
+        wv = w if wv is None else wv
         out = []
         D = D if D.dim() == 2 else D[None].expand(len(Q), -1)
         for k in range(0, D.shape[1], nd):
             c = env[:, None] * torch.sin(chi0[:, None] + math.pi * lam * D[:, k:k + nd, None] * s2)   # (nb, nd, F)
-            num = (w * Q)[:, None].mul(c).sum(-1)
-            den = (w * R)[:, None].mul(c * c).sum(-1)
-            out.append(num / (den * (w * X2).sum(1, keepdim=True)).sqrt().clamp_min(1e-20))
+            num = (wv * Q)[:, None].mul(c).sum(-1)
+            den = (wv * R)[:, None].mul(c * c).sum(-1)
+            out.append(num / (den * (wv * X2).sum(1, keepdim=True)).sqrt().clamp_min(1e-20))
         return torch.cat(out, 1)
 
-    for i in range(0, n, bt):
-        j = min(i + bt, n)
-        Q, R, X2, chi0, env, _, _ = batch_terms(i, j)
-        sc = scores(Q, R, X2, chi0, env, coarse)
+    def search(Q, R, X2, chi0, env, wv=None):
+        """Best offset per particle (coarse grid, fine grid, parabola), whether it is at the search edge, and the
+        sharpness of the score peak."""
+        sc = scores(Q, R, X2, chi0, env, coarse, wv)
         best = coarse[sc.argmax(1)]
-        at_edge[i:j] = (best <= coarse[0] + 1e-3) | (best >= coarse[-1] - 1e-3)
+        edge = (best <= coarse[0] + 1e-3) | (best >= coarse[-1] - 1e-3)
         Df = best[:, None] + fine_off[None]
-        sf = scores(Q, R, X2, chi0, env, Df)
+        sf = scores(Q, R, X2, chi0, env, Df, wv)
         k = sf.argmax(1).clamp(1, len(fine_off) - 2)
-        ar = torch.arange(j - i, device=dev)
+        ar = torch.arange(len(Q), device=dev)
         y0, y1, y2 = sf[ar, k - 1], sf[ar, k], sf[ar, k + 1]
         den = y0 - 2 * y1 + y2
         frac = torch.where(den < 0, 0.5 * (y0 - y2) / den, torch.zeros_like(den)).clamp(-1, 1)
-        delta[i:j] = Df[ar, k] + frac * fine_step
+        return Df[ar, k] + frac * fine_step, edge, (-den).clamp_min(0) / fine_step ** 2
+
+    # two random halves of the band's pixels: the offsets they give apart measure each particle's noise (shrink)
+    split = s.shrink and not s.plane
+    if split:
+        g_ = torch.Generator().manual_seed(1)
+        ma = (torch.rand(int(band.sum()), generator=g_) < 0.5).float().to(dev)
+        wa, wb = w * ma, w * (1 - ma)
+        da, db = torch.zeros(n, device=dev), torch.zeros(n, device=dev)
+    for i in range(0, n, bt):
+        j = min(i + bt, n)
+        Q, R, X2, chi0, env, _, _ = batch_terms(i, j)
+        delta[i:j], at_edge[i:j], curv[i:j] = search(Q, R, X2, chi0, env)
+        if split:
+            da[i:j], ea, _ = search(Q, R, X2, chi0, env, wa)
+            db[i:j], eb, _ = search(Q, R, X2, chi0, env, wb)
+            at_edge[i:j] |= ea | eb
         cc0[i:j] = scores(Q, R, X2, chi0, env, torch.zeros(1, device=dev))[:, 0]
         cc1[i:j] = scores(Q, R, X2, chi0, env, delta[i:j, None])[:, 0]
     seconds = time.time() - t0
-    delta, cc0, cc1, at_edge = (v.cpu().numpy() for v in (delta, cc0, cc1, at_edge))
+    delta, cc0, cc1, at_edge, curv = (v.cpu().numpy() for v in (delta, cc0, cc1, at_edge, curv))
+    gap = (da - db).cpu().numpy() if split else None
 
     # per micrograph: robust plane of the offsets over the particle positions
     ctr = np.stack([src.parts["rlnCoordinateX"].to_numpy(float), src.parts["rlnCoordinateY"].to_numpy(float)], 1)
@@ -201,7 +223,13 @@ def run_ctf_refine(project: Project, job, log=print) -> dict:
                             scatter_a=float(1.4826 * np.median(np.abs(r - np.median(r))))))
         else:
             plane[mov == m] = np.median(delta[mov == m]) if (mov == m).any() else 0.0
-    use = plane if s.plane else delta
+    shrunk = None
+    if s.shrink and not s.plane:
+        shrunk, sh_info = _shrink(delta, plane, curv, at_edge, gap)
+        log(f"[ctf] offsets about the micrograph planes: real spread {sh_info['tau_a']:.0f} A, measurement noise "
+            f"{sh_info['noise_median_a']:.0f} A (median particle): each offset keeps {sh_info['weight_median'] * 100:.0f}% "
+            f"(median) of its distance from the plane")
+    use = plane if s.plane else (shrunk if shrunk is not None else delta)
     use = np.where(at_edge, plane, use)                                        # an offset at the search edge is not trusted
 
     # the particles table: every particle of the refined particle job, per-particle CTF (refined where it had a pose)
@@ -233,7 +261,8 @@ def run_ctf_refine(project: Project, job, log=print) -> dict:
 
     scat = np.array([p["scatter_a"] for p in per]) if per else np.zeros(1)
     summ = dict(particles=int(len(tu)), refined=int(len(use)), seconds=round(seconds, 1), band_a=[s.res_lo_a, round(res_hi, 2)],
-                mode="plane" if s.plane else "particle",
+                mode="plane" if s.plane else "particle, shrunk to the plane" if shrunk is not None else "particle",
+                **({"shrink": sh_info} if shrunk is not None else {}),
                 delta_median_a=round(float(np.median(use)), 1), delta_abs_median_a=round(float(np.median(np.abs(use))), 1),
                 delta_p05_p95_a=[round(float(np.percentile(use, 5)), 1), round(float(np.percentile(use, 95)), 1)],
                 at_search_edge=round(float(at_edge.mean()), 4),
@@ -249,6 +278,45 @@ def run_ctf_refine(project: Project, job, log=print) -> dict:
         f"{summ['delta_abs_median_a']:.0f} A, scatter about the micrograph planes {summ['per_particle_scatter_about_plane_a']:.0f} A, "
         f"{summ['cc_improved_share'] * 100:.0f}% fit better ({seconds:.0f} s)")
     return summ
+
+
+def _shrink(delta, plane, curv, at_edge, gap=None, n_bins: int = 10):
+    """Empirical Bayes: residual r = offset - plane = real variation (variance tau^2) + measurement noise. The noise
+    variance of a particle is c / curvature (its score peak's sharpness), c calibrated by `gap`, the difference of
+    the offsets from two random halves of the band's pixels (each half has twice the noise variance of the whole, so
+    var(gap) = 4 x the noise variance); tau^2 = what the residuals' robust variance holds beyond that noise, in bins of
+    the curvature. Each offset is then plane + tau^2 / (tau^2 + noise) r: the plane when the variation is noise, the
+    particle's own value when it is measured sharply. (The curvature alone, uncalibrated, put beta-gal's noise above
+    its whole scatter - 42 vs 29 A - and every offset on the plane: 3.01 A vs 2.87 A with the particles' own.)"""
+    ok = ~at_edge & (curv > 0)
+    r = delta - plane
+    x = 1.0 / np.maximum(curv, 1e-12)
+    mad2 = lambda v: (1.4826 * np.median(np.abs(v - np.median(v)))) ** 2
+    xs, vr, vn = [], [], []
+    if ok.sum() >= 50 * n_bins:
+        edges = np.quantile(x[ok], np.linspace(0, 1, n_bins + 1))
+        for a, b in zip(edges[:-1], edges[1:]):
+            sel = ok & (x >= a) & (x <= b)
+            if sel.sum() >= 20:
+                xs.append(float(np.median(x[sel])))
+                vr.append(mad2(r[sel]))
+                vn.append(mad2(gap[sel]) / 4 if gap is not None else np.nan)
+    if len(xs) < 3:                                     # too few particles to tell: the plane
+        noise, tau2 = np.full(len(r), np.inf), 0.0
+    else:
+        xs, vr, vn = np.array(xs), np.array(vr), np.array(vn)
+        if gap is not None:                             # noise = c x, c from the split halves (least squares, origin)
+            c = float(np.dot(xs, vn) / np.dot(xs, xs))
+        else:                                           # uncalibrated: the residual variance's slope in x
+            c = max(0.0, float(np.polyfit(xs, vr, 1)[0]))
+        tau2 = float(max(0.0, np.median(vr - c * xs)))
+        noise = c * x
+    wgt = np.where(ok, tau2 / np.maximum(tau2 + noise, 1e-12), 0.0)
+    out = plane + wgt * r
+    return out, dict(tau_a=round(float(np.sqrt(tau2)), 1),
+                     noise_median_a=round(float(np.sqrt(np.median(noise[ok]))) if ok.any() and np.isfinite(noise).all() else 0.0, 1),
+                     weight_median=round(float(np.median(wgt[ok])) if ok.any() else 0.0, 3),
+                     calibrated=gap is not None)
 
 
 def _figure(path, use, delta, plane, mov, per, gain, title_):
