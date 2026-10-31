@@ -2,7 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Celeris2D: GPU maximum-likelihood 2D classification of cryo-EM particles in PyTorch (RELION `.star`,
+Celeris (named Celeris2D until 2026-10; the package, commands and repository are still `celeris2d`, with `celeris*`
+command aliases): a GPU cryo-EM project (movies to maps, dashboard) around maximum-likelihood 2D classification of cryo-EM particles in PyTorch (RELION `.star`,
 cryoSPARC `.cs/.csg`, or `.mrc/.mrcs` in; RELION/cryoSPARC-compatible particles and class averages out).
 README.md documents user-facing options, outputs and measured results.
 
@@ -125,7 +126,7 @@ Layers, bottom to top:
   default); a refinement / Class3D starts from any class map of a multi-class reference job (`reference_class`; the form shows
   the class maps to click; HeteroRefine references "job:class"); ManualPick (`manualpick.py`, `web/picker.js`): hand picks ->
   templates -> suggestions to check -> every micrograph, output read by Extract like a Pick job's; a Pick job re-thresholded on
-  its stored candidates is `pipeline.rethreshold` (the Pick page's Apply to all); the MotionCtf page's limits make a Curate job). `gallery.py` gives
+  its stored candidates is `pipeline.rethreshold` (the Pick page's Apply to all); the MotionCtf page's limits make a Curate job; a Pick job made without a diameter waits (status waiting) until the user measures one on its page, and its Extract job's box is fixed then (`pipeline.extract_box` / `ensure_box`, particle size 0 = 1.3 x the pick diameter); `scheduler.change_settings` (/api/project/settings) changes a queued / waiting job's settings in place, not the ones naming other jobs; a Select job of 2D classes draws kept.png and rejected.png apart). `gallery.py` gives
   class galleries and 8-bit volumes for the browser's WebGL2 raymarcher (`web/volume.js`; cropped to the particle first, so most maps are shown at full pixel size; default level = the map in one piece, dust hidden, rough maps smoothed by one voxel; local-resolution colour range from the values on the surface). Every `themed` figure also
   writes `x.plot.json` (`figjson.py`; `Job.out` keeps it next to x.png) that `web/plots.js` draws with Plotly in the
   same layout; panels it cannot describe (projections, meshes, colour bars) are embedded as pictures. `report.py`:

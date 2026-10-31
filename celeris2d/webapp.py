@@ -1,4 +1,4 @@
-"""Celeris2D web dashboard: a processing project (web/project.html at /project) - movies to maps, a job queue,
+"""Celeris web dashboard: a processing project (web/project.html at /project) - movies to maps, a job queue,
 selections that wait for the user, live progress, interactive figures, 3D maps, the publication report.
 
     celeris2d-web --port 8765 --project DIR   # then open http://<host>:8765  (or tunnel: ssh -L 8765:localhost:8765 host)
@@ -82,7 +82,7 @@ SETTINGS = {
                        "resolution / 2.5; balanced: step × 1, translation = resolution / 3; accurate: step × 1, "
                        "translation = resolution / 4 (finest, slowest)."),
     "project_dir": dict(group="load_adv", label="Project directory", unit="", type="text", default="",
-                        help="Leave empty normally: Celeris2D walks up from the particle file's folder until the image "
+                        help="Leave empty normally: Celeris walks up from the particle file's folder until the image "
                              "paths in the metadata resolve (cryoSPARC: the folder holding the Jxx jobs; RELION: the "
                              "project root). Set it only if loading reports that it cannot locate the images."),
     "init_res_a": dict(group="load_adv", label="Starting resolution", unit="Å", type="number",
@@ -788,7 +788,7 @@ def create(workdir, project_dir=None):
     from .optimize import optimize
     from .session import Session
 
-    app = FastAPI(title="Celeris2D")
+    app = FastAPI(title="Celeris")
     st = App(workdir)
 
     def sess():
@@ -875,14 +875,14 @@ def create(workdir, project_dir=None):
         with open(path) as fh:
             return Response(fh.read(), media_type="text/javascript", headers={"Cache-Control": "no-cache"})
 
-    # ------------------------------------------------------------------ a Celeris2D project (jobs/, data/, project.db)
+    # ------------------------------------------------------------------ a Celeris project (jobs/, data/, project.db)
     proj_state = dict(root=os.path.abspath(project_dir) if project_dir else None, runs={})
 
     def _prj(root=None):
         from .project import Project
         r = root or proj_state["root"]
         if not r or not os.path.isfile(os.path.join(r, "project.db")):
-            raise HTTPException(404, "no Celeris2D project open (start with --project DIR, or open one)")
+            raise HTTPException(404, "no Celeris project open (start with --project DIR, or open one)")
         proj_state["root"] = os.path.abspath(r)
         return Project(proj_state["root"])
 
@@ -1184,6 +1184,18 @@ def create(workdir, project_dir=None):
         if "auto_select" in body:
             proj_state["auto_select"] = bool(body["auto_select"])
         return dict(auto_select=proj_state["auto_select"])
+
+    @app.post("/api/project/settings")
+    def project_settings(body: dict = Body(...)):
+        """{job, settings}: new settings for a queued or waiting job (a Pick job's particle size once the micrographs
+        are there: a waiting Pick job is then queued)."""
+        from .scheduler import change_settings
+        try:
+            j = change_settings(_prj(), body["job"], body.get("settings") or {})
+        except (ValueError, TypeError, KeyError) as e:
+            raise HTTPException(400, str(e))
+        _kick()
+        return dict(job=j.name, status=j.status)
 
     @app.post("/api/project/cancel")
     def project_cancel(body: dict = Body(...)):
@@ -1719,18 +1731,18 @@ def create(workdir, project_dir=None):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Celeris2D web dashboard")
+    ap = argparse.ArgumentParser(description="Celeris web dashboard")
     ap.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to serve on the network")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--workdir", default=os.path.abspath("celeris2d_web"))
-    ap.add_argument("--project", default="", help="a Celeris2D project directory: its jobs at /project "
+    ap.add_argument("--project", default="", help="a Celeris project directory: its jobs at /project "
                     "(default: the current directory, if it is a project)")
     a = ap.parse_args(argv)
     os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     os.makedirs(a.workdir, exist_ok=True)
     project = a.project or (os.getcwd() if os.path.isfile("project.db") else None)
     import uvicorn
-    print(f"Celeris2D dashboard on http://{a.host}:{a.port}  (workdir {a.workdir})")
+    print(f"Celeris dashboard on http://{a.host}:{a.port}  (workdir {a.workdir})")
     if project:
         print(f"project {os.path.abspath(project)}: http://{a.host}:{a.port}/project")
     uvicorn.run(create(a.workdir, project), host=a.host, port=a.port, log_level="warning")

@@ -1,7 +1,7 @@
-# beta-galactosidase from raw movies: Celeris2D vs RELION 5 tutorial (2026-10-29)
+# beta-galactosidase from raw movies: Celeris vs RELION 5 tutorial (2026-10-29)
 
 Data: RELION 5 tutorial movies (24 K2 TIFF movies, 24 frames, 0.885 A/px, 200 kV, 1.277 e/A^2/frame, gain.mrc).
-Celeris2D: commit 8a3ead3 + the changes listed under "Code changes", one RTX 5080 (16 GB), data on a local disk (WSL).
+Celeris: commit 8a3ead3 + the changes listed under "Code changes", one RTX 5080 (16 GB), data on a local disk (WSL).
 RELION: the tutorial project's own jobs (4 GPUs, 12 threads; times from job file timestamps).
 Project: a local project directory (jobs/ = every job with its figures; analysis/ = this comparison).
 a second project = the same first steps without `flip_y` (kept as the record of the y-mirror, below).
@@ -9,7 +9,7 @@ Driver scripts and logs are kept with the project (not in the repository).
 
 ## Resolution (FSC 0.143, first shell below; same rule for both programs)
 
-| stage | Celeris2D | RELION |
+| stage | Celeris | RELION |
 |---|---|---|
 | first refinement, corrected masked / unmasked | 3.25 / 3.93 A (job 014; 3,885 of 4,317 particles) | 3.12 / 3.93 A (job021; 4,452) |
 | after polishing + per-particle CTF | 3.09 / 3.79 A (job 032) | 2.90 / 3.75 A (job030; CtfRefine + Polish) |
@@ -18,12 +18,12 @@ Driver scripts and logs are kept with the project (not in the repository).
 | map vs map, both masked with RELION's mask | FSC 0.5 at 3.9 A, 0.143 at 3.0 A (final vs job029) | - |
 | poses, particles in both sets | 96 % within 2 deg, median 0.82 deg (3,107 particles) | - |
 
-Unmasked curves coincide (analysis/fsc_*.png). The masked gap is the mask: Celeris2D's automatic solvent mask
+Unmasked curves coincide (analysis/fsc_*.png). The masked gap is the mask: Celeris's automatic solvent mask
 encloses 1.55 M A^3, RELION's MaskCreate/job020 1.28 M A^3 (21 % more solvent noise in the masked FSC).
 
 ## Time (wall clock)
 
-| step | Celeris2D (1 GPU) | RELION (4 GPUs) |
+| step | Celeris (1 GPU) | RELION (4 GPUs) |
 |---|---|---|
 | motion + CTF + picking + extraction, 24 movies | 126 s (all control figures) | MotionCorr 371 s + CtfFind 5 s + Topaz 247 s + Extract 5 s |
 | 2D classification | 57 s (K 50, 8,731 particles) | 323 s (K 100) |
@@ -46,13 +46,13 @@ encloses 1.55 M A^3, RELION's MaskCreate/job020 1.28 M A^3 (21 % more solvent no
 
 ## Scientific-integrity findings
 
-1. **TIFF y-orientation (fixed by an option).** Celeris2D reads TIFF frames in file row order; RELION's micrographs
-   of the same movies are their y-mirror (cc 0.32 vs -0.01; gain applied "as is" by RELION, "flip y" by Celeris2D).
+1. **TIFF y-orientation (fixed by an option).** Celeris reads TIFF frames in file row order; RELION's micrographs
+   of the same movies are their y-mirror (cc 0.32 vs -0.01; gain applied "as is" by RELION, "flip y" by Celeris).
    Without `MotionSettings.flip_y=True`: coordinates are mirrored relative to RELION's (pick recall 12 % as is,
    64 % flipped), astigmatism angles are mirrored (30 deg median difference -> 2 deg with flip_y), and a reference of
    known hand would not fit. De novo maps take an arbitrary hand either way. Default left unchanged (False) pending a
    decision: cryoSPARC agreement on EMPIAR-10025 suggests cryoSPARC reads TIFF as stored.
-2. **Frame of reference of motion correction.** Celeris2D's shifts are relative to the frame average, RELION's to
+2. **Frame of reference of motion correction.** Celeris's shifts are relative to the frame average, RELION's to
    frame 1; particle coordinates differ by the mean drift (6.6 A median here). Not an error; matters for exporting
    to RELION polishing and for comparing coordinates.
 3. **Corrected masked FSC (fixed).** Phases were randomised from the continuous radius >= k_r (half of shell k_r

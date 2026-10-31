@@ -2,7 +2,7 @@
 
 usage:
   abinitio_truth.py ref <particles.cs|.csg> <outdir> --diameter D --max-res R [--sym C3] [--poses refine.cs]
-      reconstructs the reference map at the refined poses with Celeris2D's own back-projector (pose convention and
+      reconstructs the reference map at the refined poses with Celeris's own back-projector (pose convention and
       shift sign chosen by half-map FSC on a subset) -> <outdir>/ref.mrc, ref.json
   abinitio_truth.py score <abinitio outdir | other job's .cs> <particles.cs|.csg> [--sym C3] [--ref <outdir>/ref.mrc]
       [--poses refine.cs] [--map other job's map.mrc]

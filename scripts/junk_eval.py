@@ -1,4 +1,4 @@
-"""Good/junk separation of a Celeris2D cryoSPARC result against a curated selection (e.g. a cryoSPARC Select 2D job).
+"""Good/junk separation of a Celeris cryoSPARC result against a curated selection (e.g. a cryoSPARC Select 2D job).
 
 usage: junk_eval.py <celeris particles.cs> <good particles_selected.cs> [name]
 

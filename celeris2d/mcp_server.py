@@ -54,7 +54,7 @@ def _js(d) -> str:
 def load_particles(path: str, diameter_a: float = 0.0, max_res_a: float = 6.0, gpus: str = "auto", subset: int = 0,
                    workdir: str = "", speed: str = "balanced", contrast: str = "auto") -> str:
     """Open particles (RELION .star, cryoSPARC .cs/.csg, or .mrc/.mrcs stack) and start streaming them to the GPU.
-    path may be a Celeris2D Extract job folder (<project>/Extract/jobNNN).
+    path may be a Celeris Extract job folder (<project>/Extract/jobNNN).
     diameter_a: particle mask diameter in A (0: 200, or 1.25 x the particle size of an Extract job). max_res_a: finest resolution used. gpus: 'auto' or nvidia-smi
     indices like '0,2,3'. subset: random subset size for quick tests (0 = all). speed: fast|balanced|accurate.
     contrast: auto|invert|keep (protein must be white; auto decides from the particle average)."""
@@ -503,7 +503,7 @@ def job_report(job: str, movies: list[str] | None = None, max_figures: int = 3) 
         rep["micrographs"] = prj.micrograph_stats(j)
     out = [None]
     if j.type not in ("MotionCtf", "Pick"):                # the job's own figures
-        figs = [j.find(f) for f in ("gallery.png", "selection.png", "map_views.png", "fsc.png", "views.png",
+        figs = [j.find(f) for f in ("gallery.png", "kept.png", "rejected.png", "map_views.png", "fsc.png", "views.png",
                                     "postprocess.png", "polish.png", "reprojections.png") if j.find(f)][:max_figures]
         for f in figs:
             with open(f, "rb") as fh:
@@ -542,7 +542,7 @@ def save_selection(name: str, which: str = "good", min_p: float = 0.5, label: st
     from .project import Project
     s = _s()
     if "celUid" not in s.src.parts:
-        raise ValueError("the loaded particles are not a Celeris2D extract job")
+        raise ValueError("the loaded particles are not a Celeris extract job")
     idx = s.sets(name, min_p)[which]
     job_dir = os.path.abspath(s.path).rstrip("/")
     prj = Project(os.path.dirname(os.path.dirname(job_dir)))

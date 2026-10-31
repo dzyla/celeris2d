@@ -148,7 +148,7 @@ async function showHome() {
       <div class="card pad"><div class="hh"><span class="dot ${run.length ? 'running pulse' : 'finished'}"></span><b>${run.length ? 'Running now' : 'Nothing running'}</b>
         ${run.length ? `<span class="muted">${run.map(j => esc(((types[j.type] || {}).name || j.type) + ' ' + j.name.slice(0, 3))).join(' → ')}</span><a href="#${run[0].name.slice(0, 3)}" style="margin-left:auto">Open</a>` : `<span class="muted">${queue.queued.length ? queue.queued.length + ' queued, waiting for inputs' : 'the queue is empty'}</span>`}</div>
         <div id="homerun" class="homerun"></div></div>
-      ${wait.length ? `<div class="card pad youcard"><b class="you">Waiting for you</b>${wait.map(j => `<div class="wj"><span>${esc(j.type === 'ManualPick' ? 'Pick particles by hand' : 'Choose the classes to keep')}: ${esc(((types[j.type] || {}).name || j.type))} ${j.name.slice(0, 3)}</span><button class="you" data-n="${esc(j.name)}">Open</button></div>`).join('')}</div>` : ''}
+      ${wait.length ? `<div class="card pad youcard"><b class="you">Waiting for you</b>${wait.map(j => `<div class="wj"><span>${esc(askText(j))}: ${esc(((types[j.type] || {}).name || j.type))} ${j.name.slice(0, 3)}</span><button class="you" data-n="${esc(j.name)}">Open</button></div>`).join('')}</div>` : ''}
     </section>
     <section><h2 class="h2">Suggested next${last ? ` after ${esc((types[last.type] || {}).name || last.type)} ${last.name.slice(0, 3)}` : ''}</h2>
       <div class="jts">${next.map(t => `<button class="jt" data-t="${esc(t.type)}">${icon(t.type)}<span class="jtn">${esc(t.name || t.type)}</span><span class="jtb">${esc(t.blurb || '')}</span></button>`).join('')}</div></section>
@@ -178,4 +178,109 @@ async function homeRun(run) {
     }
   } catch (e) { html = ''; }
   if ($('#homerun')) $('#homerun').innerHTML = html;
+}
+
+// a Pick job that has not started: measure the particle on a micrograph of its Motion correction job (drag across a
+// particle; the circle of the size set follows the pointer), then Start picking (a waiting job is queued)
+async function stageSize(st, j) {
+  st.className = 'stage';
+  const mcId = +j.params.micrographs, mc = jobs.find(x => x.id === mcId);
+  if (!mc) { st.innerHTML = ''; return; }
+  const waiting = j.status === 'waiting', d0 = +j.params.diameter_a > 0 ? +j.params.diameter_a : null;
+  st.innerHTML = `<div class="card pad sizer">
+    <h3>${waiting ? 'How big is the particle?' : 'Particle size'}</h3>
+    <p class="muted">Drag across a particle to measure it. The circle that follows the pointer is the size the picker looks for: it should just hold the particle's short side.</p>
+    <div class="szrow">
+      <figure class="szmic"><canvas id="szc" aria-label="micrograph: drag across a particle to measure it"></canvas><figcaption id="szcap">reading the micrographs…</figcaption></figure>
+      <div class="szside">
+        <div class="mpnav"><button id="szp" aria-label="previous micrograph">‹</button><input type="range" id="szr" min="1" max="1" value="1" aria-label="micrograph"><button id="szx" aria-label="next micrograph">›</button></div>
+        <div class="lp"><label for="szlp">Low-pass filter</label><input type="range" id="szlp" min="0" max="60" step="1" value="20"><span id="szlpv">20 Å</span></div>
+        <label class="szl" for="szd">Particle diameter (Å)</label>
+        <input type="number" id="szd" min="10" step="1" value="${d0 || ''}" placeholder="drag across a particle">
+        <div class="help">The particle's short dimension. Extraction uses 1.3 × this as the particle size unless you set its own.</div>
+        <p><button class="${waiting ? 'go' : ''}" id="szgo" disabled>${waiting ? 'Start picking' : 'Save the size'}</button> <span class="err" id="szerr"></span></p>
+        <div class="muted" id="szhint">${waiting ? 'Picking starts when the micrographs are done.' : ''}</div>
+      </div>
+    </div></div>`;
+  let rows = [], i = 0, img = null, px = 1, lp = 20, diam = d0, drag = null, hover = null, stem = '';
+  try { lp = +(localStorage.getItem('celeris-lowpass') ?? 20); } catch (e) {}
+  const c = $('#szc'), g = c.getContext('2d', {willReadFrequently: true}), din = $('#szd'), go = $('#szgo');
+  const lpText = () => { $('#szlp').value = lp; $('#szlpv').textContent = lp ? lp + ' Å' : 'off'; };
+  let base = null;                                   // the filtered, stretched micrograph; circles are drawn over it
+  const render = () => {
+    if (!img) return;
+    const W = img.naturalWidth, H = img.naturalHeight;
+    if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
+    const sigma = lp ? 0.1874 * lp / px : 0;
+    g.filter = 'none'; g.fillStyle = '#808080'; g.fillRect(0, 0, W, H);
+    g.filter = sigma > 0.3 ? `blur(${sigma.toFixed(2)}px)` : 'none'; g.drawImage(img, 0, 0); g.filter = 'none';
+    const im = g.getImageData(0, 0, W, H), a = im.data, h = new Uint32Array(256), m = Math.max(2, Math.round(Math.min(W, H) * 0.03));
+    for (let y = m; y < H - m; y += 2) for (let x = m; x < W - m; x += 2) h[a[(y * W + x) * 4]]++;
+    let tot = h.reduce((x, y) => x + y, 0), lo = 0, hi = 255, acc = 0;
+    for (let k = 0; k < 256; k++) { acc += h[k]; if (acc < tot * 0.005) lo = k; if (acc < tot * 0.995) hi = k + 1; }
+    const span = Math.max(hi - lo, 1);
+    for (let k = 0; k < a.length; k += 4) { const v = (a[k] - lo) * 255 / span; a[k] = a[k + 1] = a[k + 2] = v; }
+    base = im; draw();
+  };
+  const draw = () => {
+    if (!base) return;
+    g.putImageData(base, 0, 0);
+    g.lineWidth = Math.max(1.5, c.width / 500);
+    if (drag && drag.b) {                            // the measurement: the line and the circle it makes
+      const [x0, y0] = drag.a, [x1, y1] = drag.b, r = Math.hypot(x1 - x0, y1 - y0) / 2;
+      g.strokeStyle = css('--you'); g.setLineDash([]); g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke();
+      g.beginPath(); g.arc((x0 + x1) / 2, (y0 + y1) / 2, r, 0, 2 * Math.PI); g.stroke();
+      const fs = Math.max(14, c.width / 50);
+      g.font = `600 ${fs}px ${css('--font') || 'sans-serif'}`; g.lineWidth = fs / 4; g.strokeStyle = 'rgba(0,0,0,.75)'; g.fillStyle = css('--you');
+      const t = Math.round(2 * r * px) + ' Å', tx = (x0 + x1) / 2 + r + fs / 2, ty = (y0 + y1) / 2 + fs / 3;
+      g.strokeText(t, tx, ty); g.fillText(t, tx, ty);
+    } else if (hover && diam) {
+      g.strokeStyle = css('--data'); g.setLineDash([6, 4]); g.beginPath(); g.arc(hover[0], hover[1], diam / 2 / px, 0, 2 * Math.PI); g.stroke(); g.setLineDash([]);
+    }
+  };
+  const at = e => { const b = c.getBoundingClientRect(); return [(e.clientX - b.left) * c.width / b.width, (e.clientY - b.top) * c.height / b.height]; };
+  const setDiam = v => { diam = v > 0 ? Math.round(v) : null; din.value = diam || ''; go.disabled = !diam || diam === d0 && !waiting; };
+  c.addEventListener('pointerdown', e => { drag = {a: at(e), b: null}; c.setPointerCapture(e.pointerId); });
+  c.addEventListener('pointermove', e => { if (drag) drag.b = at(e); else hover = at(e); draw(); });
+  c.addEventListener('pointerup', e => {
+    if (drag && drag.b) { const [x0, y0] = drag.a, [x1, y1] = drag.b, d = Math.hypot(x1 - x0, y1 - y0) * px; if (d > 4 * px) setDiam(d); }
+    hover = drag && drag.b ? [(drag.a[0] + drag.b[0]) / 2, (drag.a[1] + drag.b[1]) / 2] : at(e); drag = null; draw();
+  });
+  c.addEventListener('pointerleave', () => { if (!drag) { hover = null; draw(); } });
+  din.addEventListener('input', () => { diam = +din.value > 0 ? +din.value : null; go.disabled = !diam; draw(); });
+  $('#szlp').oninput = e => { lp = +e.target.value; lpText(); try { localStorage.setItem('celeris-lowpass', lp); } catch (er) {} render(); };
+  lpText();
+  const show = async k => {
+    if (!rows.length) return;
+    i = Math.max(1, Math.min(rows.length, k)); $('#szr').max = rows.length; $('#szr').value = i;
+    const r = rows[i - 1]; stem = r.stem;
+    $('#szcap').textContent = `${i} of ${rows.length} · ${r.stem}`;
+    const q = `job=${encodeURIComponent(mc.name)}&stem=${encodeURIComponent(r.stem)}`;
+    const im = new Image();
+    const det = api('/api/project/micdetail?' + q).catch(() => null);
+    im.onload = async () => {
+      const d = await det;
+      if (stem !== r.stem) return;
+      px = (d && d.apix ? d.apix : 1) * (d && d.shape ? d.shape[1] / im.naturalWidth : 1);
+      img = im; render();
+    };
+    im.src = '/api/project/micraw.png?' + q;
+  };
+  $('#szp').onclick = () => show(i - 1); $('#szx').onclick = () => show(i + 1); $('#szr').oninput = e => show(+e.target.value);
+  const poll = async () => {                          // micrographs appear as Motion correction makes them
+    if (current !== j.name || !document.body.contains(c)) return;
+    let d = null;
+    try { d = await api('/api/project/mics?job=' + encodeURIComponent(mc.name)); } catch (e) {}
+    const n = d && d.rows ? d.rows.length : 0;
+    if (n > rows.length) { const first = !rows.length; rows = d.rows; $('#szr').max = n; if (first) show(1); }
+    if (!n) $('#szcap').textContent = mc.status === 'finished' ? 'Motion correction made no micrographs.' : 'Micrographs appear here as Motion correction makes them.';
+    if (d && d.status === 'running') setTimeout(poll, 8000);
+  };
+  poll();
+  go.onclick = async () => {
+    go.disabled = true; $('#szerr').textContent = '';
+    try { const d = await api('/api/project/settings', {job: j.name, settings: {diameter_a: diam}}); current = d.job; await load(); showJob(d.job, false); }
+    catch (e) { $('#szerr').textContent = e.message; go.disabled = false; }
+  };
+  setDiam(d0); if (waiting) go.disabled = !diam;
 }

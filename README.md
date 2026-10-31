@@ -1,6 +1,8 @@
-# Celeris2D — fast GPU 2D classification of cryo-EM particles
+# Celeris — fast GPU cryo-EM processing, from movies to 2D classes and 3D maps
 
-Maximum-likelihood 2D classification in PyTorch, built for speed on 0.2–3M+ particles: RELION
+Celeris (Python package and commands: `celeris2d`, or the aliases `celeris`, `celeris-web`, `celeris-mcp`) runs a
+cryo-EM project on the GPU in a browser dashboard: movies, motion correction and CTF, picking, extraction, 2D
+classification, ab initio and refined 3D maps. At its core is maximum-likelihood 2D classification in PyTorch, built for speed on 0.2–3M+ particles: RELION
 `.star`, cryoSPARC `.cs/.csg`, or plain `.mrc/.mrcs` in; RELION/cryoSPARC-compatible particles and class
 averages out. Multi-GPU, streams particles while it classifies, and keeps a person or an agent in the
 loop for good/bad decisions (CLI, Python session, or MCP server).
@@ -181,31 +183,31 @@ same micrographs (41.5 % of picks are real): single round F1 0.56–0.62; deep2D
 70 %, recall up to 72 %); 4-seed mean P(good) best F1 0.69 (AP 0.665) in ~⅓ of deep2D's time.
 
 **cryoSPARC template picks (3.17M, 64 px @ 5.28 Å, K=50, 3× RTX PRO 4000)**: cryoSPARC 31 min.
-Celeris2D 3 min 49 s on three RTX PRO 4000s (8×), 87 % of particles in classes matching a cryoSPARC view
+Celeris 3 min 49 s on three RTX PRO 4000s (8×), 87 % of particles in classes matching a cryoSPARC view
 (band-limited correlation ≥ 0.6). ~25 % of J43 picks carry no consistent structure (cryoSPARC spreads them
-evenly over all its classes); Celeris2D collects them in their own classes — check per-class confidence.
+evenly over all its classes); Celeris collects them in their own classes — check per-class confidence.
 
 **Trimeric glycoprotein (cryoSPARC, 198,536 particles, 128 px @ 3.2 Å, K=50, 4× RTX A4500)**:
 1 min 43 s – 2 min 15 s; clean trimer top/side views with flat solvent.
 
-**RELION VDAM Class2D jobs (same particles, K and mask; Celeris2D on 4× RTX A4500;
+**RELION VDAM Class2D jobs (same particles, K and mask; Celeris on 4× RTX A4500;
 RELION wall time = start note → last model file, so approximate)**
 
-| dataset | particles | K | RELION | Celeris2D | notes |
+| dataset | particles | K | RELION | Celeris | notes |
 |---|---|---|---|---|---|
-| small protein A | 312,500 | 75 | 122.5 min | 2 min 51 s (43×) | small particle; both show noise-attractor classes (RELION honeycomb, Celeris2D starburst) |
-| small protein B | 473,584 | 50 | 81.9 min | 2 min 54 s (28×) | small particle, mask 450 Å > box; Celeris2D shows particle + neighbours, junk split off |
-| elongated glycoprotein ectodomain | 284,771 | 25 | 33.2 min | 1 min 13 s (27×) | RELION: 43 % in carbon-edge classes; Celeris2D: many distinct stalk/head views |
+| small protein A | 312,500 | 75 | 122.5 min | 2 min 51 s (43×) | small particle; both show noise-attractor classes (RELION honeycomb, Celeris starburst) |
+| small protein B | 473,584 | 50 | 81.9 min | 2 min 54 s (28×) | small particle, mask 450 Å > box; Celeris shows particle + neighbours, junk split off |
+| elongated glycoprotein ectodomain | 284,771 | 25 | 33.2 min | 1 min 13 s (27×) | RELION: 43 % in carbon-edge classes; Celeris: many distinct stalk/head views |
 | glycoprotein complex | 404,314 | 50 | stopped at it 120 | 1 min 36 s | RELION job incomplete |
 
-**cryoSPARC Class2D jobs on in-house data (K=50, Celeris2D defaults: circular mask only, adaptive full passes;
+**cryoSPARC Class2D jobs on in-house data (K=50, Celeris defaults: circular mask only, adaptive full passes;
 4× RTX A4500; cryoSPARC times from its job record, same machine class)**
 
-| dataset | particles | cryoSPARC | Celeris2D | notes |
+| dataset | particles | cryoSPARC | Celeris | notes |
 |---|---|---|---|---|
 | negative stain, 64 px @ 6.4 Å | 314,050 | 5.0 min | 39 s | singles / pairs / triples separated as in cryoSPARC |
 | cryo, 64 px @ 5.28 Å | 546,979 | 36 min (50 online + 5 full it) | 2 min 12 s | ice/carbon edges split off; compact particle views |
-| cryo, 64 px @ 6.39 Å | 1,234,805 | 73 min (50 online + 10 full it) | 6 min 26 s | ~1/3 of picks are structureless: Celeris2D gathers them in 3 honeycomb-textured classes, cryoSPARC spreads them over ~30 faint classes |
+| cryo, 64 px @ 6.39 Å | 1,234,805 | 73 min (50 online + 10 full it) | 6 min 26 s | ~1/3 of picks are structureless: Celeris gathers them in 3 honeycomb-textured classes, cryoSPARC spreads them over ~30 faint classes |
 | cryo, 320 px @ 1.32 Å (pre-cleaned) | 72,275 | — | 3 min 39 s | clean trimer views, 7.5 Å |
 
 Lessons from these runs: shape-adaptive solvent flattening (formerly the default) grew honeycomb classes on

@@ -1,7 +1,7 @@
 """Movie preprocessing on the GPU: gain reference, whole-frame motion correction, dose weighting, CTF estimation.
 
 First pass ("easy pass"): one rigid shift per frame (no local / patch motion), per-micrograph CTF (defocus U/V,
-astigmatism angle). Conventions follow the rest of Celeris2D: rfft2 spectra, RELION CTF convention (engine.ctf_2d:
+astigmatism angle). Conventions follow the rest of Celeris: rfft2 spectra, RELION CTF convention (engine.ctf_2d:
 defocus U along the astigmatism angle, measured from the x axis), Angstrom everywhere.
 
     mov = read_movie(path)                                        # (frames, ny, nx) uint8/uint16/float32

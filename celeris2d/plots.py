@@ -18,7 +18,7 @@ def _font(size, bold=False):
 
 
 @themed
-def gallery(path, imgs, pops, apix, conf=None, title="Celeris2D", ncol=None, tile=200, gap=8, marks=None):
+def gallery(path, imgs, pops, apix, conf=None, title="Celeris", ncol=None, tile=200, gap=8, marks=None):
     """Class mosaic (Pillow, fixed layout): rounded tiles sorted by size, class badge, count/share on a
     gradient strip, confidence bar along the bottom edge."""
     from PIL import Image, ImageDraw

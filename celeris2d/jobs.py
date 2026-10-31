@@ -374,44 +374,56 @@ def select_classes(project: Project, class2d, classes: list[int], label: str = "
         import mrcfile
         with mrcfile.open(cm, permissive=True) as f:
             imgs, apix = np.asarray(f.data, np.float32), float(f.voxel_size.x)
-        pops = np.bincount(t["cls"], minlength=len(imgs))
         for name, ks in (("selected_classes.mrcs", chosen), ("rejected_classes.mrcs", rejected)):
             if ks:
                 project.write_mrc(job.out(name), imgs[np.asarray(ks) - 1], apix)
-        _selection_figure(job.out("selection.png"), imgs, pops, set(chosen),
-                          f"{job.name}: {int(keep.sum()):,} kept ({len(chosen)} classes), "
-                          f"{int((~keep).sum()):,} rejected ({len(rejected)} classes) of {c.name}")
+        selection_figures(project, job)
     return job
 
 
-def _selection_figure(path, imgs, pops, chosen, title_, ncol=10):
+def selection_figures(project: Project, job) -> list[str]:
+    """kept.png and rejected.png of a Select job of 2D classes: each set of class images on its own, largest first."""
+    import mrcfile
+    job = project.job(job)
+    c = project.job(job.params["source"])
+    cm = c.find("classes.mrcs")
+    if not cm or "classes" not in job.params:
+        return []
+    with mrcfile.open(cm, permissive=True) as f:
+        imgs = np.asarray(f.data, np.float32)
+    pops = np.bincount(project.table(c, "particles").read(["cls"])["cls"], minlength=len(imgs))
+    out = []
+    for name, head, ks in (("kept.png", "Kept classes", job.params["classes"]),
+                           ("rejected.png", "Rejected classes", job.params.get("rejected_classes", []))):
+        ks = [k for k in ks if k <= len(imgs)]
+        if ks:
+            n = int(pops[np.asarray(ks) - 1].sum())
+            _selection_figure(job.out(name), imgs, pops, ks, head,
+                              f"{len(ks)} classes, {n:,} particles ({100 * n / max(1, pops.sum()):.0f}%) of {c.name}")
+            out.append(job.out(name))
+    return out
+
+
+def _selection_figure(path, imgs, pops, classes, head, sub, ncol=10):
     from .plotstyle import themed
-    themed(_draw_selection)(path, imgs, pops, chosen, title_, ncol)
+    themed(_draw_selection)(path, imgs, pops, classes, head, sub, ncol)
 
 
-def _draw_selection(path, imgs, pops, chosen, title_, ncol):
-    """Class images by population, kept ones framed in the 'good' status colour, rejected ones dimmed and framed in
-    'critical' (each also marked ✓ / ✕, so the colour is not the only cue)."""
-    from .plotstyle import GRAY, STATUS, T, norm_img, plt, title
-    order = np.argsort(-pops)
+def _draw_selection(path, imgs, pops, classes, head, sub, ncol):
+    """These classes' images by population, each titled with its number and particle count."""
+    from .plotstyle import GRAY, T, norm_img, plt, title
+    order = sorted((k - 1 for k in classes), key=lambda k: -pops[k])
+    ncol = min(ncol, len(order))
     nrow = (len(order) + ncol - 1) // ncol
     H = nrow * 1.45 + 0.8
-    fig, axs = plt.subplots(nrow, ncol, figsize=(ncol * 1.3, H), squeeze=False)
+    fig, axs = plt.subplots(nrow, ncol, figsize=(max(ncol, 4) * 1.3, H), squeeze=False)
     fig.subplots_adjust(left=0.01, right=0.99, top=1 - 0.8 / H, bottom=0.01, wspace=0.08, hspace=0.3)
     for a in axs.ravel():
         a.axis("off")
     for a, k in zip(axs.ravel(), order):
-        ok = k + 1 in chosen
-        a.imshow(norm_img(imgs[k], 1, 99), cmap=GRAY, alpha=1.0 if ok else 0.4)
-        a.axis("on")
-        a.set_xticks([])
-        a.set_yticks([])
-        for sp in a.spines.values():
-            sp.set_color(STATUS["good"] if ok else STATUS["critical"])
-            sp.set_linewidth(2.5)
-        a.set_title(f"{'✓' if ok else '✕'} {k + 1} · {pops[k]:,}", fontsize=7.5, fontweight="normal",
-                    color=T.ink if ok else T.ink3, loc="center")
-    title(fig, "Class selection", title_)
+        a.imshow(norm_img(imgs[k], 1, 99), cmap=GRAY)
+        a.set_title(f"{k + 1} · {pops[k]:,}", fontsize=7.5, fontweight="normal", color=T.ink, loc="center")
+    title(fig, head, sub)
     fig.savefig(path)
     plt.close(fig)
 

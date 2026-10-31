@@ -216,7 +216,8 @@ TYPES["Pick"] = dict(
     inputs={"micrographs": I("Micrographs", "The Motion correction & CTF job whose micrographs are picked.")},
     fields={
         "diameter_a": B("Particle diameter (Å)", "The particle's short dimension. Sets the blob size and, with "
-                                                 "templates, the binning, search window and spacing."),
+                                                 "templates, the binning, search window and spacing. Leave it empty "
+                                                 "to measure it on a micrograph: the job waits for you."),
         "templates": B("Templates from job", "Template picking instead of the blob: a 2D classification or "
                                              "selection (its class averages) or a 3D job (projections of its map). "
                                              "0: blob picking.", job_types=("Class2D", "Select", "InitialModel",
@@ -289,7 +290,7 @@ TYPES["Extract"] = dict(
     inputs={"picks": I("Picks", "The Pick particles job.")},
     fields={
         "particle_a": B("Particle size (Å)", "The particle's longest dimension. Sets the box (when automatic) and the "
-                                             "2D mask."),
+                                             "2D mask. Empty: 1.3 × the Pick job's particle diameter."),
         "box_a": B("Box size (Å)", "Edge of the extraction box. 0: automatic, the particle plus its CTF-spread signal "
                                    "at 2 µm defocus."),
         "particle_apix": B("Pixel size after binning (Å)", "Fourier-bin the particles to this pixel size (smaller "

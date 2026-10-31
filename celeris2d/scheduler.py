@@ -71,6 +71,50 @@ def complete_select(project: Project, job, classes: list[int], note: str = "") -
     return select_classes(project, j, classes, note=note)
 
 
+def change_settings(project: Project, job, values: dict) -> Job:
+    """New settings for a job that has not started (queued, or waiting for the user - e.g. a Pick job without a
+    particle size, made before the micrographs could be seen). Settings that name another job (templates, a
+    selection, ...) change the job's inputs: make a new job for those. A waiting Pick job that now has a size is
+    queued; a default label follows the new settings."""
+    from dataclasses import asdict
+    from .jobs import registry
+    from .jobspec import coerce, settings_of
+    from .moviejobs import movie_registry
+    from .uimeta import TYPES
+    from . import pipeline as pl
+    j = project.job(job)
+    if j.status not in ("queued", "waiting") or j.type == "Select":
+        raise ValueError(f"{j.name} is {j.status}: only the settings of a queued or waiting job can be changed")
+    spec = registry().get(j.type) or movie_registry().get(j.type)
+    if spec is None:
+        raise ValueError(f"{j.type} jobs have no settings to change")
+    old = settings_of(j, spec.settings)
+    new = spec.settings(**dict(asdict(old), **coerce(spec.settings, values)))
+    refs = {k for k, f in TYPES.get(j.type, {}).get("fields", {}).items() if f.get("job_types")}
+    moved = [k for k in refs if getattr(new, k) != getattr(old, k)]
+    if moved:
+        raise ValueError(f"{', '.join(moved)} names another job: make a new job for that")
+    labels = {"Pick": pl.pick_label}
+    auto = labels[j.type](old) if j.type in labels else None
+    project.update_params(j, **asdict(new))
+    if j.type == "Extract":                      # the box follows the particle size
+        project.update_params(j, **pl.extract_box(project, project.job(j.params["picks"]), new) or dict(box=0))
+    for e in project.jobs("Extract").itertuples():    # Extract jobs queued on a Pick job: their box from its new size
+        ej = project.job(int(e.id))
+        if j.type == "Pick" and ej.status == "queued" and int(ej.params.get("picks", -1)) == j.id:
+            es = settings_of(ej, pl.ExtractSettings)
+            project.update_params(ej, **pl.extract_box(project, project.job(j.id), es) or dict(box=0))
+    j = project.job(j.id)
+    if auto is not None and j.label == auto and labels[j.type](new) != auto:
+        j = project.rename(j, labels[j.type](new))
+    if j.type == "Pick" and j.status == "waiting" and new.diameter_a > 0:
+        summ = {k: v for k, v in project.summary_of(j).items() if k != "waiting"}
+        project.set_status(j, "queued", summ)
+    elif j.type == "Pick" and j.status == "queued" and not new.diameter_a > 0:
+        project.set_status(j, "waiting", dict(project.summary_of(j), waiting="set the particle size"))
+    return project.job(j.id)
+
+
 def cancel(project: Project, job) -> Job:
     j = project.job(job)
     if j.status not in ("queued", "waiting"):

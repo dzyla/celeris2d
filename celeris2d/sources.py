@@ -326,7 +326,7 @@ class StackSource(_StackReader):
 
 
 def open_source(path: str, project_dir=None, no_ctf=False, apix=None):
-    if os.path.isfile(os.path.join(path, "job.json")):          # a Celeris2D Extract job folder
+    if os.path.isfile(os.path.join(path, "job.json")):          # a Celeris Extract job folder
         from .export import job_source
         return job_source(path, no_ctf=no_ctf, apix=apix)
     if path.endswith((".cs", ".csg")):

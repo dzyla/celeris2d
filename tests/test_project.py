@@ -154,6 +154,25 @@ def test_jobs_picking_extraction_exports(tmp_path):
     assert pl.extract_job(prj, pj, pl.ExtractSettings(particle_a=DIAM)).id == 9
 
 
+    # a Pick job made before the particle size is known waits for it; its Extract job gets its box once it is set
+    from celeris2d import scheduler
+    pw = scheduler.queue_job(prj, "Pick", dict(micrographs=mc.id), dict(figures="none"))
+    ew = scheduler.queue_job(prj, "Extract", dict(picks=pw.id), {})
+    assert pw.status == "waiting" and ew.status == "queued" and not ew.params.get("box")
+    assert scheduler.next_job(prj) is None
+    with pytest.raises(ValueError, match="no particle diameter"):
+        pl.run(prj, [pw])
+    with pytest.raises(ValueError, match="names another job"):
+        scheduler.change_settings(prj, pw, dict(templates=pj.id))
+    pw = scheduler.change_settings(prj, pw, dict(diameter_a=DIAM))
+    ew = prj.job(ew.id)
+    assert pw.status == "queued" and pw.label == f"blob{DIAM:g}" and pw.params["diameter_a"] == DIAM
+    assert ew.params["particle_a"] == pytest.approx(1.3 * DIAM) and ew.params["box"] > 0
+    assert scheduler.next_job(prj).id == pw.id
+    ew = scheduler.change_settings(prj, ew, dict(particle_a=2 * DIAM))
+    assert ew.params["particle_a"] == 2 * DIAM and ew.params["box_a_used"] >= 2 * DIAM
+
+
 def _synthetic_project(tmp_path, rng):
     movies = []
     for i in range(2):
@@ -195,7 +214,7 @@ def test_class2d_selection_recentre(tmp_path):
     kept, rej = prj.selected_uids(sel), prj.selected_uids(sel, rejected=True)
     assert len(np.intersect1d(kept, rej)) == 0 and len(kept) + len(rej) == len(t["uid"])
     assert sel.params["classes"] == [k] and sel.params["rejected_classes"] == [i for i in (1, 2, 3) if i != k]
-    for f in ("selection.png", "selected_classes.mrcs", "rejected_classes.mrcs"):
+    for f in ("kept.png", "rejected.png", "selected_classes.mrcs", "rejected_classes.mrcs"):
         assert sel.find(f), f
 
     # an alignment job with known shifts: particle 1 is moved onto particle 0 (a duplicate after re-centring)

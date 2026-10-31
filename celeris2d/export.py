@@ -3,7 +3,7 @@
     export(project, job, "relion")      Import: movies.star; MotionCtf: corrected_micrographs.star +
                                         micrographs_ctf.star; Pick: autopick.star + Coordinates/; Extract:
                                         particles.star
-    export(project, job, "cryosparc")   Extract: particles.cs (blob, CTF, location; uid = Celeris2D particle uid)
+    export(project, job, "cryosparc")   Extract: particles.cs (blob, CTF, location; uid = Celeris particle uid)
 
 Paths in .star files are relative to the project directory: run RELION there. Particles are stored with white
 protein (RELION's --invert_contrast). cryoSPARC needs blob/sign -1 for them: dz_2025_10 particles imported with +1
@@ -145,7 +145,7 @@ def _relion_symexpand(project, job):
 
 def job_source(job_dir: str, uids=None, **kw):
     """Particles of an Extract job folder as a particle source (RelionSource over the project's own table; no
-    file is written). Its parts carry celUid (the Celeris2D particle uid) and celMovie. uids: only these particles
+    file is written). Its parts carry celUid (the Celeris particle uid) and celMovie. uids: only these particles
     (e.g. a Select job's)."""
     from .sources import RelionSource
     job_dir = os.path.abspath(job_dir).rstrip("/")

@@ -192,7 +192,7 @@ def flowchart(project: Project, jobs: list[Job], finals: list[int], path: str, t
                     ax.add_patch(FancyArrowPatch((xa, ya + 0.7 * H), (xb, yb + 0.3 * H), arrowstyle="-|>",
                                                  mutation_scale=10, color=edge, lw=1.0,
                                                  connectionstyle=f"arc,angleA=180,angleB=180,armA={arm},armB={arm},rad=6"))
-    ax.text(gx, 0.42, title or f"Processing in Celeris2D {_version()}", fontsize=12, fontweight="bold", color=ink)
+    ax.text(gx, 0.42, title or f"Processing in Celeris {_version()}", fontsize=12, fontweight="bold", color=ink)
     fig.savefig(path + ".svg", facecolor="white")
     fig.savefig(path + ".png", dpi=150, facecolor="white")
     plt.close(fig)
@@ -239,7 +239,7 @@ def project_report(project: Project, finals: list[int] | None = None, out_dir: s
             for k, v in job_settings(j)[1].items():
                 w.writerow([j.name, j.type, k, json.dumps(v) if isinstance(v, (list, dict)) else v])
     lines = [f"# Processing report: {os.path.basename(project.root)}", "",
-             f"Celeris2D {_version()}, {datetime.date.today().isoformat()}. {len(jobs)} jobs lead to the "
+             f"Celeris {_version()}, {datetime.date.today().isoformat()}. {len(jobs)} jobs lead to the "
              f"{len(finals)} final job(s); the flowchart (flowchart.svg) shows them with the settings that differ from "
              f"the defaults, settings.csv lists every setting.", "", "## Methods", ""]
     lines += [_paragraph(project, j, n + 1) + "\n" for n, j in enumerate(jobs)]

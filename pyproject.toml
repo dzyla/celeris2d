@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "celeris2d"
 version = "0.2.0"
-description = "Fast GPU maximum-likelihood 2D classification of cryo-EM particles (RELION / cryoSPARC / mrcs)"
+description = "Celeris: fast GPU cryo-EM processing, movies to 2D classes and 3D maps (RELION / cryoSPARC compatible)"
 requires-python = ">=3.10"
 dependencies = ["torch>=2.4", "numpy", "scipy", "mrcfile", "pandas", "matplotlib", "pyyaml", "pillow", "mcp>=2", "fastapi", "uvicorn"]
 
@@ -13,6 +13,9 @@ dependencies = ["torch>=2.4", "numpy", "scipy", "mrcfile", "pandas", "matplotlib
 celeris2d = "celeris2d.cli:main"
 celeris2d-mcp = "celeris2d.mcp_server:main"
 celeris2d-web = "celeris2d.webapp:main"
+celeris = "celeris2d.cli:main"
+celeris-mcp = "celeris2d.mcp_server:main"
+celeris-web = "celeris2d.webapp:main"
 
 [tool.setuptools]
 packages = ["celeris2d"]

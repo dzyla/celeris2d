@@ -70,7 +70,7 @@ class Session:
 
     # ------------------------------------------------------------------ data
     def load(self, path, diameter=None, max_res=6.0, gpus="auto", subset=0, project_dir=None, seed=0, **params):
-        """diameter: mask diameter in A (None: 200, or 1.25 x the particle size of a Celeris2D Extract job)."""
+        """diameter: mask diameter in A (None: 200, or 1.25 x the particle size of a Celeris Extract job)."""
         from .cli import pick_devices
         t0 = time.time()
         if isinstance(path, str):

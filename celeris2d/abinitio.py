@@ -1,4 +1,4 @@
-"""De novo 3D initial model from a Celeris2D classification (PyTorch).
+"""De novo 3D initial model from a Celeris classification (PyTorch).
 
 Stage 1 (classes): the 2D class averages are few and clean, so every class is matched against projections of
 the current volume over the whole sphere and all in-plane angles (one GEMM), the volume is rebuilt from the

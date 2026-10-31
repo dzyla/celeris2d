@@ -81,7 +81,7 @@ def _write_rest(outdir, clf, src, in_path, imgs, pops, cls, apix_out, K, particl
         json.dump(dict(input=in_path, params=vars(clf.p), total_time=clf.total_time, history=clf.history), fh, indent=1)
     conf = np.bincount(cls, weights=clf.maxprob.numpy(), minlength=K) / np.maximum(pops, 1)
     gallery(os.path.join(outdir, "classes.png"), imgs, pops, apix_out, conf,
-            title=f"Celeris2D · {os.path.basename(os.path.abspath(outdir))}")
+            title=f"Celeris · {os.path.basename(os.path.abspath(outdir))}")
     stats(os.path.join(outdir, "stats.png"), clf.history, pops, conf,
           title=f"{os.path.basename(os.path.abspath(outdir))}: {clf.N} particles, K={K}, "
                 f"{clf.total_time:.0f} s on {len(clf.devs)} GPU(s)")
@@ -104,7 +104,7 @@ def _write_csg(path, name, title, gtype, links, n):
     """links: {result group: metafile path (relative to the .csg, or absolute)}"""
     import datetime
     lines = [f"created: {datetime.datetime.now(datetime.timezone.utc)}", "group:",
-             f"  description: {title} (Celeris2D)", f"  name: {name}", f"  title: {title}", f"  type: {gtype}",
+             f"  description: {title} (Celeris)", f"  name: {name}", f"  title: {title}", f"  type: {gtype}",
              "results:"]
     for g, mf in sorted(links.items()):
         lines += [f"  {g}:", f"    metafile: '>{mf}'", f"    num_items: {n}", f"    type: {gtype}.{g}"]
@@ -246,7 +246,7 @@ def main(argv=None):
     ap.add_argument("--K", type=int, default=20, help="number of classes")
     ap.add_argument("--iter", type=int, default=-1, help="iterations (-1 = auto: 25, or 40 above 100k particles)")
     ap.add_argument("--diameter", type=float, default=None,
-                    help="particle mask diameter (A); default 200, or 1.25 x the particle size of a Celeris2D Extract job")
+                    help="particle mask diameter (A); default 200, or 1.25 x the particle size of a Celeris Extract job")
     ap.add_argument("--max-res", type=float, default=6.0, help="final resolution limit (A)")
     ap.add_argument("--init-res", type=float, default=30.0)
     ap.add_argument("--max-shift", type=float, default=16.0, help="local translation range per iteration (A)")

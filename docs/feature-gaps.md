@@ -1,9 +1,9 @@
-# What Celeris2D lacks against RELION 5 / cryoSPARC 4 (2026-10-30)
+# What Celeris lacks against RELION 5 / cryoSPARC 4 (2026-10-30)
 
 Single-particle SPA only (no tomography, no helical). "Have" = a job type or option in the code now; "building" =
 an agent branch in progress; ordered by what a typical project needs first.
 
-| area | RELION / cryoSPARC | Celeris2D |
+| area | RELION / cryoSPARC | Celeris |
 |---|---|---|
 | movies -> micrographs | MotionCor / Patch Motion, CTFFIND / Patch CTF | have (MotionCtf: patch motion, dose weighting, patch CTF) |
 | micrograph curation | Manual/Curate Exposures | have (Curate: CTF/motion limits; region network map of ice/carbon) |

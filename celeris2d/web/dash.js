@@ -55,10 +55,12 @@ function renderPulse() {
   $('#pulse').innerHTML = `<span class="d ${r ? 'on' : ''}"></span>` +
     (r ? `running ${esc(queue.running[0].slice(0, 3))}` : 'idle') + (q ? `, ${q} queued` : '') + (w ? `, <b style="color:var(--you)">${w} waiting for you</b>` : '');
 }
+// what a waiting job wants from the user
+const askText = j => j.type === 'ManualPick' ? 'Pick particles by hand' : j.type === 'Pick' ? 'Set the particle size' : 'Choose the classes to keep';
 function renderAsks() {
   const w = queue.waiting.map(n => jobs.find(j => j.name === n)).filter(Boolean);
   $('#asks').innerHTML = w.length ? `<h2>Waiting for you</h2>` + w.map(j => `
-    <button class="ask" data-n="${esc(j.name)}"><strong>${j.type === 'ManualPick' ? 'Pick particles by hand' : 'Choose the classes to keep'}</strong>
+    <button class="ask" data-n="${esc(j.name)}"><strong>${askText(j)}</strong>
       <span>${esc(j.name)} · from ${esc((j.inputs || [])[0] || '')}</span></button>`).join('') : '';
   $('#asks').style.display = w.length ? '' : 'none';
   document.querySelectorAll('.ask').forEach(b => b.onclick = () => showJob(b.dataset.n));
@@ -209,6 +211,7 @@ async function showJob(name, scroll = true) {
   const s = j.summary || {};
   const warns = s.warnings || [];
   const canRerun = !['Import', 'Select'].includes(j.type);
+  const editable = ['queued', 'waiting'].includes(j.status) && j.type !== 'Select';     // its own settings change, in place
   const runLabel = ['failed', 'cancelled'].includes(j.status) ? 'Restart' : ['MotionCtf', 'Pick', 'Extract'].includes(j.type) ? 'Continue with new movies' : 'Run again';
   const tname = (types[j.type] || {}).name || j.type, dur = s.seconds ? (s.seconds >= 120 ? Math.round(s.seconds / 60) + ' min' : Math.round(s.seconds) + ' s') : '';
   const stateText = {running: 'running', finished: dur ? 'finished in ' + dur : 'finished', waiting: 'waiting for you', queued: 'queued', failed: 'failed', cancelled: 'stopped'}[j.status] || j.status;
@@ -230,7 +233,7 @@ async function showJob(name, scroll = true) {
         ${j.status === 'running' ? `<button id="stop" class="stopb" title="end the job's process now; it is kept, marked stopped, and can be restarted">Stop</button>` : ''}
         ${['queued', 'waiting'].includes(j.status) ? `<button id="cancel">Cancel</button>` : ''}
         ${canRerun ? `<button id="rerun" class="${['failed', 'cancelled'].includes(j.status) ? 'go' : ''}" ${['running', 'queued', 'waiting'].includes(j.status) ? 'disabled' : ''} title="a new job with the same inputs and settings, through the queue">${runLabel}</button>` : ''}
-        ${types[j.type] ? `<button id="edit" title="the New job form with this job's inputs and settings">Change settings…</button>` : ''}
+        ${types[j.type] ? `<button id="edit" title="${editable ? 'change this job\'s settings before it starts' : 'the New job form with this job\'s inputs and settings: a new job'}">Change settings…</button>` : ''}
         ${nt && nin ? `<button id="nextj" class="go" title="${esc(nt.blurb || '')}">Next: ${esc(nt.name || nt.type)}</button>` : ''}
         <details class="menu"><summary aria-label="more actions">⋯</summary><div class="menu-list">
           <button id="final" title="final jobs and everything they came from make the publication report">${j.final ? '★ Unmark final' : '☆ Mark final (for the report)'}</button>
@@ -249,7 +252,7 @@ async function showJob(name, scroll = true) {
   const on = (id, fn) => { const b = $('#' + id); if (b) b.onclick = fn; };
   document.querySelectorAll('.jhead .menu-list button').forEach(b => b.addEventListener('click', () => b.closest('details').open = false));
   on('rerun', async () => { try { const d = await api('/api/project/rerun', {job: j.name}); current = d.job; await load(); showJob(d.job); } catch (e) { alert(e.message); } });
-  on('edit', () => jobForm(j.type, j.params));
+  on('edit', () => jobForm(j.type, j.params, editable ? j.name : null));
   on('nextj', () => jobForm(nt.type, {[nin.name]: j.id}));
   on('stop', async () => {
     if (!confirm(`Stop ${j.name}? Its process ends now; what it wrote so far stays, and Restart runs it again.`)) return;
@@ -280,6 +283,7 @@ function renderStage(j) {
   if (viewer) { viewer.dispose(); viewer = null; }
   if (j.type === 'Import') return stageImport(st, j);
   if (j.type === 'ManualPick' && window.CelerisPicker) return CelerisPicker.mount(st, {job: j, api, file, css, theme: THEME()});
+  if (j.type === 'Pick' && ['waiting', 'queued'].includes(j.status)) return stageSize(st, j);
   if (j.type === 'Extract' && j.status !== 'queued') return stageExtract(st, j);
   if (MOVIEJOBS.includes(j.type) && j.status !== 'queued') return stageMicPanel(st, j);
   if (j.status === 'running') return stageLive(st, j);
@@ -760,7 +764,8 @@ async function stageGallery(st, j) {
       <button class="${g.waiting ? 'you' : 'go'}" id="gsave" disabled>${g.waiting ? 'Keep these classes' : 'Save selection'}</button>` : ''}
       ${is3 && g.classes.some(c => c.map) ? `<button id="g3d">Show the class maps in 3D</button>` : ''}
     </div>
-    <div class="galwrap"><div class="gal ${is3 ? 'three' : ''}" id="gal"></div>
+    <div class="galwrap"><div>${editable ? '' : '<h3 class="galh" id="gkeph"></h3>'}<div class="gal ${is3 ? 'three' : ''}" id="gal"></div>
+      ${editable ? '' : `<h3 class="galh" id="grejh"></h3><div class="gal rej ${is3 ? 'three' : ''}" id="grej"></div>`}</div>
       <aside class="galside">
         ${editable && hasRes ? `<div class="card pad"><b>Quick select</b><label class="lp" style="margin-top:8px"><span>Resolution better than</span><b id="grv"></b>
           <input type="range" id="grs" min="${rlo}" max="${rhi}" step="0.5" value="${rhi}"></label><div class="muted" style="font-size:12.5px;margin-top:6px">Selects the classes that pass; click any class to change it.</div></div>` : ''}
@@ -771,9 +776,17 @@ async function stageGallery(st, j) {
   const total = g.classes.reduce((a, c) => a + c.n, 0), maxN = Math.max(...g.classes.map(c => c.n), 1);
   const draw = () => {
     const cs = [...g.classes].sort(sortBy === 'res' ? (a, b) => resOf(a) - resOf(b) : sortBy === 'num' ? (a, b) => a.cls - b.cls : (a, b) => b.n - a.n);
-    $('#gal').innerHTML = cs.map(c => `<button class="cls" data-c="${c.cls}" aria-pressed="${sel.has(c.cls)}" title="class ${c.cls}: ${c.n.toLocaleString()} particles${c.res ? ', ' + (+c.res).toFixed(1) + ' Å' : ''}">
+    const cell = c => `<button class="cls" data-c="${c.cls}" aria-pressed="${sel.has(c.cls)}" title="class ${c.cls}: ${c.n.toLocaleString()} particles${c.res ? ', ' + (+c.res).toFixed(1) + ' Å' : ''}">
         ${c.images.length > 1 ? `<span class="three">${c.images.map(s => `<img src="${s}" alt="">`).join('')}</span>` : c.images.length ? `<img src="${c.images[0]}" alt="class ${c.cls}">` : '<span style="display:block;aspect-ratio:3/1"></span>'}
-        <span class="lab"><span>${c.cls}</span><span>${c.share != null ? (100 * c.share).toFixed(1) + '%' : c.n.toLocaleString()}${c.res ? ' · ' + (+c.res).toFixed(c.res < 10 ? 1 : 0) + ' Å' : ''}</span></span></button>`).join('');
+        <span class="lab"><span>${c.cls}</span><span>${c.share != null ? (100 * c.share).toFixed(1) + '%' : c.n.toLocaleString()}${c.res ? ' · ' + (+c.res).toFixed(c.res < 10 ? 1 : 0) + ' Å' : ''}</span></span></button>`;
+    if (editable) $('#gal').innerHTML = cs.map(cell).join('');
+    else {                                   // a finished selection: the kept classes, then the rejected ones, apart
+      const kept = cs.filter(c => sel.has(c.cls)), rej = cs.filter(c => !sel.has(c.cls)), sum = a => a.reduce((x, c) => x + c.n, 0);
+      $('#gkeph').innerHTML = `Kept <span class="muted">${kept.length} classes · ${sum(kept).toLocaleString()} particles</span>`;
+      $('#gal').innerHTML = kept.map(cell).join('');
+      $('#grejh').innerHTML = rej.length ? `Rejected <span class="muted">${rej.length} classes · ${sum(rej).toLocaleString()} particles</span>` : '';
+      $('#grej').innerHTML = rej.map(cell).join('');
+    }
     if (editable) document.querySelectorAll('#gal .cls').forEach(e => e.onclick = () => { const k = +e.dataset.c; sel.has(k) ? sel.delete(k) : sel.add(k); upd(); });
     upd();
   };
@@ -782,13 +795,13 @@ async function stageGallery(st, j) {
     $('#gsum').innerHTML = editable ? (sel.size ? `<b>${sel.size}</b> of ${g.classes.length} classes · <b>${n.toLocaleString()}</b> particles <span class="muted">(${pct.toFixed(1)}%)</span>`
       : `Click the classes to keep · ${g.classes.length} classes, ${total.toLocaleString()} particles`) : `${sel.size} classes kept of ${esc(g.source)} · ${n.toLocaleString()} particles`;
     $('#gbar').style.width = pct.toFixed(1) + '%';
-    document.querySelectorAll('#gal .cls').forEach(e => { const k = +e.dataset.c; e.classList.toggle('on', sel.has(k)); e.classList.toggle('off', sel.size > 0 && !sel.has(k)); e.setAttribute('aria-pressed', sel.has(k)); });
+    if (editable) document.querySelectorAll('#gal .cls').forEach(e => { const k = +e.dataset.c; e.classList.toggle('on', sel.has(k)); e.classList.toggle('off', sel.size > 0 && !sel.has(k)); e.setAttribute('aria-pressed', sel.has(k)); });
     const b = $('#gsave'); if (b) b.disabled = !sel.size;
     const bars = [...g.classes].sort((a, b) => b.n - a.n), w = 240 / bars.length;
     $('#gsz').innerHTML = bars.map((c, i) => `<rect x="${(i * w).toFixed(2)}" y="${(108 - 104 * c.n / maxN).toFixed(1)}" width="${Math.max(w - 0.8, 0.8).toFixed(2)}" height="${(104 * c.n / maxN).toFixed(1)}" fill="${sel.has(c.cls) ? css('--data') : css('--axis')}"><title>class ${c.cls}: ${c.n.toLocaleString()}</title></rect>`).join('');
   };
   if ($('#g3d')) $('#g3d').onclick = () => openViewer(st, j, g.classes.filter(c => c.map).map(c => ({path: c.map})), null);
-  $('#gsize').oninput = e => $('#gal').style.setProperty('--cell', e.target.value * (is3 ? 3 : 1) + 'px');
+  $('#gsize').oninput = e => st.querySelectorAll('.gal').forEach(x => x.style.setProperty('--cell', e.target.value * (is3 ? 3 : 1) + 'px'));
   if (editable) {
     document.querySelectorAll('.selbar [data-s]').forEach(b => b.onclick = () => { sortBy = b.dataset.s; document.querySelectorAll('.selbar [data-s]').forEach(x => x.classList.toggle('on', x === b)); draw(); });
     document.querySelectorAll('.selbar [data-a]').forEach(b => b.onclick = () => {
@@ -952,7 +965,7 @@ try { interactive = localStorage.getItem('celeris-interactive') !== '0'; } catch
 // a job's figures, by topic, in cards of one size
 const FIGSECTIONS = [
   ['Resolution', /(^|_)(fsc|postprocess|sharpen|localres|nu|ctfrefine|resolution)/],
-  ['Classes', /(^|_)(class|classes|gallery|distribution|selection|occupancy)/],
+  ['Classes', /(^|_)(class|classes|gallery|distribution|selection|kept|rejected|occupancy)/],
   ['Orientations', /(^|_)(views|angdist|reprojections|projections)$/],
   ['Map', /(^|_)(map_views|mask|mode\d|variance|what_moves|latent|recenter)/],
   ['Progress', /(^|_)(progress|history|particles|iterations|overview|frames|stats)/],
@@ -1036,7 +1049,8 @@ function jobPicker() {
   };
   $('#jtq').focus();
 }
-function jobForm(type, params = {}) {
+// edit: the name of a queued / waiting job whose own settings the form changes (its inputs stay)
+function jobForm(type, params = {}, edit = null) {
   current = null; renderList();
   const t = types[type];
   if (!t) return jobPicker();
@@ -1068,18 +1082,28 @@ function jobForm(type, params = {}) {
   const changed = adv.filter(f => params[f.name] !== undefined && JSON.stringify(params[f.name]) !== JSON.stringify(f.default)).length;
   $('#main').innerHTML = `<div class="head"><div class="title"><h1 style="display:flex;gap:12px;align-items:center">${icon(type)}${esc(t.name || type)}</h1>
         <div class="sub">${esc(t.blurb || t.title)}</div></div><div></div>
-      <div class="acts"><button class="quiet" id="fback">← All job types</button></div></div>
+      <div class="acts">${edit ? `<button class="quiet" id="fback">← Back to ${esc(edit.slice(0, 3))}</button>` : `<button class="quiet" id="fback">← All job types</button>`}</div></div>
     <div class="pane form2" style="padding-top:4px">
       ${t.typical ? `<p class="muted typ">${esc(t.typical)}</p>` : ''}
       ${t.inputs.length ? `<section><h3>Input</h3>${t.inputs.map(i => `<div class="fr"><label for="in_${esc(i.name)}">${esc(i.label || i.name)}${i.optional ? '' : ' *'}</label>
-        <div><select id="in_${esc(i.name)}">${opt(i)}</select><div class="help">${esc(i.help || i.doc)}</div><div class="cpick" id="cp_${esc(i.name)}"></div></div></div>`).join('')}</section>` : ''}
+        <div><select id="in_${esc(i.name)}" ${edit ? 'disabled' : ''}>${opt(i)}</select><div class="help">${esc(i.help || i.doc)}</div><div class="cpick" id="cp_${esc(i.name)}"></div></div></div>`).join('')}</section>` : ''}
       ${basic.length ? `<section><h3>Settings</h3>${basic.map(row).join('')}</section>` : ''}
       ${adv.length ? `<details class="adv" ${changed ? 'open' : ''}><summary>More settings <span class="muted">${adv.length}${changed ? `, ${changed} changed from the default` : ''}</span></summary>
         ${secs.map(([g, fs]) => `<section><h4>${esc(g)}</h4>${fs.map(row).join('')}</section>`).join('')}</details>` : ''}
-      <section><div class="fr"><label for="flabel">Label</label><div><input id="flabel" placeholder="optional, e.g. C8_nu" value="${esc(params.__label || '')}"><div class="help">A short name shown next to the job number.</div></div></div></section>
-      <p class="frun"><button class="go" id="frun">Add to the queue</button> <span class="muted">It runs when its inputs are ready.</span> <span class="err" id="ferr"></span></p></div>`;
+      ${edit ? '' : `<section><div class="fr"><label for="flabel">Label</label><div><input id="flabel" placeholder="optional, e.g. C8_nu" value="${esc(params.__label || '')}"><div class="help">A short name shown next to the job number.</div></div></div></section>`}
+      <p class="frun"><button class="go" id="frun">${edit ? 'Save settings' : 'Add to the queue'}</button> <span class="muted" id="fnote">${edit ? `Job ${esc(edit.slice(0, 3))} keeps its number and inputs.` : 'It runs when its inputs are ready.'}</span> <span class="err" id="ferr"></span></p></div>`;
+  // a Pick job may be made before the micrographs exist: without a particle size it waits for you to measure one
+  const sizeField = {Pick: 'diameter_a', ManualPick: 'diameter_a'}[type], sz = sizeField && $('#f_' + sizeField);
+  if (sz && type === 'Pick') {
+    sz.placeholder = 'empty: measure it on a micrograph later';
+    if (!(+sz.value > 0)) sz.value = '';
+    const note = () => { if (!edit) $('#fnote').textContent = +sz.value > 0 ? 'It runs when its inputs are ready.' : 'It waits for you to set the particle size on its page, once there are micrographs.'; };
+    sz.addEventListener('input', note); note();
+  }
+  const pa = type === 'Extract' && $('#f_particle_a');
+  if (pa) { pa.placeholder = 'empty: 1.3 × the pick diameter'; if (!(+pa.value > 0)) pa.value = ''; }
   document.querySelectorAll('.sw input').forEach(c => c.onchange = () => c.nextElementSibling.textContent = c.checked ? 'on' : 'off');
-  $('#fback').onclick = jobPicker;
+  $('#fback').onclick = edit ? () => showJob(edit) : jobPicker;
   // a multi-class job as the reference: its class maps to click (reference_class), or, for references lists
   // (Heterogeneous refinement), maps added as "job:class"
   const rc = $('#f_reference_class');
@@ -1122,7 +1146,11 @@ function jobForm(type, params = {}) {
         : el.classList.contains('checks') ? [...el.querySelectorAll('input:checked')].map(c => c.value).join(',') : el.value;
     });
     $('#frun').disabled = true;
-    try { const d = await api('/api/project/new', {type, inputs, settings, label: $('#flabel').value}); await load(); showJob(d.job); }
+    try {
+      const d = edit ? await api('/api/project/settings', {job: edit, settings})
+        : await api('/api/project/new', {type, inputs, settings, label: $('#flabel').value});
+      await load(); showJob(d.job);
+    }
     catch (e) { $('#ferr').textContent = e.message; $('#frun').disabled = false; }
   };
 }

@@ -1,14 +1,14 @@
-# Same particles, same GPU class: Celeris2D vs cryoSPARC v5.0.6 (2026-10-30)
+# Same particles, same GPU class: Celeris vs cryoSPARC v5.0.6 (2026-10-30)
 
-Data: dz_2025_10 (in-house Krios, D2 complex), Celeris2D extraction 052: 38,464 particles, 256 px @ 1.32 A, from the
+Data: dz_2025_10 (in-house Krios, D2 complex), Celeris extraction 052: 38,464 particles, 256 px @ 1.32 A, from the
 first 1,000 movies. cryoSPARC imported the same stacks and CTF from a RELION .star (`export` of job 052; import with
 `blob/sign -1` - with +1 cryoSPARC refined an inverted map at 7 A, so that run was discarded and the export now writes
--1). One RTX PRO 4000 Blackwell (16 GB) per program on zyla-lab (cryoSPARC on GPU 3, Celeris2D on GPU 2), not run at the
+-1). One RTX PRO 4000 Blackwell (16 GB) per program on zyla-lab (cryoSPARC on GPU 3, Celeris on GPU 2), not run at the
 same time; other GPU jobs of mine ran on other cards of the machine during both. Default settings in both except the
-ones listed. cryoSPARC times: job record, started -> completed (excludes queueing). Celeris2D times: the job's own
+ones listed. cryoSPARC times: job record, started -> completed (excludes queueing). Celeris times: the job's own
 `seconds` (each job reads its particles from the project's local scratch).
 
-| step | settings | cryoSPARC | Celeris2D |
+| step | settings | cryoSPARC | Celeris |
 |---|---|---|---|
 | 2D classification | K 50 | 139 s | 130 s |
 | ab initio | 1 class, D2 | 206 s | 104 s |
@@ -26,8 +26,8 @@ masked FSC 0.143), from each program's unfiltered half maps:
 |---|---|---|---|---|
 | cryoSPARC homogeneous J26 | 5.04 A | 5.04 A | 6.90 A | 6.76 A |
 | cryoSPARC NU J27 | **4.76 A** | 4.76 A | **5.54 A** | 5.54 A |
-| Celeris2D Refine3D 076 | 5.28 A | 5.12 A | 6.63 A | 5.73 A |
-| Celeris2D Refine3D NU 077 | 5.28 A | 5.04 A | 6.26 A | 5.73 A |
+| Celeris Refine3D 076 | 5.28 A | 5.12 A | 6.63 A | 5.73 A |
+| Celeris Refine3D NU 077 | 5.28 A | 5.04 A | 6.26 A | 5.73 A |
 
 Shells are 0.25 A apart here (338 A box). Verdict:
 
@@ -41,7 +41,7 @@ Shells are 0.25 A apart here (338 A box). Verdict:
   truth on this set; Modes3D found no mode reproducible between half sets in C1).
 
 Scripts: `csbench.py` (cryoSPARC chain through cryosparc-tools, project P2), `dz_bench.py` / `dz_bench_modes.py`
-(Celeris2D), `bench_fsc.py` (the FSC table); cryoSPARC project in /scratch/cryosparc_bench on zyla-lab.
+(Celeris), `bench_fsc.py` (the FSC table); cryoSPARC project in /scratch/cryosparc_bench on zyla-lab.
 
 ## Where the NU gap is (same day)
 

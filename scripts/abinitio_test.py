@@ -1,4 +1,4 @@
-"""Ab initio 3D from a saved Celeris2D result.
+"""Ab initio 3D from a saved Celeris result.
 
 usage: abinitio_test.py <input> <workdir> <result> <diameter> <max_res> <outdir> [sym] [key=value ...]
 (workdir: the dashboard/Session work dir that holds <result>.result.npz for this input; key=value: AbinitioParams)

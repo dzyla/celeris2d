@@ -66,7 +66,8 @@ class MotionSettings:
 
 @dataclass
 class PickSettings:
-    diameter_a: float                   # blob (the particle's short dimension)
+    diameter_a: float = 0.0             # blob (the particle's short dimension); 0: not known yet - the job waits for
+                                        # it (set it once the micrographs are there: scheduler.change_settings)
     dark: bool = True                   # particles darker than the background (cryo); False for negative stain
     min_dist_frac: float = 0.5           # x diameter: T20S recall 90.8% (0.4: 97.2% at 1.6x the picks; 0.6: 76%)
     threshold: float | None = None      # None: automatic per micrograph (generous; 2D cleans up)
@@ -90,7 +91,8 @@ class PickSettings:
 
 @dataclass
 class ExtractSettings:
-    particle_a: float                   # longest particle dimension (A)
+    particle_a: float = 0.0             # longest particle dimension (A); 0: 1.3 x the Pick job's diameter (box fixed when
+                                        # the Pick job has one: extract_box)
     box_a: float = 0.0                  # box edge in A; 0: particle + CTF delocalisation at 2 um defocus and box_res_a
     box_res_a: float = 5.0              # (picking.box_for; T20S, 160 A: 318 A -> 250 px at 1.315 A)
     particle_apix: float = 0.0          # Fourier-bin particles to this pixel size (0: the micrograph's)
@@ -118,11 +120,18 @@ def motion_job(project: Project, movies: Job, s: MotionSettings, label: str = ""
                            label or f"{s.apix * s.bin:.3g}apx" + ("" if s.patches else "_global"))
 
 
-def pick_job(project: Project, micrographs: Job, s: PickSettings, label: str = "") -> Job:
-    ins = [micrographs] + ([project.job(s.templates)] if s.templates else []) + ([project.job(s.curate)] if s.curate else [])
+def pick_label(s: PickSettings) -> str:
     kind = f"tmpl{int(s.templates):03d}_" if s.templates else "tmplfile" if s.template_file else "blob"
-    return project.new_job("Pick", dict(asdict(s), micrographs=micrographs.id), ins,
-                           label or f"{kind}{s.diameter_a:g}" + ("" if s.threshold is None else f"_th{s.threshold:g}"))
+    return (f"{kind}{s.diameter_a:g}" if s.diameter_a > 0 else kind.rstrip("_")) + ("" if s.threshold is None else f"_th{s.threshold:g}")
+
+
+def pick_job(project: Project, micrographs: Job, s: PickSettings, label: str = "") -> Job:
+    """Without a diameter the job waits for the user (status waiting) until one is set (scheduler.change_settings)."""
+    ins = [micrographs] + ([project.job(s.templates)] if s.templates else []) + ([project.job(s.curate)] if s.curate else [])
+    j = project.new_job("Pick", dict(asdict(s), micrographs=micrographs.id), ins, label or pick_label(s))
+    if not s.diameter_a > 0:
+        project.set_status(j, "waiting", dict(waiting="set the particle size (measure it on a micrograph)"))
+    return j
 
 
 _tmpl_cache: dict = {}
@@ -181,22 +190,51 @@ def pick_candidates(project: Project, s: PickSettings, img, apix, ctf, optics, k
     return pk.blob_candidates(img, apix, s.diameter_a, ctf, optics, s.dark, s.min_dist_frac, keep_maps=keep_maps)
 
 
-def extract_job(project: Project, picks: Job, s: ExtractSettings, label: str = "") -> Job:
-    """The box (px) is fixed when the job is made, so every micrograph of the job has the same one. Label by
-    default: box (A), pixel size, precision, and the selection it extracts."""
+def extract_box(project: Project, picks: Job, s: ExtractSettings) -> dict:
+    """The box (px), pixel size and particle size of an Extract job; {} while neither it nor its Pick job has a particle
+    size (the job's box is then fixed when it starts, ensure_box)."""
+    particle_a = s.particle_a or 1.3 * float(picks.params.get("diameter_a") or 0)   # as mcp_server
+    if not particle_a > 0 and not s.box_a:
+        return {}
     mic_job = project.job(picks.params["micrographs"])
     m = mic_job.params
     mic_apix = m["apix"] * m["bin"]
     out_apix = max(s.particle_apix, mic_apix) if s.particle_apix else mic_apix
-    box_a = s.box_a or pk.box_for(s.particle_a, 20000.0, max(s.box_res_a, 2 * out_apix),
+    box_a = s.box_a or pk.box_for(particle_a, 20000.0, max(s.box_res_a, 2 * out_apix),
                                   optics_of(project, mic_job).wavelength)
     box = pk.suggest_box(box_a, out_apix)
     out_apix = pk.binned_apix(box, mic_apix, out_apix)          # exact (the source box is an even number of pixels)
-    label = label or (f"{box * out_apix:.0f}A_{out_apix:.3g}apx_{'f16' if s.dtype == 'float16' else 'f32'}"
-                      + (f"_sel{s.select:03d}" if s.select else "") + (f"_rc{s.recenter:03d}" if s.recenter else ""))
-    return project.new_job("Extract", dict(asdict(s), picks=picks.id, micrographs=mic_job.id, box=box,
-                                           out_apix=out_apix, box_a_used=round(box * out_apix, 1)),
-                           [picks] + ([s.select] if s.select else []) + ([s.recenter] if s.recenter else []), label)
+    return dict(particle_a=particle_a, box=box, out_apix=out_apix, box_a_used=round(box * out_apix, 1))
+
+
+def extract_label(s: ExtractSettings, b: dict) -> str:
+    return ((f"{b['box'] * b['out_apix']:.0f}A_{b['out_apix']:.3g}apx_" if b else "")
+            + ('f16' if s.dtype == 'float16' else 'f32')
+            + (f"_sel{s.select:03d}" if s.select else "") + (f"_rc{s.recenter:03d}" if s.recenter else ""))
+
+
+def extract_job(project: Project, picks: Job, s: ExtractSettings, label: str = "") -> Job:
+    """The box (px) is fixed when the job is made (or, if the Pick job has no particle size yet, when it starts), so
+    every micrograph of the job has the same one. Label by default: box (A), pixel size, precision, and the selection
+    it extracts."""
+    mic_job = project.job(picks.params["micrographs"])
+    b = extract_box(project, picks, s)
+    return project.new_job("Extract", dict(asdict(s), picks=picks.id, micrographs=mic_job.id, **b),
+                           [picks] + ([s.select] if s.select else []) + ([s.recenter] if s.recenter else []),
+                           label or extract_label(s, b))
+
+
+def ensure_box(project: Project, job: Job) -> Job:
+    """An Extract job made before its Pick job had a particle size: its box from that size now."""
+    if job.params.get("box"):
+        return job
+    from dataclasses import fields
+    s = ExtractSettings(**{f.name: job.params[f.name] for f in fields(ExtractSettings) if f.name in job.params})
+    b = extract_box(project, project.job(job.params["picks"]), s)
+    if not b:
+        raise ValueError(f"{job.name}: no particle size - set it on the Pick job (or the Extract job's Particle size)")
+    project.update_params(job, **b)
+    return project.job(job.id)
 
 
 def _recentred(project: Project, job: Job) -> dict:
@@ -781,6 +819,11 @@ def _run(project: Project, jobs: list[Job], movie_ids=None, log=print, stop: thr
     from concurrent.futures import ProcessPoolExecutor
     from multiprocessing import shared_memory
     by = {j.type: j for j in jobs}
+    if "Pick" in by and not by["Pick"].params.get("diameter_a", 0) > 0:
+        raise ValueError(f"{by['Pick'].name} has no particle diameter yet (diameter_a)")
+    if "Extract" in by:
+        by["Extract"] = ensure_box(project, by["Extract"])
+        jobs = [by[j.type] for j in jobs]
     mc, pj, ej = by.get("MotionCtf"), by.get("Pick"), by.get("Extract")
     if movie_ids is None:                            # the movies of the Import job the chain descends from
         movie_ids = project.movies(project.ancestor(jobs[0], "Import"))["id"].tolist()

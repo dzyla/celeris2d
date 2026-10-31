@@ -1,4 +1,4 @@
-# Celeris2D project design
+# Celeris project design
 
 Goals: everything a run produces is in one directory, organised so a person can find any output by looking (no
 opaque IDs), any agent can find it through the catalog or the MCP tools, RELION and cryoSPARC can read it, and it
@@ -9,7 +9,7 @@ stays fast and tidy at 20,000 movies / 10 million particles.
 ```
 myproject/
   project.db                 catalog (SQLite, WAL): jobs, movies, per-job micrographs / picks / particle chunks
-  project.json               name, created, Celeris2D version
+  project.json               name, created, Celeris version
   JOBS.md                    generated: one line per job (folder, status, inputs, key numbers)
   jobs/                      one chronological list; each name says what the job holds
     001_import_session1/                 movies.npz
@@ -55,7 +55,7 @@ Rules:
    step again with other settings makes a new job, so 256 px binned to 64 and the full box are two names side by
    side. A job is addressed by number (4, "004"), folder name or label.
 2. **Every job folder has the same frame**: `job.json` (type, label, parameters, inputs, status running / finished
-   / failed, Celeris2D version and git hash), `summary.json` (key numbers: what an agent reads first) and one
+   / failed, Celeris version and git hash), `summary.json` (key numbers: what an agent reads first) and one
    consolidated table under a fixed name per type (`micrographs.npz`, `picks.npz`, `particles.npz`).
 3. **Heavy data lives in `data/NNN/`**, apart from the small results. `purge` deletes a job's micrographs or stacks
    and keeps everything else; `rebuild` makes them again from the recorded parameters (minutes, since the
@@ -107,7 +107,7 @@ engine's model convention (the particle's centre is at +shift from the box centr
   (0-based), psi, shift_x_a, shift_y_a, maxprob; the 2D session (results restored by later jobs) in `session/`.
 - **Select** from classes (`jobs.select_classes`, 1-based class numbers): table `particles` (kept) and table
   `rejected` (the other particles of that Class2D job), params `classes` / `rejected_classes`,
-  `selected_classes.mrcs`, `rejected_classes.mrcs` and `selection.png` (kept framed green, rejected red). A Select
+  `selected_classes.mrcs`, `rejected_classes.mrcs` and `kept.png` / `rejected.png` (the kept and the rejected class images, each on its own). A Select
   job made by an agent says so in its label / note.
 - **InitialModel** (ab initio from a Class2D job's classes and particles; symmetry is the user's choice): maps,
   half maps, figures, table `particles` = uid, rot, tilt, psi (RELION Euler), shifts, used, model. With
@@ -323,7 +323,7 @@ of ours (RELION cuts at whole pixels; we shift sub-pixel).
   RELION's Import / CtfFind / AutoPick / Extract jobs produce, so any RELION job can take them. (Bayesian polishing
   needs RELION's per-micrograph motion metadata: not written yet.)
 - cryoSPARC: `particles.cs` with blob, CTF and location fields (Import Particles takes it, or `particles.star`).
-- Celeris2D reads both itself, so a Class2D or InitialModel job can also start from a RELION or cryoSPARC job.
+- Celeris reads both itself, so a Class2D or InitialModel job can also start from a RELION or cryoSPARC job.
 
 ## Agents (MCP)
 
