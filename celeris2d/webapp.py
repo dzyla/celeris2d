@@ -2,6 +2,7 @@
 selections that wait for the user, live progress, interactive figures, 3D maps, the publication report.
 
     celeris2d-web --port 8765 --project DIR   # then open http://<host>:8765  (or tunnel: ssh -L 8765:localhost:8765 host)
+    celeris2d-web --host 0.0.0.0 --password-file ~/.config/celeris2d/web_password   # on the network, behind a login
 
 The /api/* Session endpoints (one dataset held in memory for 2D runs) remain for scripts and tests.
 """
@@ -13,6 +14,7 @@ import collections
 import dataclasses
 import io
 import json
+import html
 import os
 import re
 import threading
@@ -780,7 +782,98 @@ def tile_png(img, size=192):
     return buf.getvalue()
 
 
-def create(workdir, project_dir=None):
+LOGIN_PAGE = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Celeris</title><style>
+:root{--bg:#111418;--fg:#e6e8eb;--mut:#8b939c;--card:#1a1e24;--line:#2b3139;--acc:#4c9aff}
+@media (prefers-color-scheme: light){:root{--bg:#f5f6f8;--fg:#1b1f24;--mut:#5b636c;--card:#fff;--line:#d5d9de;--acc:#1f6fd6}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px system-ui,sans-serif;display:grid;place-items:center;min-height:100vh}
+form{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:28px;width:min(320px,90vw)}
+h1{font-size:20px;margin:0 0 4px}p{color:var(--mut);margin:0 0 18px;font-size:13px}
+input{width:100%;box-sizing:border-box;padding:9px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
+button{margin-top:12px;width:100%;padding:9px;border:0;border-radius:6px;background:var(--acc);color:#fff;font-weight:600}
+.err{color:#e5534b;font-size:13px;margin-top:10px}</style></head><body>
+<form method="post" action="/login"><h1>Celeris</h1><p>This dashboard needs the session password.</p>
+<input type="password" name="password" autofocus placeholder="Password"><input type="hidden" name="next" value="{next}">
+<button>Open</button>{err}</form></body></html>"""
+
+
+def web_password(workdir) -> str:
+    """The dashboard password: CELERIS2D_WEB_PASSWORD, else the first line of CELERIS2D_WEB_PASSWORD_FILE; empty: open."""
+    pw = os.environ.get("CELERIS2D_WEB_PASSWORD", "")
+    f = os.environ.get("CELERIS2D_WEB_PASSWORD_FILE", "")
+    if not pw and f:
+        with open(os.path.expanduser(f)) as fh:
+            pw = fh.readline().strip()
+    return pw
+
+
+def add_login(app, workdir, password: str):
+    """Every page and API call needs a session cookie, given by /login for the password. The cookie is an HMAC of the
+    password with a key kept in the workdir (.web_key, owner-only), so sessions outlive a restart and end when the
+    password changes. Scripts can send the password in an X-Celeris-Password header instead."""
+    import hashlib
+    import hmac
+    import secrets
+    import urllib.parse
+
+    from fastapi import Request
+    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+
+    kf = os.path.join(workdir, ".web_key")
+    if not os.path.isfile(kf):
+        fd = os.open(kf, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(secrets.token_hex(32))
+    with open(kf) as fh:
+        key = fh.read().strip().encode()
+    token = hmac.new(key, password.encode(), hashlib.sha256).hexdigest()
+    cookie = "celeris_session"
+
+    def ok(req) -> bool:
+        c = req.cookies.get(cookie, "")
+        h = req.headers.get("x-celeris-password", "")
+        return hmac.compare_digest(c, token) or (bool(h) and hmac.compare_digest(h.encode(), password.encode()))
+
+    def page(nxt="/project", err=""):
+        return HTMLResponse(LOGIN_PAGE.replace("{next}", html.escape(nxt, quote=True)).replace(
+            "{err}", f'<div class="err">{html.escape(err)}</div>' if err else ""))
+
+    @app.middleware("http")
+    async def guard(req, call_next):
+        if req.url.path in ("/login", "/logout") or ok(req):
+            return await call_next(req)
+        if req.method == "GET" and "text/html" in req.headers.get("accept", ""):
+            return RedirectResponse("/login?next=" + urllib.parse.quote(req.url.path + (f"?{req.url.query}" if req.url.query else "")), 303)
+        return JSONResponse({"detail": "login required"}, 401)
+
+    @app.get("/login")
+    def login_form(next: str = "/project"):
+        return page(next)
+
+    async def login(req):
+        import asyncio
+        form = urllib.parse.parse_qs((await req.body()).decode())
+        pw = (form.get("password") or [""])[0]
+        nxt = (form.get("next") or ["/project"])[0]
+        if not nxt.startswith("/") or nxt.startswith("//"):
+            nxt = "/project"
+        if not hmac.compare_digest(pw.encode(), password.encode()):
+            await asyncio.sleep(1.0)                          # slows guessing
+            return page(nxt, "Wrong password.")
+        r = RedirectResponse(nxt, 303)
+        r.set_cookie(cookie, token, max_age=30 * 86400, httponly=True, samesite="lax")
+        return r
+    login.__annotations__ = {"req": Request}      # the module's postponed annotations cannot see this import
+    app.post("/login")(login)
+
+    @app.get("/logout")
+    def logout():
+        r = RedirectResponse("/login", 303)
+        r.delete_cookie(cookie)
+        return r
+
+
+def create(workdir, project_dir=None, password: str = ""):
     from fastapi import Body, FastAPI, HTTPException
     from fastapi.responses import HTMLResponse, Response
 
@@ -789,6 +882,8 @@ def create(workdir, project_dir=None):
     from .session import Session
 
     app = FastAPI(title="Celeris")
+    if password:
+        add_login(app, workdir, password)
     st = App(workdir)
 
     def sess():
@@ -1737,7 +1832,11 @@ def main(argv=None):
     ap.add_argument("--workdir", default=os.path.abspath("celeris2d_web"))
     ap.add_argument("--project", default="", help="a Celeris project directory: its jobs at /project "
                     "(default: the current directory, if it is a project)")
+    ap.add_argument("--password-file", default="", help="file whose first line is the dashboard password (or set "
+                    "CELERIS2D_WEB_PASSWORD); every page then needs a login. Required with a --host other than localhost")
     a = ap.parse_args(argv)
+    if a.password_file:
+        os.environ["CELERIS2D_WEB_PASSWORD_FILE"] = a.password_file
     os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     os.makedirs(a.workdir, exist_ok=True)
     project = a.project or (os.getcwd() if os.path.isfile("project.db") else None)
@@ -1745,7 +1844,11 @@ def main(argv=None):
     print(f"Celeris dashboard on http://{a.host}:{a.port}  (workdir {a.workdir})")
     if project:
         print(f"project {os.path.abspath(project)}: http://{a.host}:{a.port}/project")
-    uvicorn.run(create(a.workdir, project), host=a.host, port=a.port, log_level="warning")
+    password = web_password(a.workdir)
+    if not password and a.host not in ("127.0.0.1", "localhost", "::1"):
+        raise SystemExit("serving on the network needs a password: --password-file FILE or CELERIS2D_WEB_PASSWORD")
+    print("login required" if password else "no password (localhost only)")
+    uvicorn.run(create(a.workdir, project, password), host=a.host, port=a.port, log_level="warning")
 
 
 if __name__ == "__main__":

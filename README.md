@@ -127,7 +127,11 @@ Dashboard: an **InitialModel** job on a Class2D job or on the selection of its c
 ```bash
 celeris2d-web --port 8765 --project /data/myproject   # on the GPU machine; open http://localhost:8765
 ssh -L 8765:localhost:8765 <gpu-host>                  # from your laptop, if the server runs remotely
+# or serve it on the network behind a login (the first line of the file is the password; or CELERIS2D_WEB_PASSWORD):
+celeris2d-web --host 0.0.0.0 --port 8765 --project /data/myproject --password-file ~/.config/celeris2d/web_password
 ```
+With a password every page and API call needs a login (a session cookie for 30 days; scripts can send the
+password in an `X-Celeris-Password` header); `--host` other than localhost refuses to start without one.
 A processing project from movies to maps: **New project…** (a new or empty folder), then **New job** - Import
 (a folder of movies), MotionCtf, Pick, Extract, Class2D, InitialModel, Refine3D, ... Jobs go into a queue and
 run one at a time as soon as their inputs are ready, each in its own process (**Stop** ends it); a running job
