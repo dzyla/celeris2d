@@ -37,6 +37,14 @@ const STYLE = `
 .pk-kpi div { background: var(--well); border-radius: 6px; padding: 6px 8px; }
 .pk-kpi .v { font-size: 18px; font-weight: 600; color: var(--ink); } .pk-kpi .c { font-size: 11px; color: var(--ink3); }
 .pk-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+/* one colour per kind of action: blue go on (accept), amber rebuilds the templates, outlined = more of the same,
+   green = run everything (Pick all) */
+.pk-train { background: var(--you-dim, #2A2412) !important; border-color: var(--you) !important; color: var(--you) !important; font-weight: 600; }
+.pk-sec { background: transparent !important; border-color: var(--line) !important; color: var(--ink2) !important; }
+.pk-sec:hover { border-color: var(--data) !important; color: var(--ink) !important; }
+.pk-runall { background: var(--good) !important; border-color: var(--good) !important; color: #06150E !important; font-weight: 700;
+  font-size: 14px; padding: 9px 12px !important; letter-spacing: .2px; }
+.pk-runall:disabled { background: var(--well) !important; border-color: var(--line) !important; color: var(--ink3) !important; }
 .pk-btns button { flex: 1 1 auto; }
 .pk-note { color: var(--ink2); font-size: 12px; margin-top: 6px; line-height: 1.4; }
 .pk-err { color: var(--bad); font-size: 12px; margin-top: 6px; }
@@ -112,6 +120,7 @@ function mount(el, ctx) {
         </div>
       </div>
       <div class="pk-side">
+        <div class="pk-card pk-fincard"><h4>Finish</h4><div id="pk-fin"></div></div>
         <div class="pk-card" id="pk-size" style="display:none"><h4>Particle size <span id="pk-szv"></span></h4>
           <canvas class="pk-loupe" id="pk-loupe" width="440" height="440" aria-label="magnified view of the circle"></canvas>
           <div class="pk-th"><label for="pk-szs">Diameter</label><input type="range" id="pk-szs" min="30" max="600" step="1"><input type="number" id="pk-szn" min="10" max="5000" step="1" style="width:72px" aria-label="diameter in Å"></div>
@@ -120,9 +129,9 @@ function mount(el, ctx) {
         <div class="pk-card"><h4>Picks <span id="pk-diam"></span></h4><div class="pk-kpi" id="pk-kpi"></div></div>
         <div class="pk-card"><h4>Picker</h4>
           <div class="pk-btns">
-            <button id="pk-train" class="go" title="make templates from your picks, then pick the next micrographs with them (T)">Train &amp; suggest (T)</button>
-            <button id="pk-more" title="pick the next micrographs with the current templates (S)">Suggest more (S)</button>
-            <button id="pk-this" title="pick this micrograph with the templates (P)">This one (P)</button>
+            <button id="pk-train" class="pk-train" title="make templates from your picks, then pick the next micrographs with them (T)">Train &amp; suggest (T)</button>
+            <button id="pk-more" class="pk-sec" title="pick the next micrographs with the current templates (S)">Suggest more (S)</button>
+            <button id="pk-this" class="pk-sec" title="pick this micrograph with the templates (P)">This one (P)</button>
           </div>
           <div class="pk-ntm"><label for="pk-ntm">Templates</label><input type="number" id="pk-ntm" min="1" max="50" step="1"><span>2D classes of your picks at the next training (at most one per ~10 picks)</span></div>
           <div id="pk-tm"></div>
@@ -142,7 +151,6 @@ function mount(el, ctx) {
           </div>
           <div class="pk-err" id="pk-err"></div>
         </div>
-        <div class="pk-card"><h4>Finish</h4><div id="pk-fin"></div></div>
         <div class="pk-card"><h4>Micrographs <span id="pk-lcount"></span></h4>
           <div class="pk-filt" id="pk-filt">${[['all', 'All'], ['check', 'To check'], ['reviewed', 'Reviewed'], ['new', 'Not seen']].map(([k, t]) => `<button data-f="${k}">${t}</button>`).join('')}</div>
           <div class="pk-list" id="pk-list"></div></div>
@@ -817,7 +825,7 @@ function mount(el, ctx) {
     else {
       const sm = S.summary || {};
       f = (S.status === 'finished' && sm.picks != null ? `<div class="pk-note" style="margin:0 0 8px">Last run: <b style="color:var(--ink)">${(+sm.picks).toLocaleString()}</b> picks on ${sm.micrographs} micrographs (${sm.reviewed} reviewed, ${(+sm.manual_picks).toLocaleString()} yours) in ${sm.seconds} s.</div>` : '')
-        + `<button id="pk-run" class="${S.version ? 'go' : ''}" style="width:100%" ${ed && (S.version || rev) ? '' : 'disabled'}>${S.status === 'finished' ? 'Pick all again' : S.version ? 'Pick all micrographs' : 'Finish with my picks only'}</button>
+        + `<button id="pk-run" class="pk-runall" style="width:100%" ${ed && (S.version || rev) ? '' : 'disabled'}>▶ ${S.status === 'finished' ? 'Pick all again' : S.version ? 'Pick all micrographs' : 'Finish with my picks only'}</button>
           <div class="pk-note">${S.version ? `Every micrograph: the ${rev} reviewed keep your picks exactly, the other ${S.mics.length - rev} are picked with the templates in the score range (your picks and removals there stay). Runs through the queue; the output goes to Extract like a Pick job's.` : 'Without templates only the micrographs you picked get picks. Train first to pick the rest.'}</div>`;
     }
     if (S.error && S.status !== 'finished') f += `<div class="pk-err">${esc(S.error)}</div>`;
