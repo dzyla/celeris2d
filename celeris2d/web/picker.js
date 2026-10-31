@@ -690,13 +690,19 @@ function mount(el, ctx) {
     Q('#pk-tm').innerHTML = tr ? `<div class="pk-note">${tr.n} template${tr.n > 1 ? 's' : ''} from ${tr.picks} picks (${tr.accepted ?? 0} accepted suggestions) on ${tr.micrographs} micrograph${tr.micrographs > 1 ? 's' : ''} (${tr.seconds} s)${tr.missing ? `; ${tr.missing} of your picks look unlike any template` : ''}.</div>
       <div class="pk-tm">${tr.counts.map((c, k) => `<button type="button" class="pk-tmb ${off.has(k) ? 'off' : ''}" data-k="${k}" ${ed ? '' : 'disabled'}
           title="${off.has(k) ? 'switched off: its candidates are not picked. Click to use it again.' : 'click to switch this template off (e.g. it looks like ice, carbon or an edge)'}"><img src="${BASE}/templates.png?job=${enc(job)}&k=${k}&v=${S.version}" alt="template ${k + 1}"><span>${c} picks</span></button>`).join('')}</div>
-      <div class="pk-note" style="margin-top:2px">Click a template to switch it off: what it finds is not picked.</div>`
+      <div class="pk-note" style="margin-top:2px">Click a template to switch it off: what it finds is not picked, and its picks leave the next training.</div>`
       : '<div class="pk-note">Templates appear here after training: averages of your picks (clicked and accepted), centred and rotationally aligned (2D classes).</div>';
+    if (S.junk) Q('#pk-tm').innerHTML += `<div class="pk-note" style="color:var(--you)">${S.junk.toLocaleString()} picks of switched-off templates are left out of training (negatives instead) · <button class="pk-link" id="pk-putback">put them back</button></div>`;
+    const pb = Q('#pk-putback');
+    if (pb) pb.onclick = async () => {
+      try { const d = await api(BASE + '/putback', {job}); S.junk = d.junk; S.off = d.off; } catch (e) { return err(e.message); }
+      renderSide(); renderInfo(); draw();
+    };
     Q('#pk-tm').querySelectorAll('.pk-tmb').forEach(b => b.onclick = async () => {
       const k = +b.dataset.k, o = new Set(S.off || []);
       o.has(k) ? o.delete(k) : o.add(k);
       if (o.size >= tr.counts.length) return err('At least one template must stay on.');
-      try { const d = await api(BASE + '/off', {job, off: [...o]}); S.off = d.off; } catch (e) { return err(e.message); }
+      try { const d = await api(BASE + '/off', {job, off: [...o]}); S.off = d.off; S.junk = d.junk; } catch (e) { return err(e.message); }
       renderSide(); renderInfo(); draw();
     });
     Q('#pk-thr').style.display = S.version ? '' : 'none';

@@ -147,6 +147,16 @@ def test_manualpick_flow(tmp_path):
     from celeris2d.micview import family
     assert family(prj, ex)["pick"].id == j.id
     json.dumps(mp.load_state(j))
+    # a template switched off: its picks leave the next training (negatives instead) until put back
+    members = json.load(open(j.find("members.json")))
+    in0 = sum(1 for v in members.values() for q in v if q[2] == 0)
+    assert sum(len(v) for v in members.values()) == mp.load_state(j)["train"]["picks"] and in0 > 0
+    total = sum(len(v["picks"]) for v in mp.load_state(j)["mics"].values())     # + the pick on mic03 since
+    mp.set_off(prj, j, [0])
+    info = mp.train(prj, j)
+    assert info["junk"] == in0 and info["picks"] == total - in0 and mp.load_state(j)["off"] == []
+    assert sum(len(v) for v in mp.load_state(j)["junk"].values()) == in0      # still junk after the training
+    assert mp.put_back(prj, j) == in0 and mp.train(prj, j)["picks"] == total
     # templates off, the score range, then a new particle size: templates dropped, picks kept, label follows
     assert mp.set_off(prj, j, [1, 1]) == [1]
     assert mp.set_threshold(prj, j, upper=0.9)[1] == 0.9

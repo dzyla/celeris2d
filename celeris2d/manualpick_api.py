@@ -10,7 +10,9 @@
     POST /api/project/manualpick/train               {job}: templates from the reviewed micrographs' picks
     POST /api/project/manualpick/suggest             {job, stems?, after?, n?}: the next micrographs picked with them
     POST /api/project/manualpick/threshold           {job, threshold?, upper?}: the score range (upper null: none)
-    POST /api/project/manualpick/off                 {job, off: [k, ...]}: templates switched off (0-based)
+    POST /api/project/manualpick/off                 {job, off: [k, ...]}: templates switched off (0-based); their
+                                                     picks leave the next trainings (junk)
+    POST /api/project/manualpick/putback             {job}: every junk pick back into training
     POST /api/project/manualpick/settings            {job, diameter_a?, templates?}: at any time but while Pick all
                                                      runs (a new size drops the templates: train again)
     GET  /api/project/manualpick/templates.png?job=&k=  the templates side by side (white protein), or template k
@@ -95,7 +97,8 @@ def router(project_of):
         return _clean(dict(job=j.name, status=j.status, settings=dict(diameter_a=s.diameter_a, dark=s.dark,
                            templates=s.templates, suggest=s.suggest, min_dist_frac=s.min_dist_frac),
                            mics=rows, threshold=st.get("threshold"), threshold_hi=st.get("threshold_hi"),
-                           off=st.get("off") or [], version=ver, train=tr if ver else None, busy=busy.get(j.id),
+                           off=st.get("off") or [], junk=sum(len(v) for v in (st.get("junk") or {}).values()),
+                           version=ver, train=tr if ver else None, busy=busy.get(j.id),
                            summary={k: v for k, v in summ.items() if not isinstance(v, (list, dict))},
                            progress=summ.get("progress"), edited_after_run=bool(summ.get("t_run"))
                            and float(st.get("t_edit", 0)) > float(summ["t_run"]),
@@ -150,7 +153,14 @@ def router(project_of):
     @r.post("/off")
     def off(body: dict = Body(...)):
         prj, j = job_of(body.get("job"))
-        return dict(off=mp.set_off(prj, j, body.get("off") or []))
+        off = mp.set_off(prj, j, body.get("off") or [])
+        st = mp.load_state(prj.job(j.id))
+        return dict(off=off, junk=sum(len(v) for v in (st.get("junk") or {}).values()))
+
+    @r.post("/putback")
+    def putback(body: dict = Body(...)):
+        prj, j = job_of(body.get("job"))
+        return dict(put_back=mp.put_back(prj, j), junk=0, off=[])
 
     @r.post("/settings")
     def settings(body: dict = Body(...)):

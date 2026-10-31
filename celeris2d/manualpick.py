@@ -15,7 +15,8 @@ Interactive state (dashboard process): jobs/NNN/data/jNNN_manualpick.json - per 
 picks [x_a, y_a, src] (src 0: clicked, 1: an accepted suggestion), the rejected suggestions [x_a, y_a], and its state
 ("suggested": suggestions not yet checked, "reviewed": picks final); the score range (threshold, threshold_hi: an
 upper limit - dark contamination scores high against dark templates); templates switched off ("off": their candidates
-are never picked); the templates' version and training numbers. Every pick trains (clicked and accepted, on any
+are never picked, and the picks that made them - data/jNNN_members.json, each training pick's template - are "junk":
+left out of the next trainings and scored as negatives, until put back); the templates' version and training numbers. Every pick trains (clicked and accepted, on any
 micrograph), whatever the micrograph's state. Templates: maps/jNNN_templates.mrcs (white protein at the picker's working pixel size, diameter/20).
 Suggestions: data/NNN/Suggest/<stem>.npz (all candidates of a micrograph: xy_a, score, ok, template version).
 """
@@ -95,7 +96,8 @@ def _state_path(job: Job) -> str:
 
 def load_state(job: Job) -> dict:
     p = _state_path(job)
-    st = dict(mics={}, threshold=None, threshold_hi=None, off=[], version=0, train=None, t_edit=0.0)
+    st = dict(mics={}, threshold=None, threshold_hi=None, off=[], junk={}, junk_base={}, version=0, train=None,
+              t_edit=0.0)
     if os.path.exists(p):
         with open(p) as fh:
             st.update(json.load(fh))
@@ -172,15 +174,56 @@ def set_threshold(project: Project, job, threshold=_KEEP, upper=_KEEP) -> tuple:
     return st["threshold"], st["threshold_hi"]
 
 
+def _members(job: Job) -> dict:
+    """The last training's picks per template: {movie id: [[x_a, y_a, template], ...]}."""
+    p = job.find("members.json")
+    if p is None:
+        return {}
+    with open(p) as fh:
+        return json.load(fh)
+
+
+def _junk_of(base: dict, members: dict, off) -> dict:
+    """Junk picks: those carried from earlier trainings plus the members of the templates now off."""
+    off = {int(k) for k in off}
+    out = {k: [list(q) for q in v] for k, v in base.items()}
+    for mid, ps in members.items():
+        add = [[q[0], q[1]] for q in ps if int(q[2]) in off]
+        if add:
+            out.setdefault(mid, []).extend(add)
+    return {k: v for k, v in out.items() if v}
+
+
+def _is_junk(xy: np.ndarray, junk) -> np.ndarray:
+    if not junk or not len(xy):
+        return np.zeros(len(xy), bool)
+    from scipy.spatial import cKDTree
+    d, _ = cKDTree(np.asarray(junk, np.float64).reshape(-1, 2)).query(xy, distance_upper_bound=1.0)
+    return np.isfinite(d)
+
+
 def set_off(project: Project, job, off) -> list:
-    """Templates switched off (0-based): candidates they found best are not picked (e.g. one that averaged ice)."""
+    """Templates switched off (0-based): candidates they found best are not picked (e.g. one that averaged ice), and
+    the picks that made them leave the next trainings (negatives instead)."""
     job = project.job(job)
     with lock(job):
         st = load_state(job)
         st["off"] = sorted({int(k) for k in off})
+        st["junk"] = _junk_of(st.get("junk_base") or {}, _members(job), st["off"])
         st["t_edit"] = time.time()
         save_state(job, st)
     return st["off"]
+
+
+def put_back(project: Project, job) -> int:
+    """Every junk pick back into training (templates stay as they are, none off)."""
+    job = project.job(job)
+    with lock(job):
+        st = load_state(job)
+        n = sum(len(v) for v in (st.get("junk") or {}).values())
+        st.update(junk={}, junk_base={}, off=[], t_edit=time.time())
+        save_state(job, st)
+    return n
 
 
 def has_templates(job: Job) -> bool:
@@ -206,12 +249,13 @@ def set_settings(project: Project, job, diameter_a=None, templates=None) -> Manu
     project.update_params(job, **kw)
     if "diameter_a" in kw and kw["diameter_a"] != old.diameter_a:
         with lock(job):
-            for nm in ("templates.mrcs", "templates.png"):
+            for nm in ("templates.mrcs", "templates.png", "members.json"):
                 p = job.find(nm)
                 if p:
                     os.remove(p)
             st = load_state(job)
-            st.update(train=None, threshold=None, threshold_hi=None, off=[], t_edit=time.time())
+            st.update(train=None, threshold=None, threshold_hi=None, off=[], junk_base=st.get("junk") or {},
+                      t_edit=time.time())
             save_state(job, st)
         job = project.job(job.id)
         if job.label == manualpick_label(old) and job.status != "running":
@@ -489,8 +533,19 @@ def train(project: Project, job, log=print) -> dict:
         st = load_state(job)
     mi = micrographs(project, job).set_index("movie_id", drop=False)
     # every pick trains: clicked or accepted, on reviewed micrographs and on ones with suggestions still to check
-    rev = {int(k): v for k, v in sorted(st["mics"].items(), key=lambda kv: int(kv[0]))
-           if v.get("picks") and int(k) in mi.index}
+    # picks of switched-off templates ("junk") leave training and are scored as negatives
+    junk = st.get("junk") or {}
+    rev, jxy = {}, {}
+    for k, v in sorted(st["mics"].items(), key=lambda kv: int(kv[0])):
+        if not v.get("picks") or int(k) not in mi.index:
+            continue
+        pa = np.asarray(v["picks"], np.float64)
+        bad = _is_junk(pa[:, :2], junk.get(k))
+        if bad.any():
+            jxy[int(k)] = pa[bad, :2]
+        if (~bad).any():
+            rev[int(k)] = dict(v, picks=[p for p, b in zip(v["picks"], bad) if not b])
+    n_junk = sum(len(v) for v in jxy.values())
     n_picks = sum(len(v["picks"]) for v in rev.values())
     n_accepted = sum(sum(1 for p in v["picks"] if len(p) > 2 and p[2]) for v in rev.values())
     if n_picks < 5:
@@ -506,7 +561,10 @@ def train(project: Project, job, log=print) -> dict:
            for m, p in xy.items()}                                    # beyond MAX_TRAIN: the same share of each
     split = int(sum(u.sum() for u in use.values())) >= 20
 
+    members = {}
+
     def run(dev):
+        members.clear()
         patches, halves, wa = [], [], None
         for m, p in xy.items():
             img, apix, ctf = load_mic(project, mc, mi.loc[m], dev)
@@ -518,6 +576,12 @@ def train(project: Project, job, log=print) -> dict:
         X, H = torch.cat(patches), np.concatenate(halves)
         rad = 0.5 * s.diameter_a / wa
         refs, cls, _ = class_averages(X, s.templates, rad)
+        cl, off_ = cls.cpu().numpy(), 0
+        for m, p in xy.items():                                       # each training pick's template
+            q = p[use[m]]
+            members[str(m)] = [[round(float(a), 1), round(float(b_), 1), int(c_)]
+                               for (a, b_), c_ in zip(q, cl[off_:off_ + len(q)])]
+            off_ += len(q)
         tm = refs[:, :-1, :-1].cpu().numpy()                          # even box, centre pixel kept at b // 2
         counts = torch.bincount(cls, minlength=len(refs)).cpu().numpy()
         th_tm = [class_averages(X[torch.as_tensor(H == h, device=X.device)], s.templates, rad)[0][:, :-1, :-1]
@@ -526,7 +590,7 @@ def train(project: Project, job, log=print) -> dict:
         pos, neg = [], []
         for k, v in st["mics"].items():
             m = int(k)
-            if m not in mi.index or not (m in rev or v.get("rejected")):
+            if m not in mi.index or not (m in rev or v.get("rejected") or m in jxy):
                 continue
             img, apix, ctf = load_mic(project, mc, mi.loc[m], dev)
             cs = [_candidates(img, apix, ctf, optics, s, t, wa, batch=32, keep_maps=True)[0]
@@ -535,31 +599,37 @@ def train(project: Project, job, log=print) -> dict:
             if m in rev:
                 sc = [_scores_at(c, xy[m], MATCH * s.diameter_a) for c in cs]
                 pos.append(np.where(half[m] == 0, sc[1], sc[0]))
-            if v.get("rejected"):
-                r = np.asarray(v["rejected"], np.float64)
+            r = np.concatenate([np.asarray(v.get("rejected") or [], np.float64).reshape(-1, 2),
+                                jxy.get(m, np.zeros((0, 2)))])
+            if len(r):
                 neg.append(np.mean([_scores_at(c, r, MATCH * s.diameter_a) for c in cs[:2]], 0))
             del img
         return tm, wa, counts, np.concatenate(pos) if pos else np.zeros(0), np.concatenate(neg) if neg else np.zeros(0)
     tm, wa, counts, pos, neg = _gpu_or_cpu(run)
     th = choose_threshold(pos, neg)
     project.write_mrc(job.out("templates.mrcs"), tm.astype(np.float32), wa, "float32")
+    with open(job.out("members.json"), "w") as fh:
+        json.dump(members, fh)
     with lock(job):
         st = load_state(job)
         st["version"] = int(st.get("version", 0)) + 1
         st["off"] = []                                                # new templates, new numbering
+        st["junk_base"] = st.get("junk") or {}                        # junk stays junk until put back
         if th is not None:
             st["threshold"] = th
             if st.get("threshold_hi") is not None and st["threshold_hi"] <= th:
                 st["threshold_hi"] = None
         info = dict(version=st["version"], n=len(tm), counts=counts.tolist(), apix=round(wa, 4), box=int(tm.shape[-1]),
-                    picks=int(sum(u.sum() for u in use.values())), accepted=n_accepted, micrographs=len(xy),
+                    picks=int(sum(u.sum() for u in use.values())), accepted=n_accepted, junk=n_junk,
+                    micrographs=len(xy),
                     half_sets=split,
                     rejected=int(np.isfinite(neg).sum()), missing=int((~np.isfinite(pos)).sum()),
                     pos=np.round(pos[np.isfinite(pos)], 4).tolist(), neg=np.round(neg[np.isfinite(neg)], 4).tolist(),
                     threshold=th, seconds=round(time.time() - t0, 2), t=time.time())
         st["train"] = info
         save_state(job, st)
-    log(f"[{job.name}] {len(tm)} templates from {info['picks']} picks ({n_accepted} accepted) on {len(xy)} micrographs "
+    log(f"[{job.name}] {len(tm)} templates from {info['picks']} picks ({n_accepted} accepted, {n_junk} junk left out) "
+        f"on {len(xy)} micrographs "
         f"({counts.tolist()}), threshold {th if th is None else round(th, 3)}, {info['seconds']} s")
     return info
 
