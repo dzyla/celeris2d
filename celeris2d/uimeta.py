@@ -817,7 +817,12 @@ TYPES["Sharpen"] = dict(
                         section="B-factor"),
         "fit_weighted": F("Fit on FSC-weighted amplitudes", "Off matches RELION's B-factors in tests.",
                           section="B-factor"),
-        "fsc_weight": F("FSC weighting", "Weight each resolution shell by its FSC (RELION).", section="Filter"),
+        "nu_filter": F("Filter region by region", "Sharpen the half maps filtered region by region (like cryoSPARC's "
+                                                  "sharpened NU map): domains below the global resolution stay smooth "
+                                                  "instead of becoming sharpened noise. Off: one global filter "
+                                                  "(RELION).", section="Filter"),
+        "fsc_weight": F("FSC weighting", "Weight each resolution shell by its FSC (RELION). Only without the "
+                                         "region-by-region filter.", section="Filter"),
         "edge_shells": F("Low-pass edge (shells)", "Width of the soft edge of the low-pass, in Fourier shells.",
                          section="Filter"),
         "mtf_apix": F("MTF pixel size (Å)", "Pixel size the MTF refers to (the detector's pixel, before binning). 0: "

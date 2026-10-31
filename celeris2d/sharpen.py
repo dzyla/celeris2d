@@ -11,7 +11,10 @@ the diagnostics needed to trust it.
                  tutorial) B -55 A^2 without, -27 with (RELION -31). The MTF moves the B-factor, hardly the result:
                  B absorbs the detector's fall-off otherwise.
     filter       map / MTF x exp(-B s^2 / 4) x sqrt(2 FSC / (1 + FSC)) (Rosenthal & Henderson 2003, corrected FSC),
-                 low-passed at the resolution with a cosine edge of edge_shells shells.
+                 low-passed at the resolution with a cosine edge of edge_shells shells. nu_filter (default): the map is
+                 the average of the half maps each filtered region by region (nufilter.adaptive_filter, cryoSPARC's
+                 map_sharp is its NU map sharpened) instead of the global FSC weighting, so domains below the global
+                 resolution are not sharpened noise. The FSC and the B-factor fit stay on the unfiltered half maps.
     outputs      sharpened.mrc (whole box), sharpened_masked.mrc, postprocess.png (FSC curves, Guinier plot,
                  central slices with the mask outline), summary: resolutions (corrected / masked / unmasked, 0.143
                  and 0.5), B-factor and fit quality, mask coverage and warnings (mask too tight, mask cutting
@@ -42,7 +45,11 @@ class SharpenSettings:
     mask: str = "auto"              # "auto": made from the half maps (masks.auto_mask); "refine": the refinement's;
                                     # else a MaskCreate job (number) or a mask .mrc (path, absolute or relative to the project)
     edge_shells: int = 2            # cosine edge of the low-pass (Fourier shells)
-    fsc_weight: bool = True         # weight each shell by sqrt(2 FSC / (1 + FSC)) (RELION)
+    fsc_weight: bool = True         # weight each shell by sqrt(2 FSC / (1 + FSC)) (RELION); not with nu_filter (its
+                                    # per-region cutoffs replace it: with both, J20 3.5 A amplitude 0.21 vs 0.31)
+    nu_filter: bool = True          # sharpen the half maps filtered region by region (see the module doc). Noise
+                                    # pieces inside the mask at the 15 % threshold: J20 9.6 -> 5.8 % (cryoSPARC
+                                    # map_sharp 10.6), HCN1 13.7 -> 3.4 % (11.2); 4 A amplitude J20 0.87 -> 0.95
     mtf: str = ""                   # detector MTF (RELION .star: rlnResolutionInversePixel, rlnMtfValue; RELION ships
                                     # them in relion/data/, e.g. mtf_k2_300kV.star): the map is divided by it before the
                                     # B-factor fit and sharpening. Empty: no correction (the B-factor then also has to
@@ -207,7 +214,10 @@ def postprocess(h1: np.ndarray, h2: np.ndarray, mask: np.ndarray, apix: float, s
     b = s.b_factor or b_auto
     s2v = (kk / box_a) ** 2
     filt = torch.exp(-b * s2v / 4) * inv_mtf
-    if s.fsc_weight:
+    if s.nu_filter:                   # each half filtered region by region against the other (a map to look at;
+        from .nufilter import adaptive_filter                         # the FSC above is from the unfiltered halves)
+        full = 0.5 * (adaptive_filter(t1, t2, apix, res, mask=m) + adaptive_filter(t2, t1, apix, res, mask=m))
+    elif s.fsc_weight:
         fc = torch.as_tensor(np.clip(f_c, 0, 1), device=dev)
         filt = filt * torch.sqrt(2 * fc / (1 + fc)).nan_to_num(0)[sh.clamp(max=nsh - 1)]
     w = max(1, s.edge_shells)
