@@ -39,7 +39,8 @@ async function api(url, body) {
 // ------------------------------------------------------------------ project, queue, list
 async function load() {
   let d;
-  try { d = await api('/api/project'); } catch (e) { $('#pname').textContent = 'No project open'; $('#ppath').textContent = e.message; return; }
+  try { d = await api('/api/project'); } catch (e) { $('#pname').textContent = 'No project open'; $('#ppath').textContent = ''; noProject = true; jobs = []; return; }
+  noProject = false;
   jobs = d.jobs;
   $('#pname').textContent = d.root.split(/[\\/]/).filter(Boolean).pop();
   $('#ppath').textContent = d.root;
@@ -1180,7 +1181,7 @@ async function classStrip(box, jobId, chosen, onPick, single) {
   draw();
 }
 $('#newjob').onclick = jobPicker;
-$('#home').onclick = e => { e.preventDefault(); showHome(); };
+$('#home').onclick = e => { e.preventDefault(); noProject ? showStart() : showHome(); };
 $('#report').onclick = async () => {
   current = null; renderList();
   $('#main').innerHTML = '<div class="empty">Making the report…</div>';
@@ -1193,20 +1194,92 @@ $('#report').onclick = async () => {
     <h3 class="muted" style="margin:22px 0 6px;font-size:13px">Methods</h3><div class="methods">${esc(d.methods_text)}</div></div>`;
 };
 document.querySelectorAll('.menu-list button').forEach(b => b.addEventListener('click', () => b.closest('details').open = false));
-$('#open').onclick = async () => {
-  const root = prompt('Project folder (the one with project.db). Windows paths such as E:\\linux\\celeris\\inx6 work too:', '');
-  if (!root) return;
-  try { await api('/api/project/open', {root}); } catch (e) { alert(e.message); return; }
-  current = null; load().then(showHome);
-};
-$('#create').onclick = async () => {
-  const root = prompt('Folder for the new project (new or empty). Windows paths such as E:\\linux\\celeris\\new work too:', '');
-  if (!root) return;
-  try { await api('/api/project/open', {root, create: true}); } catch (e) { alert(e.message); return; }
-  current = null; await load(); jobForm('Import');
-};
+// ------------------------------------------------------------------ project browser: recent projects, folders
+const ago = t => { const s = Date.now() / 1000 - t; return s < 90 ? 'just now' : s < 5400 ? Math.round(s / 60) + ' min ago' : s < 129600 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' days ago'; };
+async function openProject(root, create = false) {
+  try { await api('/api/project/open', create ? {root, create: true} : {root}); } catch (e) { alert(e.message); return false; }
+  $('#pdlg').open && $('#pdlg').close();
+  current = null; noProject = false; await load();
+  if (create) jobForm('Import'); else showHome();
+  return true;
+}
+function recentRows(list, cur) {
+  return list.map(p => `<div class="prow ${p.root === cur ? 'cur' : ''} ${p.exists ? '' : 'gone'}">
+      <div style="min-width:0"><div class="pn">${esc(p.name || p.root.split(/[\\/]/).pop())}${p.root === cur ? ' <span class="badge">open now</span>' : ''}</div>
+        <div class="pp" title="${esc(p.root)}">${esc(p.root)}${p.exists ? '' : ' · not found (disk not mounted?)'}</div></div>
+      <span class="muted when">${p.exists ? `${p.jobs ?? '?'} jobs · changed ${ago(p.updated)}` : ''}</span>
+      <span style="display:flex;gap:6px">${p.exists ? `<button class="go" data-open="${esc(p.root)}">Open</button>` : ''}<button class="quiet" data-forget="${esc(p.root)}" title="remove from this list (the folder is not touched)">✕</button></span></div>`).join('');
+}
+function wireRecent(box, after) {
+  box.querySelectorAll('[data-open]').forEach(b => b.onclick = () => openProject(b.dataset.open));
+  box.querySelectorAll('[data-forget]').forEach(b => b.onclick = async () => { await api('/api/projects/forget', {root: b.dataset.forget}); after(); });
+}
+async function projectDialog(mode = 'open', start = '') {
+  const dlg = $('#pdlg'), body = $('#pdlgb'), foot = $('#pdlgf');
+  $('#pdlgt').textContent = mode === 'create' ? 'New project' : 'Open a project';
+  let rec = {projects: [], current: null};
+  try { rec = await api('/api/projects'); } catch (e) {}
+  const draw = async path => {
+    let d;
+    try { d = await api('/api/projects/browse?path=' + encodeURIComponent(path || '')); } catch (e) { body.innerHTML = `<p class="pnote">${esc(e.message)}</p>`; return; }
+    const recent = mode === 'open' && rec.projects.length ? `<h3>Recent projects</h3><div class="plist" id="prec">${recentRows(rec.projects, rec.current)}</div>` : '';
+    body.innerHTML = `${recent}<h3>${mode === 'create' ? 'Where to make it' : 'Browse'}</h3>
+      <div class="pathbar"><input id="ppathin" value="${esc(d.path)}" aria-label="folder path" spellcheck="false"><button id="ppathgo">Go</button>
+        <button class="quiet" id="pphome" title="home folder">~</button>${d.parent ? '<button class="quiet" id="ppup" title="parent folder">↑</button>' : ''}</div>
+      ${d.note ? `<div class="pnote">${esc(d.note)}</div>` : ''}${d.error ? `<div class="pnote">${esc(d.error)}</div>` : ''}
+      <div class="crumbs">${d.crumbs.map((c, i) => (i > 1 ? '<span>/</span>' : '') + `<a href="#" data-go="${esc(c.path)}">${esc(c.name)}</a>`).join('')}</div>
+      ${d.project ? `<div class="here"><span class="badge">project</span><b>${esc(d.project.name)}</b><span class="muted">${d.project.jobs ?? '?'} jobs · changed ${ago(d.project.updated)}</span>
+        <span style="margin-left:auto">${mode === 'open' ? `<button class="go" data-open="${esc(d.path)}">Open this project</button>` : '<span class="muted">this folder is a project already</span>'}</span></div>` : ''}
+      <div class="dirs">${d.dirs.length ? d.dirs.map(x => `<div class="dr" data-go="${esc(x.path)}" ${x.project ? `data-proj="${esc(x.path)}"` : ''} tabindex="0">
+          <span aria-hidden="true">${x.project ? '◆' : '▸'}</span><span class="nm">${esc(x.name)}</span>
+          ${x.project ? `<span style="display:flex;gap:8px;align-items:center"><span class="badge">project · ${x.project.jobs ?? '?'} jobs</span>${mode === 'open' ? `<button class="go" data-open="${esc(x.path)}">Open</button>` : ''}</span>` : '<span></span>'}</div>`).join('')
+        : '<div class="muted" style="padding:10px">No sub-folders.</div>'}${d.truncated ? '<div class="muted" style="padding:8px 10px">… more folders not shown: type the path</div>' : ''}</div>`;
+    if (mode === 'create') {
+      foot.innerHTML = `<span class="muted" style="margin-right:auto">${d.empty ? 'This folder is empty: the project can go here, or in a new sub-folder.' : 'A new sub-folder for the project:'}</span>
+        <input id="pnew" placeholder="new folder name" style="width:220px" aria-label="new folder name"><button class="go" id="pmake">Create project</button>`;
+      $('#pmake').onclick = () => {
+        const nm = $('#pnew').value.trim();
+        if (!nm && !d.empty) { $('#pnew').focus(); return; }
+        if (nm && /[\\/]/.test(nm)) { alert('A folder name, not a path'); return; }
+        openProject(nm ? d.path.replace(/\/$/, '') + '/' + nm : d.path, true);
+      };
+    } else foot.innerHTML = '<span class="muted" style="margin-right:auto">◆ marks project folders (they hold project.db). Double-click a project to open it.</span><button id="pcancel">Cancel</button>';
+    if ($('#pcancel')) $('#pcancel').onclick = () => dlg.close();
+    const go = p => draw(p);
+    $('#ppathgo').onclick = () => go($('#ppathin').value.trim());
+    $('#ppathin').onkeydown = e => { if (e.key === 'Enter') go($('#ppathin').value.trim()); };
+    $('#pphome').onclick = () => go(d.home);
+    if ($('#ppup')) $('#ppup').onclick = () => go(d.parent);
+    body.querySelectorAll('.crumbs [data-go]').forEach(a => a.onclick = e => { e.preventDefault(); go(a.dataset.go); });
+    body.querySelectorAll('.dr').forEach(r => {
+      r.onclick = e => { if (!e.target.closest('button')) go(r.dataset.go); };
+      r.onkeydown = e => { if (e.key === 'Enter') go(r.dataset.go); };
+      if (r.dataset.proj && mode === 'open') r.ondblclick = () => openProject(r.dataset.proj);
+    });
+    body.querySelectorAll('.here [data-open], .dr [data-open]').forEach(b => b.onclick = e => { e.stopPropagation(); openProject(b.dataset.open); });
+    const pr = $('#prec');
+    if (pr) wireRecent(pr, async () => { rec = await api('/api/projects'); draw(d.path); });
+  };
+  await draw(start);
+  if (!dlg.open) dlg.showModal();
+}
+$('#pdlgx').onclick = () => $('#pdlg').close();
+$('#open').onclick = () => projectDialog('open');
+$('#create').onclick = () => projectDialog('create');
+// no project open: the start page lists the remembered projects
+let noProject = false;
+async function showStart() {
+  let rec = {projects: []};
+  try { rec = await api('/api/projects'); } catch (e) {}
+  $('#main').innerHTML = `<div class="start"><h1>Celeris</h1><p class="muted">No project is open. Open one you used before, browse for a project folder, or start a new one.</p>
+    <div style="display:flex;gap:10px;margin:14px 0 22px"><button class="go" id="sbrowse">Browse for a project…</button><button id="snew">New project…</button></div>
+    ${rec.projects.length ? `<h3 class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.06em">Recent projects</h3><div class="plist" id="srec">${recentRows(rec.projects, null)}</div>` : ''}</div>`;
+  $('#sbrowse').onclick = () => projectDialog('open');
+  $('#snew').onclick = () => projectDialog('create');
+  if ($('#srec')) wireRecent($('#srec'), showStart);
+}
 
 window.addEventListener('hashchange', () => { const h = decodeURIComponent(location.hash.slice(1)); const m = jobs.find(j => j.name.startsWith(h)); if (m && m.name !== current) showJob(m.name); });
 loadTypes();
 if (location.hash.length > 1) current = decodeURIComponent(location.hash.slice(1));
-load().then(() => { const m = current && jobs.find(j => j.name.startsWith(current)); if (m) showJob(m.name); else showHome(); });
+load().then(() => { if (noProject) return showStart(); const m = current && jobs.find(j => j.name.startsWith(current)); if (m) showJob(m.name); else showHome(); });

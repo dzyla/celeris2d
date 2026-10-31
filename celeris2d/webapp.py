@@ -668,6 +668,127 @@ def discover(path):
     return out
 
 
+def project_info(root: str) -> dict:
+    """Name, job count and last change of the Celeris project at root (read-only: nothing is created there); {} if
+    root is not one."""
+    db = os.path.join(root, "project.db")
+    if not os.path.isfile(db):
+        return {}
+    out = dict(name=os.path.basename(os.path.normpath(root)), jobs=None,
+               updated=max(os.path.getmtime(f) for f in (db, db + "-wal") if os.path.exists(f)))
+    try:
+        with open(os.path.join(root, "project.json")) as fh:
+            out["name"] = json.load(fh).get("name") or out["name"]
+    except (OSError, ValueError):
+        pass
+    try:
+        import sqlite3
+        c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+        try:
+            out["jobs"] = int(c.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+        finally:
+            c.close()
+    except Exception:       # noqa: BLE001 - a locked / older catalog: the count is optional
+        pass
+    return out
+
+
+def project_dirs(path: str) -> dict:
+    """A folder for the project browser: its sub-folders (Celeris projects marked, with name and job count),
+    breadcrumbs, and whether the folder itself is a project or empty (where a new project may go)."""
+    req = os.path.abspath(os.path.expanduser(path or "~"))
+    d, note = req, None
+    while not os.path.isdir(d):
+        nd = os.path.dirname(d)
+        if nd == d:
+            break
+        d = nd
+    if d != req:
+        note = f"{req} does not exist; showing {d}"
+    crumbs, p = [], d
+    while True:
+        crumbs.append(dict(name=os.path.basename(p) or p, path=p))
+        np_ = os.path.dirname(p)
+        if np_ == p:
+            break
+        p = np_
+    out = dict(path=d, requested=req, parent=os.path.dirname(d) if os.path.dirname(d) != d else None,
+               crumbs=crumbs[::-1], home=os.path.expanduser("~"), note=note, project=project_info(d) or None,
+               empty=False, dirs=[], truncated=False)
+    try:
+        with os.scandir(d) as it:
+            ents = []
+            for i, e in enumerate(it):
+                if i >= SCAN_CAP:
+                    out["truncated"] = True
+                    break
+                ents.append(e)
+    except OSError as e:
+        out["error"] = f"cannot list {d}: {e.strerror or e}"
+        return out
+    out["empty"] = not ents
+    dirs = []
+    for e in ents:
+        if e.name.startswith("."):
+            continue
+        try:
+            if not e.is_dir():
+                continue
+        except OSError:
+            continue
+        info = project_info(e.path) if os.path.isfile(os.path.join(e.path, "project.db")) else {}
+        dirs.append(dict(name=e.name, path=e.path, project=info or None))
+    dirs.sort(key=lambda x: (x["project"] is None, _natkey(x["name"])))
+    out["truncated"] = out["truncated"] or len(dirs) > LIST_CAP
+    out["dirs"] = dirs[:LIST_CAP]
+    return out
+
+
+class Projects:
+    """Projects opened in this dashboard, newest first, kept in <workdir>/projects.json (survives restarts)."""
+
+    def __init__(self, workdir, n=30):
+        self.fn, self.n, self.lock = os.path.join(workdir, "projects.json"), n, threading.Lock()
+
+    def _read(self) -> list:
+        try:
+            with open(self.fn) as fh:
+                return list(json.load(fh).get("projects", []))
+        except (OSError, ValueError):
+            return []
+
+    def _write(self, items):
+        tmp = self.fn + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(dict(projects=items[:self.n]), fh, indent=1)
+        os.replace(tmp, self.fn)
+
+    def add(self, root):
+        root = os.path.abspath(root)
+        with self.lock:
+            items = [x for x in self._read() if x.get("root") != root]
+            try:
+                self._write([dict(root=root, opened=time.time())] + items)
+            except OSError:
+                pass
+
+    def forget(self, root):
+        with self.lock:
+            try:
+                self._write([x for x in self._read() if x.get("root") != os.path.abspath(root)])
+            except OSError:
+                pass
+
+    def list(self) -> list:
+        """Each remembered project with its name, job count and last change (missing ones flagged, not dropped:
+        a disk that is not mounted now)."""
+        out = []
+        for x in self._read():
+            info = project_info(x["root"])
+            out.append(dict(x, exists=bool(info), **info))
+        return out
+
+
 class Recent:
     """Recently loaded inputs, kept in <workdir>/recent.json so they survive restarts."""
 
@@ -972,6 +1093,9 @@ def create(workdir, project_dir=None, password: str = ""):
 
     # ------------------------------------------------------------------ a Celeris project (jobs/, data/, project.db)
     proj_state = dict(root=os.path.abspath(project_dir) if project_dir else None, runs={})
+    projects = Projects(workdir)
+    if proj_state["root"] and os.path.isfile(os.path.join(proj_state["root"], "project.db")):
+        projects.add(proj_state["root"])
 
     def _prj(root=None):
         from .project import Project
@@ -1108,7 +1232,28 @@ def create(workdir, project_dir=None, password: str = ""):
                 raise HTTPException(400, f"{root} is not empty: choose a new or empty folder for a new project")
             Project(root)
         prj = _prj(root)
+        projects.add(prj.root)
         return dict(root=prj.root)
+
+    @app.get("/api/projects")
+    def projects_list():
+        """Projects opened here before (newest first) and the one open now."""
+        return dict(projects=projects.list(), current=proj_state["root"])
+
+    @app.post("/api/projects/forget")
+    def projects_forget(body: dict = Body(...)):
+        """Drop a project from the list (its folder is not touched)."""
+        projects.forget(body.get("root", ""))
+        return dict(projects=projects.list())
+
+    @app.get("/api/projects/browse")
+    def projects_browse(path: str = ""):
+        """A folder's sub-folders with Celeris projects marked (default: next to the last project opened)."""
+        from .moviejobs import _wsl
+        if not path:
+            last = [x["root"] for x in projects.list() if x.get("exists")]
+            path = os.path.dirname(last[0]) if last else (proj_state["root"] and os.path.dirname(proj_state["root"])) or "~"
+        return project_dirs(_wsl(path))
 
     @app.post("/api/project/final")
     def project_final(body: dict = Body(...)):

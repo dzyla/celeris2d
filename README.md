@@ -132,7 +132,9 @@ celeris2d-web --host 0.0.0.0 --port 8765 --project /data/myproject --password-fi
 ```
 With a password every page and API call needs a login (a session cookie for 30 days; scripts can send the
 password in an `X-Celeris-Password` header); `--host` other than localhost refuses to start without one.
-A processing project from movies to maps: **New project…** (a new or empty folder), then **New job** - Import
+A processing project from movies to maps: **Project → Open a project…** browses the server's folders (project folders,
+the ones with project.db, are marked with their job count) and lists the projects opened before (kept in the
+workdir's projects.json); **New project…** (a new or empty folder), then **New job** - Import
 (a folder of movies), MotionCtf, Pick, Extract, Class2D, InitialModel, Refine3D, ... Jobs go into a queue and
 run one at a time as soon as their inputs are ready, each in its own process (**Stop** ends it); a running job
 shows its log and newest figure live. After a 2D or 3D classification a selection waits for you: click the
