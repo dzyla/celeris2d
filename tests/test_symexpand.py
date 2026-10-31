@@ -246,7 +246,14 @@ def test_class3d_on_symexpand_is_own_expansion(sim):
         z[nm] = (t["uid"][o], t["copy"][o], t["cls"][o], t["rot"][o])
     assert np.array_equal(z["chain"][0], z["own"][0]) and np.array_equal(z["chain"][1], z["own"][1])
     assert np.allclose(z["chain"][3], z["own"][3], atol=1e-3)
-    agree = float((z["chain"][2] == z["own"][2]).mean())
+    # class numbers are arbitrary (two near-equal classes can come out in either order): compare up to a relabelling
+    from scipy.optimize import linear_sum_assignment
+    a_, b_ = z["chain"][2], z["own"][2]
+    k_ = int(max(a_.max(), b_.max())) + 1
+    cm_ = np.zeros((k_, k_))
+    np.add.at(cm_, (a_, b_), 1)
+    r_, c_ = linear_sum_assignment(-cm_)
+    agree = float(cm_[r_, c_].sum() / len(a_))
     print(f"\n[test] Class3D: SymExpand input vs its own sym_expand: {agree * 100:.2f}% of copies in the same class")
     assert agree > 0.99, agree
 

@@ -496,6 +496,9 @@ TYPES["Refine3D"] = dict(
         "rescue_shift_a": F("Rescue shift range (A)", "Shift range (plus or minus) of the rescue search.",
                             section="Alignment"),
         "rescue_res_a": F("Rescue resolution (A)", "Resolution of the rescue's global search.", section="Alignment"),
+        "rescue_topk": F("Rescue candidates", "More than 1: keep this many best poses of the rescue's search and check "
+                                              "each at finer resolution (finds more misassigned particles).",
+                         section="Alignment"),
         "wiener": F("FSC regularisation (T)", "More than 0: half maps regularised by their FSC, as RELION does (this "
                                               "is RELION's T; 1 = RELION's default). 0: a fixed small regulariser.",
                     section="Reconstruction"),

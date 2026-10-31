@@ -355,6 +355,22 @@ def test_refine_rescue(sim):
     assert any("rescue: the worst-fitting 20%" in str(x) for x in lines)
 
 
+def test_refine_rescue_topk(sim):
+    """rescue_topk: the rescue keeps several (orientation, shift) hypotheses and polishes them (coarse to fine); runs,
+    logs, keeps the consensus resolution."""
+    from celeris2d import jobs
+    prj, cons = sim["prj"], sim["cons"]
+    ex, st = cons.params["particles"], cons.params["reference"]
+    lines = []
+    rj = jobs.refine3d_job(prj, ex, st, st, jobs.Refine3DSettings(n_iter=4, res_start_a=12.0, drop_frac=0.0, rescue_frac=0.2,
+                                                                  rescue_iters=(2,), rescue_shift_a=9.0, rescue_topk=8),
+                           label="rescue_topk")
+    jobs.run_refine3d(prj, rj, log=lines.append)
+    r0, r1 = prj.summary_of(cons)["resolution_a"], prj.summary_of(rj)["resolution_a"]
+    assert r1 <= r0 * 1.15, (r0, r1)
+    assert any("best 8 polished" in str(x) for x in lines)
+
+
 def test_refine_from_map_alone(sim):
     """Refine3D without a poses job: from the map alone, low-passed to 30 A, every particle searches all orientations
     and shifts, then the usual local refinement. The orientations must come out as those of a refinement started at

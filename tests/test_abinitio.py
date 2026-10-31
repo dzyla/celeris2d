@@ -218,6 +218,61 @@ def test_optics_fit_recovers_magnification():
     assert np.allclose(np.array(fit.mag), M.cpu().numpy(), atol=5e-4), (fit.mag, M)
 
 
+def test_optics_fit_recovers_aberrations():
+    """optics.fit_optics: particles simulated with known odd (coma, trefoil) and even (spherical, 4-fold) aberration
+    phases are fitted back to them (magnification fixed: fitted together, even astigmatism-like terms trade with
+    anisotropic magnification - 0.20 for 0.30 here)."""
+    from celeris2d import optics as op
+    from celeris2d.engine import Optics, freqs
+    dev, b, apix, n = "cuda", BOX, APIX, 1500
+    g = torch.Generator().manual_seed(6)
+    vols = []
+    for _ in range(2):
+        V = ab.Volume(b, dev)
+        V.set_real(_volume(BLOBS).to(dev))
+        vols.append(V)
+    A = ab.euler_to_matrix(torch.rand(n, generator=g) * 360, torch.rad2deg(torch.arccos(torch.rand(n, generator=g) * 2 - 1)),
+                           torch.rand(n, generator=g) * 360)
+    t = torch.zeros(n, 2)
+    half = (torch.arange(n) % 2)
+    optics = Optics(300, 2.7, 0.1)
+    p = torch.tensor([[15000.0, 15000.0, 0.0, 0.0, 0.0, 1.0]]).expand(n, 6).contiguous()
+    fy, fx = freqs(b, dev)
+    kx, ky = fx[None, :].expand(b, -1), fy[:, None].expand(-1, len(fx))
+    res_hi = 2.5 * apix
+    s_max = 1.0 / res_hi
+    odd = torch.tensor([0.6, -0.3, 0.2, 0.0], device=dev)
+    even = torch.tensor([0.4, 0.0, 0.3, 0.0, 0.0], device=dev)
+    proj = vols[0].project(A.to(dev))
+    c = op.ctf_points(p.to(dev), optics, kx.reshape(1, -1), ky.reshape(1, -1), b * apix, odd, even, s_max).reshape(n, b, -1)
+    data = proj * c
+    data = data + 1.0 * data.abs().mean() * torch.complex(torch.randn(data.shape, generator=g).to(dev),
+                                                           torch.randn(data.shape, generator=g).to(dev))
+
+    class Clf:
+        pass
+    clf = Clf()
+    clf.dev, clf.box_a, clf.optics, clf.ctf_p = dev, b * apix, optics, p
+    clf._fetch = lambda j, d, b_: data[j.to(dev)]
+    fit = op.fit_optics(clf, torch.arange(n), A, t, half, vols, res_hi_a=res_hi, res_lo_a=20 * apix, n_max=n,
+                        fit_mag=False, log=lambda *a: None)
+    assert np.allclose(fit.odd, odd.cpu().numpy(), atol=0.1), fit.odd
+    assert np.allclose(fit.even, even.cpu().numpy(), atol=0.1), fit.even
+
+
+def test_distinct_candidates():
+    """distinct_candidates: a near neighbour and a symmetry-equivalent copy of the best pose are suppressed; a pose far
+    away and the same orientation at a distant shift are kept."""
+    A0 = ab.euler_to_matrix(torch.tensor([10.0]), torch.tensor([40.0]), torch.tensor([70.0]))[0]
+    ops = ab.symmetry_ops("C4").float()
+    near = ab.euler_to_matrix(torch.tensor([11.0]), torch.tensor([40.5]), torch.tensor([70.0]))[0]
+    far = ab.euler_to_matrix(torch.tensor([100.0]), torch.tensor([120.0]), torch.tensor([10.0]))[0]
+    A = torch.stack([A0, near, A0 @ ops[1], far, A0])[None]
+    t = torch.tensor([[[0.0, 0], [0.5, 0], [0, 0], [0, 0], [20, 0]]])
+    assert ab.distinct_candidates(A, t, ops, 3, 4.0, 3.0).tolist() == [[0, 3, 4]]
+    assert ab.distinct_candidates(A, t, ops, 4, 4.0, 3.0).tolist() == [[0, 3, 4, 0]]      # padded with the best
+
+
 def test_symmetrize_accumulators_matches_symmetric_insertion():
     """Inserting each image once and symmetrising the accumulators (refine_particles at pad 2) gives the same
     reconstruction as inserting it at every symmetry-related pose. (Pad 1: 17 % apart, the resampled accumulators

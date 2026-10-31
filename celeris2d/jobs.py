@@ -656,14 +656,23 @@ class Refine3DSettings:
     nu_shift: int = 0               # ... strict: each region's cross-validated cutoff moved this many candidates finer (the
                                     # folds hold half a half's particles, so their choice is conservative). dz_2025_10 with
                                     # min_step_deg 1.3, RELION-scored: 5.12 -> 4.97 A, 8 A FSC 0.755 -> 0.812
-    rescue_frac: float = 0.0        # share of the worst-fitting particles searched again over all orientations and a wide
+    rescue_frac: float = 1.0        # share of the worst-fitting particles searched again over all orientations and a wide
                                     # shift range (rescue_shift_a) at iterations rescue_iters, at rescue_res_a; the pose
-                                    # found is kept if it fits clearly better after local polishing. dz_2025_10: 11.6 %
-                                    # of good particles sat > 20 deg from cryoSPARC's pose, centred a median 16 A off;
-                                    # +-24 A at 15 A put 29 % of them back (0.5 % of correct ones moved, staying correct)
-    rescue_iters: tuple = (2, 4)    # ... the iterations (1-based) that rescue
-    rescue_shift_a: float = 24.0    # ... shift range searched (+- A, 3 A grid)
-    rescue_res_a: float = 15.0      # ... resolution of that global search (A; at least the current one)
+                                    # found is kept if it fits clearly better after local polishing (0: off). Our
+                                    # refinements left 10-30 % of particles > 20 deg from cryoSPARC's pose (off-centre,
+                                    # the coarse global grids pick the wrong basin). With the defaults below, RELION-scored
+                                    # vs off: HCN1 (CryoPPP 10081, 39k) misassigned 29 -> 13 %, 4.62 -> 4.38 A (6 A FSC
+                                    # 0.40 -> 0.53); J341 9.6 -> 4.3 %, 3.41 -> 3.38 A (6 A 0.78 -> 0.81); J20 (40 %)
+                                    # 3.38 -> 3.30 A; dz 5.12 -> 5.12-5.20 A (8 A 0.755 -> 0.77); beta-gal 3.15 = 3.15.
+                                    # Cost ~1-4 ms per particle and pass (HCN1 39k: 2 x 43 s, refinement 196 -> 319 s)
+    rescue_iters: tuple = (2, 4)    # ... the iterations (1-based) that rescue (a third pass moved ~1 % more, no better map)
+    rescue_shift_a: float = 30.0    # ... shift range searched (+- A; grid max(3, rescue_res_a / 3) A)
+    rescue_res_a: float = 30.0      # ... resolution of that global search (A; at least the current one). With 16
+                                    # candidates 30 A beat 20 A with 32 (HCN1 4.38 vs 4.50 A, 3x faster)
+    rescue_topk: int = 16           # ... > 1: keep this many distinct best (orientation, shift) hypotheses of the search,
+                                    # polish each at ~12 A, the best 3 at ~8 A (our likelihood picks the right pose of a
+                                    # misassigned particle more often at 10 A than on the coarse grid: J341 85 vs 57 %);
+                                    # 1: the single best of a search on a 3 A shift grid (2.3x slower, J341 same result)
     particle_scale: bool = False    # a contrast scale per particle (cryoSPARC's per-particle scale), fitted every
                                     # iteration, used in the search and the reconstruction
     wiener: float = 0.0             # > 0: half maps regularised by the FSC (Wiener / MAP, RELION's tau2 term with this
@@ -1019,7 +1028,8 @@ def run_refine3d(project: Project, job, log=print) -> dict:
                                                          nu_order=s.nu_order, marginalize=s.marginalize,
                                                          nu_ratio=s.nu_ratio, nu_shift=s.nu_shift, noise_model=s.noise_model,
                                                          rescue_frac=s.rescue_frac, rescue_at=tuple(s.rescue_iters),
-                                                         rescue_shift=s.rescue_shift_a, rescue_res=s.rescue_res_a, log=log)
+                                                         rescue_shift=s.rescue_shift_a, rescue_res=s.rescue_res_a,
+                                                         rescue_topk=s.rescue_topk, log=log)
     seconds = time.time() - t0
     apix = box_a / b
     h1, h2 = vols[0][0].real(), vols[0][1].real()

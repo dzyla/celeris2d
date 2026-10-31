@@ -83,7 +83,7 @@ class OpticsFit:
 
 def fit_optics(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, half: torch.Tensor, vols, res_hi_a: float,
                res_lo_a: float = 10.0, n_max: int = 4000, fit_mag: bool = True, fit_odd: bool = True,
-               fit_even: bool = True, iters: int = 40, log=print) -> OpticsFit:
+               fit_even: bool = True, iters: int = 100, log=print) -> OpticsFit:
     """Fit magnification and aberrations on up to n_max particles (indices idx into clf, poses A (n, 3, 3), model
     shifts t (n, 2) A, halves 0/1) against Volumes vols[0], vols[1] (half maps; their box b sets the band and the data
     are cropped to it), frequencies res_lo_a .. res_hi_a."""
@@ -109,11 +109,13 @@ def fit_optics(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, half: t
     cnt = torch.bincount(shell, minlength=nsh).float().clamp_min(1)
     w = 1.0 / (pw / cnt).clamp_min(1e-20)[shell]                                   # noise ~ data power per shell
     X2 = (w * X.abs() ** 2).sum(1)
-    params = torch.zeros(4 + 4 + 5, device=dev, requires_grad=True)               # mag delta (4), odd (4), even (5)
+    params = torch.zeros(4 + 4 + 5, device=dev, requires_grad=True)               # mag delta (4, %), odd (4), even (5)
+    MAG = 0.01      # magnification deltas in percent: their gradient is ~100x the aberrations' (rad), and L-BFGS on
+                    # the raw mix moved only the magnification (simulated odd / even terms stayed at 0)
     mask_p = torch.tensor([fit_mag] * 4 + [fit_odd] * 4 + [fit_even] * 5, device=dev, dtype=torch.float32)
 
     def score(prm, chunk=512):
-        M = torch.eye(2, device=dev) + prm[:4].reshape(2, 2) * mask_p[:4].reshape(2, 2)
+        M = torch.eye(2, device=dev) + MAG * prm[:4].reshape(2, 2) * mask_p[:4].reshape(2, 2)
         odd_c, even_c = prm[4:8] * mask_p[4:8], prm[8:] * mask_p[8:]
         kxm, kym = M[0, 0] * kxb + M[0, 1] * kyb, M[1, 0] * kxb + M[1, 1] * kyb
         total = 0.0
@@ -154,7 +156,7 @@ def fit_optics(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, half: t
     with torch.no_grad():
         s1 = float(score(params))
     prm = (params.detach() * mask_p).cpu().numpy()
-    M = (np.eye(2) + prm[:4].reshape(2, 2)).tolist()
+    M = (np.eye(2) + MAG * prm[:4].reshape(2, 2)).tolist()
     lam, cs = clf.optics.wavelength, clf.optics.cs_mm * 1e7
     # coma c (rad at s_max) = 2 pi Cs lambda^2 s_max^3 tau  ->  tau (rad) -> mrad
     tau = [float(prm[4 + i]) / (TWO_PI * cs * lam ** 2 * s_max ** 3) * 1e3 for i in (0, 1)]

@@ -53,9 +53,9 @@ def star_table(path, block="fsc"):
     return {c: a[:, i] for i, c in enumerate(cols)}
 
 
-def final_resolution(path):
+def general(path, key="FinalResolution"):
     for line in open(path):
-        if line.startswith("_rlnFinalResolution"):
+        if line.startswith(f"_rln{key} "):
             return float(line.split()[1])
     return float("nan")
 
@@ -90,7 +90,7 @@ def postprocess(d, tag, h1, h2, mask, apix, res):
         i = i[i > 0]
         return float(k_a[order][i[0] - 1]) if len(i) else float(k_a[order][-1])
 
-    return dict(final=final_resolution(o + ".star"), unmasked=cross("FourierShellCorrelationUnmaskedMaps"),
+    return dict(final=general(o + ".star"), B=general(o + ".star", "BfactorUsedForSharpening"), unmasked=cross("FourierShellCorrelationUnmaskedMaps"),
                 **{f"{r:g}A": at("FourierShellCorrelationCorrected", r) for r in res})
 
 
@@ -121,11 +121,11 @@ def main():
                          postprocess(d, "pp_own", h1, h2, own, apix, res)))
         r = rows[-1]
         print(f"{r[0]} done", flush=True)
-    keys = ["final", "unmasked"] + [f"{r:g}A" for r in res]
+    keys = ["final", "B", "unmasked"] + [f"{r:g}A" for r in res]
     print(f"{'map':18s} {'mask':7s} {'mask_vox':>9s} " + " ".join(f"{k:>8s}" for k in keys))
     for name, kind, vol, r in rows:
         print(f"{name:18s} {kind:7s} {vol:9.0f} " + " ".join(
-            f"{r[k]:8.2f}" if k in ("final", "unmasked") else f"{r[k]:8.3f}" for k in keys))
+            f"{r[k]:8.2f}" if k in ("final", "unmasked") else f"{r[k]:8.0f}" if k == "B" else f"{r[k]:8.3f}" for k in keys))
 
 
 if __name__ == "__main__":

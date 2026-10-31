@@ -744,12 +744,11 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
     ll = Re<ctf conj(x) e_t, P> / sigma2 - 0.5 <ctf^2 / sigma2, |P|^2>. Returns (best A (n, 3, 3), best ll (n,),
     ll at the current pose (n,)); with topk > 1 the best topk orientations (n, topk, 3, 3) and their ll (n, topk).
     shifts: (S, 2) offsets (A) added to each particle's shift, searched with every orientation (projections computed
-    once, one GEMM per offset): a fourth value, the best shifts (n, 2). Not with topk.
+    once, one GEMM per offset): a fourth value, the best shifts (n, 2) - with topk > 1 the shift of each of the topk
+    hypotheses (n, topk, 2).
     scaled: each hypothesis with its best contrast scale a >= 0 (cryoSPARC's per-particle scale): max_a a c - a^2 p / 2 =
     c^2 / 2p for c = Re<ctf conj(x) e_t, P> / sigma2 > 0, p = <ctf^2 / sigma2, |P|^2>; without it a faint particle
     scores views with weak projections higher (the -p / 2 term), whatever its true view."""
-    if shifts is not None and topk > 1:
-        raise ValueError("global_search: shifts and topk > 1 together are not supported")
     dev = clf.dev
     box_a, b = clf.box_a, box or clf.bmax
     n = len(idx)
@@ -775,6 +774,7 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
     if topk > 1:
         top_ll = torch.full((n, topk), -float("inf"), device=dev)
         top_h = torch.zeros((n, topk), dtype=torch.long, device=dev)
+        top_s = torch.zeros((n, topk), dtype=torch.long, device=dev)
     cur_ll = torch.zeros(n, device=dev)
     A, t = A.to(dev), t.to(dev)
     Fb = int(band.sum())
@@ -810,7 +810,14 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
                 if S > 1:
                     for si in range(S):
                         c_ = Xr[si] @ Pr - Xi[si] @ Pi
-                        v, k = (c_.clamp_min(0) ** 2 / (4 * pw.clamp_min(1e-30)) if scaled else c_ - pw).max(1)
+                        ll = c_.clamp_min(0) ** 2 / (4 * pw.clamp_min(1e-30)) if scaled else c_ - pw
+                        if topk > 1:
+                            v, k = torch.topk(torch.cat([top_ll[sel], ll], 1), topk, dim=1)
+                            hh = torch.cat([top_h[sel], torch.arange(c, c + ll.shape[1], device=dev).expand(len(sel), -1)], 1)
+                            ss = torch.cat([top_s[sel], torch.full_like(ll, si, dtype=torch.long)], 1)
+                            top_ll[sel], top_h[sel], top_s[sel] = v, hh.gather(1, k), ss.gather(1, k)
+                            continue
+                        v, k = ll.max(1)
                         upd = v > best_ll[sel]
                         best_ll[sel[upd]] = v[upd]
                         best_h[sel[upd]] = k[upd] + c
@@ -828,6 +835,8 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
                 best_ll[sel[upd]] = v[upd]
                 best_h[sel[upd]] = k[upd] + c
     if topk > 1:
+        if shifts is not None:
+            return Ah[top_h], top_ll, cur_ll, t[:, None] + sh[top_s]
         return Ah[top_h], top_ll, cur_ll
     if shifts is not None:
         return Ah[best_h], best_ll, cur_ll, t + sh[best_s]
@@ -837,8 +846,8 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
 def score_poses(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs, half: torch.Tensor, res_a: float,
                 sigma2: torch.Tensor | None = None, box: int | None = None, shifts: torch.Tensor | None = None):
     """Log-likelihood of given candidate orientations per particle (same objective as global_search), each with the
-    best of a grid of shift offsets. A: (n, J, 3, 3); t: (n, 2) shifts (A); shifts: (S, 2) offsets (A) added to t
-    (None: t only). Returns ll (n, J) and the best shift (n, J, 2) (A)."""
+    best of a grid of shift offsets. A: (n, J, 3, 3); t: (n, 2) shifts (A), or (n, J, 2) one per candidate; shifts: (S, 2)
+    offsets (A) added to t (None: t only). Returns ll (n, J) and the best shift (n, J, 2) (A)."""
     dev = clf.dev
     box_a, b = clf.box_a, box or clf.bmax
     n, J = A.shape[:2]
@@ -850,8 +859,9 @@ def score_poses(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs, 
     sh = torch.zeros(1, 2, device=dev) if shifts is None else shifts.to(dev).float()
     Es = torch.exp(-1j * ph * (sh[:, 0, None] * fx[None, :].expand_as(kr)[band][None]
                                + sh[:, 1, None] * fy[:, None].expand_as(kr)[band][None]))        # (S, F)
+    fxb, fyb = fx[None, :].expand_as(kr)[band], fy[:, None].expand_as(kr)[band]
     Fb = int(band.sum())
-    npc = int(max(1, min(n, 0.15 * _free(dev) / (J * Fb * 8 * 3 + b * (b // 2 + 1) * 40))))
+    npc = int(max(1, min(n, 0.15 * _free(dev) / (J * Fb * 8 * 4 + b * (b // 2 + 1) * 40))))
     ll = torch.full((n, J), -float("inf"), device=dev)
     bs = torch.zeros((n, J), dtype=torch.long, device=dev)
     A, t = A.to(dev), t.to(dev)
@@ -863,11 +873,16 @@ def score_poses(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs, 
             x = clf._fetch(j, dev, b)
             ctf = ctf_2d(clf.ctf_p[j].to(dev), clf.optics, fy, fx, box_a)
             tt = t[sel]
-            e_t = torch.exp(-1j * ph * (fx[None, None, :] * tt[:, 0, None, None] + fy[None, :, None] * tt[:, 1, None, None]))
-            X = (x.conj() * e_t * ctf)[:, band] * isig                        # (m, F)
-            C2 = (ctf * ctf)[:, band] * isig
-            del x, e_t, ctf
             P = refs[h].project(A[sel].reshape(-1, 3, 3), band).reshape(len(sel), J, -1)    # (m, J, F)
+            if t.dim() == 3:        # a shift per candidate: on the projections (Re<conj x e_t, P> = Re<conj x, e_t P>)
+                X = (x.conj() * ctf)[:, band] * isig
+                P = P * torch.exp(-1j * ph * (fxb[None, None] * tt[:, :, 0, None] + fyb[None, None] * tt[:, :, 1, None]))
+            else:
+                e_t = torch.exp(-1j * ph * (fx[None, None, :] * tt[:, 0, None, None] + fy[None, :, None] * tt[:, 1, None, None]))
+                X = (x.conj() * e_t * ctf)[:, band] * isig                    # (m, F)
+                del e_t
+            C2 = (ctf * ctf)[:, band] * isig
+            del x, ctf
             pw = 0.5 * torch.einsum("mf,mjf->mj", C2, P.real ** 2 + P.imag ** 2)
             for s in range(len(sh)):
                 v = torch.einsum("mf,mjf->mj", X * Es[s], P).real - pw
@@ -875,7 +890,32 @@ def score_poses(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs, 
                 ll[sel] = torch.where(upd, v, ll[sel])
                 bs[sel] = torch.where(upd, s, bs[sel])
             del P, X, C2
-    return ll, t[:, None, :] + sh[bs]
+    return ll, (t if t.dim() == 3 else t[:, None, :]) + sh[bs]
+
+
+def distinct_candidates(A: torch.Tensor, t: torch.Tensor, ops: torch.Tensor, k: int, min_deg: float,
+                        min_shift: float) -> torch.Tensor:
+    """Greedy non-maximum suppression of per-particle candidate poses sorted best first: A (n, C, 3, 3), t (n, C, 2).
+    A candidate is dropped when an already kept one is within min_deg (any symmetry-equivalent orientation) AND within
+    min_shift A. Returns indices (n, k) into C of the kept ones (best first; padded with the best when fewer)."""
+    n, C = A.shape[:2]
+    dev = A.device
+    if n > 2048:                                   # (n, C, C) closeness for every particle at once does not fit
+        return torch.cat([distinct_candidates(A[i:i + 2048], t[i:i + 2048], ops, k, min_deg, min_shift)
+                          for i in range(0, n, 2048)])
+    # cos-like closeness: trace(A_i^T A_j S) = sum(A_i * (A_j S)) for every operator S (A S is the same pose of a
+    # symmetric map), max over S
+    tr = torch.full((n, C, C), -3.0, device=dev)
+    for S in ops.to(dev).float():
+        tr = torch.maximum(tr, torch.einsum("nixy,njxy->nij", A, A @ S))
+    close = (tr >= 1 + 2 * math.cos(math.radians(min_deg))) & (torch.cdist(t, t) <= min_shift)
+    keep = torch.zeros((n, C), dtype=torch.bool, device=dev)
+    for c in range(C):
+        clash = (close[:, c, :c] & keep[:, :c]).any(1) if c else torch.zeros(n, dtype=torch.bool, device=dev)
+        keep[:, c] = ~clash & (keep.sum(1) < k)
+    order = torch.argsort((~keep).float() * C + torch.arange(C, device=dev)[None].float(), dim=1)[:, :k]
+    nk = keep.sum(1, keepdim=True)
+    return torch.where(torch.arange(k, device=dev)[None] < nk, order, order[:, :1])
 
 
 def global_step(res_a: float, diameter_a: float, max_hyp: float = 2.0e5) -> float:
@@ -1069,7 +1109,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                      nu_weighted: bool = False, nu_awf: float = 0.0, nu_order: int = 0, marginalize: int = 0,
                      nu_ratio: float = 0.0, nu_shift: int = 0, noise_model: str = "residual",
                      rescue_frac: float = 0.0, rescue_at: tuple = (), rescue_shift: float = 24.0,
-                     rescue_res: float = 15.0, log=print):
+                     rescue_res: float = 15.0, rescue_topk: int = 1, log=print):
     """Local refinement of particle orientations A and shifts t (A, model shift) against CTF-modulated projections,
     gold-standard halves (half: (n,) 0/1 per particle, e.g. the split of the refinement the poses come from - a
     particle must stay in the half it was aligned or polished against; default a random split, seed 1). inits:
@@ -1412,31 +1452,82 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                     rel_[sg_] = score[sg_] / score[sg_].median().clamp_min(1e-6)
             w_ = torch.nonzero(rel_ <= torch.quantile(rel_, rescue_frac)).squeeze(1).cpu()
             r_res = max(rescue_res, al_res)
-            gg_ = torch.arange(-rescue_shift, rescue_shift + 0.01, 3.0)
-            wide_ = torch.stack(torch.meshgrid(gg_, gg_, indexing="xy"), -1).reshape(-1, 2)
-            Ag, _, _, tg = global_search(clf, idx[w_], A[w_, 0], t[w_, 0], refs[0], half[w_], r_res,
-                                         max(6.0, global_step(r_res, diam)), sigma2, box=b, log=log, shifts=wide_)
-            # both the current pose and the found one polished at a finer resolution (1.5 deg, +-3 A), the found one
-            # adopted only if clearly better there
             p_res = max(al_res, 8.0)
             Rp_ = (rotz(torch.arange(-2, 3, dtype=torch.float32) * 1.5)[:, None] @ local_rotations(1.5, 2)[None]).reshape(-1, 3, 3)
             gp_ = torch.arange(-3.0, 3.01, 1.5)
             fine_ = torch.stack(torch.meshgrid(gp_, gp_, indexing="xy"), -1).reshape(-1, 2)
+            if rescue_topk > 1:      # the first polish leaves ~ +-s1/4 and +-g1/4: a 3 x 3 x 3 rotation, 3 x 3 shift grid
+                Rp_ = (rotz(torch.tensor([-1.5, 0.0, 1.5]))[:, None] @ local_rotations(1.5, 1)[None]).reshape(-1, 3, 3)
+                gp_ = torch.tensor([-1.5, 0.0, 1.5])
+                fine_ = torch.stack(torch.meshgrid(gp_, gp_, indexing="xy"), -1).reshape(-1, 2)
+                # coarse to fine: the right pose is often not the single best on a coarse grid at low resolution (J341:
+                # our likelihood prefers cryoSPARC's pose for 57% of the misassigned particles at 30 A, 85% at 10 A), so
+                # keep the best rescue_topk (orientation, shift) hypotheses of a cheap wide search, polish each with the
+                # current pose at ~12 A, and the best 3 at p_res
+                s1_ = global_step(r_res, diam)
+                g1_ = max(3.0, r_res / 3)       # r_res / 5: same poses and maps, the search 2x slower (HCN1, J341)
+                gg_ = torch.arange(-rescue_shift, rescue_shift + 0.01, g1_)
+                wide_ = torch.stack(torch.meshgrid(gg_, gg_, indexing="xy"), -1).reshape(-1, 2)
+                Ak_, _, _, tk_ = global_search(clf, idx[w_], A[w_, 0], t[w_, 0], refs[0], half[w_], r_res, s1_, sigma2,
+                                               box=b, log=log, shifts=wide_, topk=4 * rescue_topk)
+                ts_ = [time.time() - tr_]
+                # neighbours of one basin crowd the top of the list: keep rescue_topk distinct ones
+                kk_ = distinct_candidates(Ak_.to(dev), tk_.to(dev), ops, rescue_topk, 2 * s1_, 2 * g1_).cpu()
+                ar0_ = torch.arange(len(w_))[:, None]
+                Ak_, tk_ = Ak_.cpu()[ar0_, kk_], tk_.cpu()[ar0_, kk_]
+                Ac_ = torch.cat([A[w_, 0].cpu()[:, None], Ak_.cpu()], 1)               # (w, K+1): current first
+                tc_ = torch.cat([t[w_, 0].cpu()[:, None], tk_.cpu()], 1)
+                m_res = max(al_res, min(12.0, r_res))
+                h1_ = s1_ / 2
+                R1_ = (rotz(torch.tensor([-h1_, 0.0, h1_]))[:, None] @ local_rotations(h1_, 1)[None]).reshape(-1, 3, 3)
+                o1_ = torch.tensor([-g1_ / 2, 0.0, g1_ / 2])
+                off1_ = torch.stack(torch.meshgrid(o1_, o1_, indexing="xy"), -1).reshape(-1, 2)
+                nK_, nR_ = Ac_.shape[1], len(R1_)
+                nb_ = (R1_[None, None] @ Ac_[:, :, None]).reshape(len(w_), nK_ * nR_, 3, 3)
+                tb_ = tc_[:, :, None].expand(-1, -1, nR_, -1).reshape(len(w_), nK_ * nR_, 2)
+                ll1_, ts1_ = score_poses(clf, idx[w_], nb_, tb_, refs[0], half[w_], m_res, sigma2=sigma2, box=b, shifts=off1_)
+                ll1_, ts1_ = ll1_.reshape(len(w_), nK_, nR_).cpu(), ts1_.reshape(len(w_), nK_, nR_, 2).cpu()
+                ts_.append(time.time() - tr_)
+                v1_, k1_ = ll1_.max(2)                                                  # best neighbour per candidate
+                ar_ = torch.arange(len(w_))[:, None]
+                A1_ = nb_.reshape(len(w_), nK_, nR_, 3, 3)[ar_, torch.arange(nK_)[None], k1_]
+                t1_ = ts1_[ar_, torch.arange(nK_)[None], k1_]
+                top3 = torch.topk(v1_[:, 1:], min(3, nK_ - 1), dim=1).indices + 1      # best 3 new candidates
+                Ag = A1_[ar_, top3]
+                tg = t1_[ar_, top3]
+                nb_ = (Rp_[None, None] @ Ag[:, :, None]).reshape(len(w_), -1, 3, 3)
+                tb_ = tg[:, :, None].expand(-1, -1, len(Rp_), -1).reshape(len(w_), -1, 2)
+                ll2_, ts2_ = score_poses(clf, idx[w_], nb_, tb_, refs[0], half[w_], p_res, sigma2=sigma2, box=b, shifts=fine_)
+                k2_ = ll2_.argmax(1).cpu()
+                ar1_ = torch.arange(len(w_))
+                found = (ll2_.max(1).values.cpu(), nb_[ar1_, k2_], ts2_.cpu()[ar1_, k2_])
+                ts_.append(time.time() - tr_)
+            else:
+                gg_ = torch.arange(-rescue_shift, rescue_shift + 0.01, 3.0)
+                wide_ = torch.stack(torch.meshgrid(gg_, gg_, indexing="xy"), -1).reshape(-1, 2)
+                Ag, _, _, tg = global_search(clf, idx[w_], A[w_, 0], t[w_, 0], refs[0], half[w_], r_res,
+                                             max(6.0, global_step(r_res, diam)), sigma2, box=b, log=log, shifts=wide_)
+                found = None
+                ts_ = []
+            # both the current pose and the found one polished at a finer resolution (1.5 deg, +-3 A), the found one
+            # adopted only if clearly better there
             pol = []
-            for Ac_, tc_ in ((A[w_, 0].cpu(), t[w_, 0].cpu()), (Ag.cpu(), tg.cpu())):
+            for Ac_, tc_ in ((A[w_, 0].cpu(), t[w_, 0].cpu()),) + ((((Ag.cpu(), tg.cpu())),) if found is None else ()):
                 nb_ = Rp_[None] @ Ac_[:, None]
                 ll_, tb_ = score_poses(clf, idx[w_], nb_, tc_, refs[0], half[w_], p_res, sigma2=sigma2, box=b, shifts=fine_)
                 k_ = ll_.argmax(1).cpu()
                 ar_ = torch.arange(len(w_))
                 pol.append((ll_.max(1).values.cpu(), nb_[ar_, k_], tb_.cpu()[ar_, k_]))
+            if found is not None:
+                pol.append(found)
             take = pol[1][0] > pol[0][0] + 3.0
             if take.any():
                 wt = w_[take]
                 A[wt, 0] = pol[1][1][take].to(A.dtype).to(A.device)
                 t[wt, 0] = pol[1][2][take].to(t.dtype).to(t.device)
             log(f"[3d] rescue: the worst-fitting {rescue_frac * 100:.0f}% ({len(w_)}) searched at {r_res:.0f} A with shifts "
-                f"+-{rescue_shift:.0f} A: {int(take.sum())} ({float(take.float().mean()) * 100:.1f}%) took a new pose "
-                f"({time.time() - tr_:.1f}s)")
+                f"+-{rescue_shift:.0f} A{f', best {rescue_topk} polished' if rescue_topk > 1 else ''}: {int(take.sum())} ({float(take.float().mean()) * 100:.1f}%) took a new pose "
+                f"({time.time() - tr_:.1f}s{'; search / polish / fine done at ' + ' / '.join(f'{x:.0f}' for x in ts_) + 's' if ts_ else ''})")
             step = max(step, 1.5)
         # ---- local search
         band = (kr >= 1) & (kr <= k_al)
