@@ -9,8 +9,12 @@
                                                      state}: saved as the user goes
     POST /api/project/manualpick/train               {job}: templates from the reviewed micrographs' picks
     POST /api/project/manualpick/suggest             {job, stems?, after?, n?}: the next micrographs picked with them
-    POST /api/project/manualpick/threshold           {job, threshold?, upper?}: the score range (upper null: none)
-    POST /api/project/manualpick/off                 {job, off: [k, ...]}: templates switched off (0-based)
+    POST /api/project/manualpick/threshold           {job, threshold?, power_lo?, power_hi?, zone_dark?, 
+                                                     zone_mean?}: the filters
+                                                     (null: no limit / zones by density off)
+    POST /api/project/manualpick/off                 {job, off: [k, ...]}: templates switched off (0-based); their
+                                                     picks leave the next trainings (junk)
+    POST /api/project/manualpick/putback             {job}: every junk pick back into training
     POST /api/project/manualpick/settings            {job, diameter_a?, templates?}: at any time but while Pick all
                                                      runs (a new size drops the templates: train again)
     GET  /api/project/manualpick/templates.png?job=&k=  the templates side by side (white protein), or template k
@@ -94,8 +98,11 @@ def router(project_of):
         tr = st.get("train")
         return _clean(dict(job=j.name, status=j.status, settings=dict(diameter_a=s.diameter_a, dark=s.dark,
                            templates=s.templates, suggest=s.suggest, min_dist_frac=s.min_dist_frac),
-                           mics=rows, threshold=st.get("threshold"), threshold_hi=st.get("threshold_hi"),
-                           off=st.get("off") or [], version=ver, train=tr if ver else None, busy=busy.get(j.id),
+                           mics=rows, threshold=st.get("threshold"), power_lo=st.get("power_lo"),
+                           power_hi=st.get("power_hi", mp.MAX_STD), zone_dark=st.get("zone_dark", mp.ZONE_DARK),
+                           zone_mean=st.get("zone_mean", mp.ZONE_MEAN),
+                           off=st.get("off") or [], junk=sum(len(v) for v in (st.get("junk") or {}).values()),
+                           version=ver, train=tr if ver else None, busy=busy.get(j.id),
                            summary={k: v for k, v in summ.items() if not isinstance(v, (list, dict))},
                            progress=summ.get("progress"), edited_after_run=bool(summ.get("t_run"))
                            and float(st.get("t_edit", 0)) > float(summ["t_run"]),
@@ -125,6 +132,7 @@ def router(project_of):
         return _clean(dict(stem=row.stem, movie_id=int(row.movie_id), apix=float(row.apix), shape=[ny, nx],
                            bin=max(1, int(math.ceil(max(ny, nx) / 1024))),       # micview.raw_png's binning
                            picks=m.get("picks", []), rejected=m.get("rejected", []), state=m.get("state", ""),
+                           zones=m.get("zones", []),
                            suggest=sg, version=int(st.get("version", 0)) if mp.has_templates(j) else 0, output=out,
                            defocus_a=_num(0.5 * (row.defocus_u + row.defocus_v)) if row.defocus_u is not None
                            else None))
@@ -134,7 +142,7 @@ def router(project_of):
         prj, j = job_of(body.get("job"))
         try:
             m = mp.set_picks(prj, j, os.path.basename(body["stem"]), body.get("picks"), body.get("rejected"),
-                             body.get("state"))
+                             body.get("state"), body.get("zones"))
         except (ValueError, KeyError) as e:
             raise HTTPException(400, str(e))
         return dict(stem=body["stem"], picks=len(m["picks"]), state=m["state"])
@@ -143,14 +151,20 @@ def router(project_of):
     def threshold(body: dict = Body(...)):
         prj, j = job_of(body.get("job"))
         num = lambda v: None if v in (None, "") else float(v)      # noqa: E731
-        kw = {k: num(body[b]) for k, b in (("threshold", "threshold"), ("upper", "upper")) if b in body}
-        lo, hi = mp.set_threshold(prj, j, **kw)
-        return dict(threshold=lo, threshold_hi=hi)
+        kw = {k: num(body[k]) for k in ("threshold", "power_lo", "power_hi", "zone_dark", "zone_mean") if k in body}
+        return mp.set_threshold(prj, j, **kw)
 
     @r.post("/off")
     def off(body: dict = Body(...)):
         prj, j = job_of(body.get("job"))
-        return dict(off=mp.set_off(prj, j, body.get("off") or []))
+        off = mp.set_off(prj, j, body.get("off") or [])
+        st = mp.load_state(prj.job(j.id))
+        return dict(off=off, junk=sum(len(v) for v in (st.get("junk") or {}).values()))
+
+    @r.post("/putback")
+    def putback(body: dict = Body(...)):
+        prj, j = job_of(body.get("job"))
+        return dict(put_back=mp.put_back(prj, j), junk=0, off=[])
 
     @r.post("/settings")
     def settings(body: dict = Body(...)):

@@ -147,25 +147,56 @@ def test_manualpick_flow(tmp_path):
     from celeris2d.micview import family
     assert family(prj, ex)["pick"].id == j.id
     json.dumps(mp.load_state(j))
+    # a template switched off: its picks leave the next training (negatives instead) until put back
+    members = json.load(open(j.find("members.json")))
+    in0 = sum(1 for v in members.values() for q in v if q[2] == 0)
+    assert sum(len(v) for v in members.values()) == mp.load_state(j)["train"]["picks"] and in0 > 0
+    total = sum(len(v["picks"]) for v in mp.load_state(j)["mics"].values())     # + the pick on mic03 since
+    mp.set_off(prj, j, [0])
+    info = mp.train(prj, j)
+    assert info["junk"] == in0 and info["picks"] == total - in0 and mp.load_state(j)["off"] == []
+    assert sum(len(v) for v in mp.load_state(j)["junk"].values()) == in0      # still junk after the training
+    assert mp.put_back(prj, j) == in0 and mp.train(prj, j)["picks"] == total
     # templates off, the score range, then a new particle size: templates dropped, picks kept, label follows
     assert mp.set_off(prj, j, [1, 1]) == [1]
-    assert mp.set_threshold(prj, j, upper=0.9)[1] == 0.9
+    assert mp.set_threshold(prj, j, power_lo=0.5, power_hi=None)["power_hi"] is None
     n_before = len(mp.load_state(j)["mics"])
     mp.set_settings(prj, j, diameter_a=D + 20, templates=3)
     j = prj.job(j.id)
     st = mp.load_state(j)
-    assert not mp.has_templates(j) and st["threshold"] is None and st["threshold_hi"] is None and st["off"] == []
+    assert not mp.has_templates(j) and st["threshold"] is None and st["power_lo"] == 0.5 and st["off"] == []
     assert len(st["mics"]) == n_before and mp.settings(j).templates == 3 and mp.settings(j).diameter_a == D + 20
     assert j.label == f"d{D + 20:g}"
 
 
 def test_auto_keep():
-    c = pk.Candidates(xy_a=np.zeros((5, 2)), score=np.array([0.2, 0.4, 0.6, 0.8, 0.9]), local_std=np.ones(5),
-                      local_mean=np.zeros(5), template=np.array([0, 1, 0, 1, 0]))
+    c = pk.Candidates(xy_a=np.zeros((5, 2)), score=np.array([0.2, 0.4, 0.6, 0.8, 0.9]),
+                      local_std=np.array([1.0, 1.0, 0.3, 3.0, 1.0]), local_mean=np.zeros(5),
+                      template=np.array([0, 1, 0, 1, 0]))
     ok = np.array([1, 1, 1, 1, 0], bool)
-    assert mp.auto_keep(c, ok, 0.3, None, []).tolist() == [0, 1, 1, 1, 0]
-    assert mp.auto_keep(c, ok, 0.3, 0.7, []).tolist() == [0, 1, 1, 0, 0]       # dark contamination above the range
-    assert mp.auto_keep(c, ok, 0.3, None, [1]).tolist() == [0, 0, 1, 0, 0]      # template 1 switched off
+    assert mp.auto_keep(c, ok, 0.3, []).tolist() == [0, 1, 1, 1, 0]
+    assert mp.auto_keep(c, ok, 0.3, [], (0.5, 2.0)).tolist() == [0, 1, 0, 0, 0]    # empty ice, contamination
+    assert mp.auto_keep(c, ok, 0.3, [1]).tolist() == [0, 0, 1, 0, 0]               # template 1 switched off
+    assert mp.auto_keep(c, ok, 0.3, [], zone=np.array([0, 0, 1, 0, 0], bool)).tolist() == [0, 1, 0, 1, 0]
+
+
+def test_zones():
+    import torch
+    rng = np.random.default_rng(0)
+    img = rng.normal(size=(400, 400)).astype(np.float32)
+    img[:, :150] -= 6.0                                               # carbon: a dense (darker) left third
+    img[300:340, 300:340] -= 8.0                                      # contamination: a small dark ball
+    s = mp.ManualPickSettings(diameter_a=40.0)
+    zm = mp.zone_maps(torch.as_tensor(img), 2.0, s)
+    bad = mp.zone_mask(zm, mp.ZONE_DARK, 3.0)
+    c = zm["cell_a"]
+    at = lambda x, y: bool(mp.in_zones(np.array([[x, y]]), zm, bad)[0])   # noqa: E731
+    assert at(100, 400) and at(640, 640) and not at(560, 200)        # carbon, contamination, clean ice
+    assert not mp.zone_mask(zm, None, None).any()
+    # painted: a stroke excludes, a later free stroke frees, also a found cell
+    assert mp.in_zones(np.array([[560, 200]]), zm, bad, [[560, 200, 30, 1]])[0]
+    assert not mp.in_zones(np.array([[100, 400]]), zm, bad, [[100, 400, 30, -1]])[0]
+    assert c == 20.0
 
 
 def test_threshold():
