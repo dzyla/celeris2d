@@ -19,20 +19,23 @@
                   '+': 'cross', '*': 'star', '.': 'circle', 'd': 'diamond'};
   const px = pt => pt * 96 / 72;                       // matplotlib points -> CSS pixels
 
-  function build(spec, theme, width) {
+  // opts.minFont: no text smaller (px; a figure drawn small, e.g. beside the map viewer); opts.noTitles: without the
+  // figure's own title lines (the card says what it is)
+  function build(spec, theme, width, opts = {}) {
     const scale = width / (spec.width * 96);
+    const F = v => Math.max(opts.minFont || 0, v);
     const traces = [], ann = [], images = [], shapes = [];
     const layout = {
       width, height: Math.round(spec.height * 96 * scale), margin: {l: 0, r: 0, t: 0, b: 0},
       paper_bgcolor: theme.surface, plot_bgcolor: theme.surface, showlegend: false, hovermode: 'closest',
-      font: {family: theme.font, size: Math.max(9, 11 * scale), color: theme.ink2},
+      font: {family: theme.font, size: F(Math.max(9, 11 * scale)), color: theme.ink2},
       hoverlabel: {bgcolor: theme.well, bordercolor: theme.line, font: {color: theme.ink, family: theme.font}},
       dragmode: 'zoom',
     };
-    (spec.texts || []).forEach(t => ann.push({
+    (opts.noTitles ? [] : spec.texts || []).forEach(t => ann.push({
       text: esc(t.text).replace(/\n/g, '<br>'), xref: 'paper', yref: 'paper', x: t.x, y: t.y, xanchor: 'left',
       yanchor: 'top', showarrow: false, align: 'left',
-      font: {size: px(t.size) * scale, color: t.color || theme.ink, family: theme.font},
+      font: {size: F(px(t.size) * scale), color: t.color || theme.ink, family: theme.font},
     }));
     spec.panels.forEach((p, i) => {
       if (p.error || !p.pos) return;
@@ -49,8 +52,8 @@
         const a = {domain: dom, anchor: other, range: scaleT === 'log' ? lim.map(v => Math.log10(Math.max(v, 1e-30))) : lim,
                    type: scaleT === 'log' ? 'log' : 'linear', showgrid: false, zeroline: false,
                    linecolor: theme.axis, tickcolor: theme.ink3, ticks: 'outside', ticklen: 3,
-                   tickfont: {color: theme.ink2, size: Math.max(8, 10 * scale)},
-                   title: label ? {text: esc(label), font: {color: theme.ink2, size: Math.max(9, 11 * scale)}, standoff: 4} : undefined,
+                   tickfont: {color: theme.ink2, size: F(Math.max(8, 10 * scale))},
+                   title: label ? {text: esc(label), font: {color: theme.ink2, size: F(Math.max(9, 11 * scale))}, standoff: 4} : undefined,
                    showline: true, automargin: false, fixedrange: false};
         if (ticks) { a.tickvals = ticks.v; a.ticktext = ticks.text.map(esc); }
         if (!p.axis_on || onlyImage) Object.assign(a, {visible: false});
@@ -62,7 +65,7 @@
       if (onlyImage) { layout[ya].scaleanchor = xr; layout[ya].constrain = 'domain'; layout[xa].constrain = 'domain'; }
       if (p.title) ann.push({text: '<b>' + esc(p.title) + '</b>', xref: 'paper', yref: 'paper', x: p.pos[0],
         y: p.pos[3], xanchor: 'left', yanchor: 'bottom', showarrow: false, yshift: 4,
-        font: {size: Math.max(10, 13.5 * scale), color: theme.ink}});
+        font: {size: F(Math.max(10, 13.5 * scale)), color: theme.ink}});
       if (!hasData) return;
       const common = {xaxis: xr, yaxis: yr, legendgroup: 'p' + n};
       p.fills.forEach(f => traces.push(Object.assign({type: 'scatter', mode: 'lines', x: f.x, y: f.y, fill: 'toself',
@@ -115,7 +118,7 @@
         const rows = (L.title ? [`<span style="color:${theme.ink3}">${esc(L.title)}</span>`] : [])
           .concat(L.items.map(it => `<span style="color:${it.color || theme.ink2}">━━</span> ${esc(it.label)}`));
         ann.push({text: rows.join('<br>'), xref: 'paper', yref: 'paper', x: L.box[0], y: L.box[3], xanchor: 'left',
-          yanchor: 'top', showarrow: false, align: 'left', font: {size: Math.max(8, 11 * scale), color: theme.ink2}});
+          yanchor: 'top', showarrow: false, align: 'left', font: {size: F(Math.max(8, 11 * scale)), color: theme.ink2}});
       }
       p.texts.forEach(t => {
         const fr = t.ref === 'axes';
@@ -125,7 +128,7 @@
           xanchor: {left: 'left', right: 'right', center: 'center'}[t.ha] || 'left',
           yanchor: {top: 'top', bottom: 'bottom', center: 'middle', baseline: 'bottom', center_baseline: 'middle'}[t.va] || 'middle',
           align: t.ha === 'right' ? 'right' : 'left',
-          font: {size: Math.max(8, px(t.size) * scale), color: t.color || theme.ink2}});
+          font: {size: F(Math.max(8, px(t.size) * scale)), color: t.color || theme.ink2}});
       });
     });
     if (!layout.xaxis) layout.xaxis = {visible: false};      // a picture-only first panel: no default axes
@@ -141,10 +144,10 @@
     const n = parseInt(hex.slice(1), 16);
     return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
   }
-  async function render(div, spec, theme) {
+  async function render(div, spec, theme, opts = {}) {
     const P = await plotly();
-    const width = Math.max(320, div.clientWidth || 900);
-    const {traces, layout} = build(spec, theme, width);
+    const width = Math.max(opts.minWidth ?? 320, div.clientWidth || 900);
+    const {traces, layout} = build(spec, theme, width, opts);
     await P.react(div, traces, layout, {displaylogo: false, responsive: false, scrollZoom: false,
       modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d', 'toggleSpikelines'],
       toImageButtonOptions: {format: 'svg', filename: 'celeris2d_plot'}});
