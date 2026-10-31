@@ -224,11 +224,7 @@ engine's model convention (the particle's centre is at +shift from the box centr
   `sharpen` / `local_res` / `mtf`, on by default, files in the job, numbers under `sharpened` in its summary; a Sharpen
   job is for another mask or B-factor): corrected masked FSC (phases
   randomised beyond the shell where the unmasked FSC drops below 0.8, the correction applied from 2 shells further,
-  as RELION does), automatic Guinier B-factor (10 A to the resolution), low-pass at the resolution. The sharpened
-  map is made from the half maps filtered region by region (`nu_filter`, default; cryoSPARC sharpens its NU map the
-  same way): with one global FSC weighting, domains below the global resolution were sharpened noise (noise pieces
-  in the mask, J20 9.6 vs 5.8 %, HCN1 13.7 vs 3.4 %; cryoSPARC 10.6 / 11.2 %). FSC and B-factor stay on the
-  unfiltered halves; `nu_filter=False` is RELION's global FSC weighting.
+  as RELION does), automatic Guinier B-factor (10 A to the resolution), FSC weighting, low-pass at the resolution.
   Mask (`mask="auto"`, default; `masks.py`): the half maps' average and half difference low-passed to 15 A, the
   difference (noise only, filtered the same way) sets the threshold at 5 sd (at least 5 % of the maximum), pieces
   under 5 % of the largest dropped, +3 A, cosine edge max(8 A, 6 px) by Euclidean distance (round outline).
