@@ -1182,9 +1182,17 @@ def decoy_map(vol: torch.Tensor, box_a: float, res_a: float, diameter_a: float, 
     kk = torch.sqrt(k[:, None, None] ** 2 + k[None, :, None] ** 2 + kz[None, None, :] ** 2)
     g = torch.Generator().manual_seed(seed)
     ph = torch.exp(2j * np.pi * torch.rand(F.shape, generator=g)).to(vol.device)
-    F = torch.where(kk > box_a / res_a, F.abs() * ph, F)
-    out = torch.fft.irfftn(F, s=vol.shape)
-    return out * sphere_mask(b, 0.5 * diameter_a * b / box_a, 3.0, vol.device).to(out.dtype)
+    out = torch.fft.irfftn(torch.where(kk > box_a / res_a, F.abs() * ph, F), s=vol.shape)
+    out = out * sphere_mask(b, 0.5 * diameter_a * b / box_a, 3.0, vol.device).to(out.dtype)
+    # the randomised power spread over the box and the sphere cut most of it: each shell's amplitude back to vol's.
+    # Without this run_hetero_refine's amplitude match (40-20 A) scaled the decoy up and its low-resolution core
+    # ended 1.7 x the map's (dz_2025_10: 2.9 x the power), so the strongest particles fitted the decoy best
+    G = torch.fft.rfftn(out)
+    sh = torch.round(kk).long().reshape(-1)
+    n = int(sh.max()) + 1
+    gain = torch.bincount(sh, weights=F.abs().reshape(-1).double(), minlength=n) / \
+        torch.bincount(sh, weights=G.abs().reshape(-1).double(), minlength=n).clamp_min(1e-30)
+    return torch.fft.irfftn(G * gain.float()[sh].reshape(G.shape), s=vol.shape)
 
 
 def _amplitude(vol: torch.Tensor, box_a: float, lo_a: float, hi_a: float) -> float:
