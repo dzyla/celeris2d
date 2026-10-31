@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from .clock import since
 from .project import Job, Project, logged
 
 
@@ -203,6 +204,6 @@ def import_particles(project: Project, path: str, particle_a: float = 0.0, parti
     finish(project, mc)
     summ = finish(project, ex)
     log(f"[import] {n:,} particles of {len(groups):,} micrographs, {b_out} px at {out_apix:.3f} A/px "
-        f"({time.time() - t0:.0f} s)")
+        f"({since(t0):.0f} s)")
     project.set_status(ex, "finished", dict(summ, imported_from=path, inverted=flip, seconds=round(time.time() - t0, 1)))
     return ex

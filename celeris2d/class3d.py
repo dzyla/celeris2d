@@ -47,6 +47,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from .clock import since
 from .abinitio import (Volume, _free, _live, _real_space_constraints, _regularise_solve, _to_box, auto_pad,
                        fsc_maps, lowpass, resolution_from_fsc, sphere_mask, symmetry_ops)
 from .engine import TWO_PI, ctf_2d, freqs, release_cache
@@ -322,7 +323,7 @@ def classify(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, n_classes
                 del acc
             comps.append(D)
             sd = float(coef[:, c].std())
-            log(f"[class3d] variability component {c + 1}: coefficient spread {sd:.3g} ({time.time() - t0:.1f}s)")
+            log(f"[class3d] variability component {c + 1}: coefficient spread {sd:.3g} ({since(t0):.1f}s)")
         # k-means (k-means++ starts, best of 8) on the coefficients
         Z = coef / coef.std(0).clamp_min(1e-12)
         best, lab = float("inf"), None
@@ -377,7 +378,7 @@ def classify(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, n_classes
     log(f"[class3d] {R:,} {'rows' if R != n else 'particles'}, {K} classes, E-step to {res_a:.1f} A "
         f"(box {be}, final box {bf}), {'soft' if soft else 'hard'}, T {reg_t if reg_t is not None else '-'}"
         + (", focus mask" if fm is not None else "") + (", signal subtraction" if Vsub is not None else "")
-        + (f", {sym}" if sym.upper() != "C1" else "") + f" ({time.time() - t0:.1f}s)")
+        + (f", {sym}" if sym.upper() != "C1" else "") + f" ({since(t0):.1f}s)")
 
     def estep(refs, sigma2):
         """Log-likelihoods (R, K), best copy per class, residual power per shell of the best class, fit."""
@@ -468,10 +469,10 @@ def classify(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, n_classes
         history.append(dict(it=it, pops=pops, weights=[round(float(w), 1) for w in W.sum(0)], changed=round(moved, 4),
                             max_posterior=round(mp, 4), T=round(T, 3),
                             res=[round(r, 2) if r == r else None for r in res], res_limit_a=round(2 * box_a / be, 2),
-                            seconds=round(time.time() - t0, 1)))
+                            seconds=round(since(t0), 1)))
         log(f"[class3d] it {it}/{n_iter}: per class {pops}, {moved * 100:.1f}% changed, mean max posterior {mp:.3f}, "
             f"T {T:.1f}, res {' / '.join(f'{r:.1f}' if r == r else '-' for r in res)} A (limit {2 * box_a / be:.1f} A at "
-            f"box {be}) ({time.time() - t0:.1f}s)")
+            f"box {be}) ({since(t0):.1f}s)")
         if last:
             break
         _live("class3d", it, n_iter, [refs[k] for k in range(K)], res, box_a / be, counts=pops)
@@ -506,7 +507,7 @@ def classify(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, n_classes
     Az = A if S == 1 else A @ X[s_best[torch.arange(R, device=dev), z]]
     log(f"[class3d] final maps (box {bf}): " + ", ".join(
         f"class {k + 1} {int((z == k).sum())} ({res_f[k]:.1f} A)" if res_f[k] == res_f[k] else f"class {k + 1} empty"
-        for k in range(K)) + f" ({time.time() - t0:.1f}s)")
+        for k in range(K)) + f" ({since(t0):.1f}s)")
     _live("class3d", it, it, [m if m is not None else torch.zeros((bf,) * 3) for m in maps], res_f, box_a / bf,
           counts=torch.bincount(z, minlength=K).tolist())
     return Class3DResult(z=z.cpu(), post=post.cpu(), A=Az.cpu(), fit=fit.cpu(), maps=maps, halves=halves, fsc=fscs,

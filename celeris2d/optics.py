@@ -26,6 +26,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
+from .clock import since
 from .engine import TWO_PI, Optics
 
 
@@ -166,5 +167,5 @@ def fit_optics(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, half: t
     log(f"[optics] {len(idx)} particles, {res_lo_a:g}-{res_hi_a:.2f} A: score {s0:.5f} -> {s1:.5f} "
         f"({(s1 / s0 - 1) * 100:+.2f}%); magnification {ev[0]:.4f} / {ev[1]:.4f} (anisotropy "
         f"{(ev[1] - ev[0]) / ev.mean() * 100:.2f}%), beam tilt {tau[0]:+.3f}, {tau[1]:+.3f} mrad, "
-        f"trefoil {prm[6]:+.2f} {prm[7]:+.2f}, even {', '.join(f'{x:+.2f}' for x in prm[8:])} rad ({time.time() - t0:.0f} s)")
+        f"trefoil {prm[6]:+.2f} {prm[7]:+.2f}, even {', '.join(f'{x:+.2f}' for x in prm[8:])} rad ({since(t0):.0f} s)")
     return fit

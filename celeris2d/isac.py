@@ -26,6 +26,8 @@ import time
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
+from .clock import since
+
 
 def _run(clf, pool, K, seed):
     clf.run(active=pool, n_classes=K, seed=seed)
@@ -91,9 +93,9 @@ def run_isac(clf, idx=None, seeds=4, particles_per_class=300, k_max=100, max_gen
                                    maxprob=runs[0]["maxprob"][r], loglik=runs[0]["loglik"][r]))
         accounted = sum(len(r) for _, r in new)
         gens.append(dict(generation=g, pool=len(pool), K=K, new_groups=len(new), accounted=accounted,
-                         mean_stability=float(stab.mean()), time=time.time() - t0))
+                         mean_stability=float(stab.mean()), time=since(t0)))
         log(f"[isac] gen {g}: pool {len(pool)}, K={K}, {len(new)} stable groups, {accounted} particles accounted "
-            f"(mean stability {stab.mean():.2f}, {time.time() - t0:.0f}s)")
+            f"(mean stability {stab.mean():.2f}, {since(t0):.0f}s)")
         if accounted:
             pool = np.setdiff1d(pool, np.concatenate([pool[r] for _, r in new]))
         if accounted < min_new * N or len(pool) < 2 * mg:
@@ -101,5 +103,5 @@ def run_isac(clf, idx=None, seeds=4, particles_per_class=300, k_max=100, max_gen
                 f"or pool exhausted")
             break
     log(f"[isac] done: {len(groups)} stable groups covering {int((group_of[idx] >= 0).sum())} / {N} particles, "
-        f"{len(pool)} never stable, {time.time() - t0:.0f}s")
+        f"{len(pool)} never stable, {since(t0):.0f}s")
     return dict(groups=groups, group_of=group_of, stability=stab_of, unaccounted=pool, generations=gens, idx=idx)

@@ -28,6 +28,7 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 
+from .clock import since
 from .engine import rot_grid
 from .plots import gallery
 
@@ -205,7 +206,7 @@ def run_deep2d(clf, K, outdir, max_rounds=6, tol=0.02, seed=0, diameter_a=200.0,
     _save(os.path.join(outdir, "round00_all"), "deep2D · round 0 · all particles", clf, t, imgs)
     good = everyone[good_c[clf.cls.numpy()]]
     hist.append(dict(round=0, good=len(good), kept=len(good), purged=0, rescued=0, changed=1.0,
-                     time=time.time() - t0))
+                     time=since(t0)))
     log(f"[deep2D] round 0: {len(good)} good / {N - len(good)} bad")
     members = {"round00": good.copy()}        # good set after every round (for evaluation)
     flips = np.zeros(N, dtype=np.int32)       # good<->bad moves per particle
@@ -245,9 +246,9 @@ def run_deep2d(clf, K, outdir, max_rounds=6, tol=0.02, seed=0, diameter_a=200.0,
             new_good = np.setdiff1d(new_good, jumpers)
         changed = len(np.setxor1d(new_good, good)) / max(len(good), 1)
         hist.append(dict(round=r, good=len(new_good), kept=len(kept), purged=len(purged), rescued=len(rescued),
-                         unstable=len(unstable), changed=changed, time=time.time() - t0))
+                         unstable=len(unstable), changed=changed, time=since(t0)))
         log(f"[deep2D] round {r}: kept {len(kept)}, purged {len(purged)}, rescued {len(rescued)}, "
-            f"+{len(jumpers)} unstable -> good {len(new_good)} ({changed * 100:.1f}% changed, {time.time() - t0:.0f}s)")
+            f"+{len(jumpers)} unstable -> good {len(new_good)} ({changed * 100:.1f}% changed, {since(t0):.0f}s)")
         good = new_good
         members[f"round{r:02d}"] = good.copy()
         # plateau: the good-set size moved < tol in each of the last two rounds (a steady exchange of
@@ -287,7 +288,7 @@ def run_deep2d(clf, K, outdir, max_rounds=6, tol=0.02, seed=0, diameter_a=200.0,
     np.savez(os.path.join(outdir, "membership.npz"), final_good=good, ambiguous=ambiguous, unstable=unstable,
              bad=bad, **members)
     log(f"[deep2D] done: {len(good)} good / {len(ambiguous)} ambiguous / {len(unstable)} unstable / "
-        f"{len(bad)} bad particles in {time.time() - t0:.0f}s")
+        f"{len(bad)} bad particles in {since(t0):.0f}s")
     return dict(good=st_good, ambiguous=st_amb, unstable=st_unst, bad=st_bad)
 
 

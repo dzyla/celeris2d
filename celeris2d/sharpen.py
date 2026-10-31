@@ -28,6 +28,7 @@ from typing import ClassVar
 import numpy as np
 import torch
 
+from .clock import since
 from .plotstyle import GRAY, STATUS, T, grid_y, image_axes, plt, themed, title, top, warnings_text
 from .jobspec import params_of, settings_of
 from .project import CLASS_JOBS, Job, Project, has_classes, logged
@@ -393,7 +394,7 @@ def local_resolution(job, h1, h2, r: dict, apix: float, s: SharpenSettings, titl
                             f"{st['at_nyquist'] * 100:.0f}% of the mask the local resolution is only known to be "
                             f"<= {nyq:.2f} A (refine at a smaller pixel size to measure it)")
     log(f"[sharpen] local resolution: median {st['median_a']} A (5-95%: {st['p05_a']}-{st['p95_a']} A), window "
-        f"{st['window_a']} A, {time.time() - t0:.1f}s")
+        f"{st['window_a']} A, {since(t0):.1f}s")
     keep = {k: st[k] for k in ("median_a", "p05_a", "p25_a", "p75_a", "p95_a", "window_a", "at_nyquist")}
     keep.update(map=os.path.relpath(job.out("localres.mrc"), job.root),
                 filtered=os.path.relpath(job.out("localres_filtered.mrc"), job.root), seconds=round(time.time() - t0, 1),

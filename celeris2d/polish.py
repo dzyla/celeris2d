@@ -24,6 +24,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
+from .clock import since
 from . import picking as pk
 from . import preprocess as pp
 from .engine import ctf_2d, freqs
@@ -298,7 +299,7 @@ def run_polish(project: Project, job, log=print) -> dict:
     w = a_mod / sig2.clamp_min(1e-30)                                                # matched filter per frame
     # noise power of the weighted sum = that of a plain sum, at every frequency
     w = w * torch.sqrt((sig2.sum(0) / ((w ** 2) * sig2).sum(0).clamp_min(1e-30)))[None]
-    log(f"[polish] frame weights from {len(stat_ids)} micrographs ({nparts:,.0f} particles, {time.time() - t0:.0f}s): "
+    log(f"[polish] frame weights from {len(stat_ids)} micrographs ({nparts:,.0f} particles, {since(t0):.0f}s): "
         f"relative B {', '.join(f'{float(b):.0f}' for b in B_rel[::max(1, n_fr // 8)])} ... A^2, "
         f"scale {float(s_fr[0] / s_fr.max()):.2f} (first) {float(s_fr[n_fr // 2] / s_fr.max()):.2f} (middle) "
         f"{float(s_fr[-1] / s_fr.max()):.2f} (last) of the best frame")

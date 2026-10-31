@@ -53,6 +53,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from .clock import since
 from .engine import TWO_PI, ctf_2d, freqs, release_cache
 from .project import logged
 
@@ -329,9 +330,9 @@ def solve(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, n_comp: int 
         U_prev = U
         mnorm = float((mean_r * mask).norm())
         history.append(dict(it=it + 1, sd_rel=[round(float(s) / max(mnorm, 1e-30), 5) for s in sd],
-                            overlap=round(ov, 5), seconds=round(time.time() - t0, 1)))
+                            overlap=round(ov, 5), seconds=round(since(t0), 1)))
         log(f"[modes]{tag} it {it + 1}/{n_iter}: sd / |mean| " + " ".join(f"{float(s) / mnorm * 100:.2f}%" for s in sd)
-            + (f", subspace overlap with the last {ov:.4f}" if ov == ov else "") + f" ({time.time() - t0:.1f}s)")
+            + (f", subspace overlap with the last {ov:.4f}" if ov == ov else "") + f" ({since(t0):.1f}s)")
     # ---- final E-step: every particle's coordinates on the final (orthogonal, ordered) basis
     st = stack_of(mean_r, Wr)
     _, Z, a, _ = one_pass(st, sig2b, False, True)
@@ -483,7 +484,7 @@ def reconstruct_groups(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor,
         res = ab.resolution_from_fsc(f_c, box_a)
         out.append(dict(map=vmap, h1=h1, h2=h2, mask=smask, fsc=f_c, fsc_unmasked=ab.fsc_maps(h1, h2),
                         fsc_sphere=f_sph, resolution_a=res, particles=int(len(sel))))
-        log(f"[modes] group {k + 1}/{n_groups}: {len(sel):,} particles, {res:.2f} A ({time.time() - t0:.1f}s)")
+        log(f"[modes] group {k + 1}/{n_groups}: {len(sel):,} particles, {res:.2f} A ({since(t0):.1f}s)")
         release_cache()
     return out
 
@@ -1320,7 +1321,7 @@ def modes3d(project, job, s: Modes3DSettings, log=print) -> dict:
                 final_subspace_change=round(1 - last, 6) if last == last else None,
                 half_check=rep, scale_sd=round(float(scl.std()), 4), duplicates_removed=n_dup,
                 duplicate_distance_a=round(dist, 1), seconds_solve=round(t_solve, 1),
-                seconds=round(time.time() - t0, 1), history=res["history"], warnings=warnings,
+                seconds=round(since(t0), 1), history=res["history"], warnings=warnings,
                 gifs=[project.rel(g_) for g_ in outs["gifs"]], mean=project.rel(job.find("mean.mrc")))
     log("[modes] " + ", ".join(f"mode {m['mode']}: sd {m['sd_rel_mean'] * 100:.2f}% of |mean|"
                                + (f", halves |cc| {m['half_cc']:.2f} ({m['status']})" if m['half_cc'] is not None

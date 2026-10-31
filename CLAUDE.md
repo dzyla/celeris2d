@@ -109,6 +109,9 @@ Layers, bottom to top:
   process there, so an overrun is an out-of-memory error instead of WSL spilling GPU memory into system RAM (many
   times slower). Big 3D intermediates: free what the next phase does not need (accumulators after the solve,
   references before back-projection), work in slabs, build projection-only volumes on the band's box.
+- **Job times**: a "(N s)" progress time in a run log is `clock.since(t0)`: seconds since the job started (`project.run_log`
+  starts the clock at the scheduler's run_started), not since the phase began; a finished job's summary `seconds` is
+  start to finish (`set_status`). Durations of one step ("loaded in", "s each") stay `time.time() - t0`.
 - **3D volumes** (`abinitio.Volume`): 2x-padded full complex grids, 64 b^3 bytes each; `refine_particles` picks
   pad 1 (gridding-corrected) when pad 2 does not fit (box 512 in 16 GB), `Volume.real` / `set_real` work in slabs.
   Symmetry in `refine_particles` (pad 2): each image inserted once, then `Volume.symmetrize` resamples the

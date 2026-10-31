@@ -35,6 +35,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from . import clock
 from .tables import ShardedTable
 
 SCHEMA = """
@@ -269,7 +270,10 @@ class run_log:
         for j in self.jobs:
             os.makedirs(j.path, exist_ok=True)
             self.fh.append(open(j.log_path, "a", buffering=1))
-        self.t0 = time.time()
+        # the job's start: when the scheduler started its process (run_started, so imports count), else now
+        st = [j.params.get("run_started") for j in self.jobs if j.params.get("run_pid") == os.getpid()]
+        self.t0 = min([float(t) for t in st if t] + [time.time()])
+        self.timing = clock.start(self.t0, [j.id for j in self.jobs])
         self._write(f"started{': ' + self.what if self.what else ''} (pid {os.getpid()} on {socket.gethostname()})")
         return self
 
@@ -291,6 +295,8 @@ class run_log:
                         + "".join(traceback.format_exception(et, e, tb)))
         for f in self.fh:
             f.close()
+        if self.timing:
+            clock.stop()
         return False
 
 
@@ -416,6 +422,8 @@ class Project:
             c.execute("UPDATE jobs SET status=?, updated=? WHERE id=?", (status, time.time(), job.id))
         job.status = status
         if summary is not None:
+            if status == "finished" and "seconds" in summary and clock.job_seconds(job.id) is not None:
+                summary = dict(summary, seconds=round(clock.job_seconds(job.id), 1))    # start to finish
             self.write_summary(job, summary)
         self._write_job_json(job)
         self.write_index()

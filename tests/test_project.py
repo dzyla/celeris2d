@@ -306,3 +306,28 @@ def test_binned_pixel_size_is_exact():
     w300 = pp.dose_weights(40, 2.0, torch.tensor([0.25]))
     w200 = pp.dose_weights(40, 2.0, torch.tensor([0.25]), kv=200)
     assert w200[-1, 0] < w300[-1, 0] and w200[0, 0] > w300[0, 0]        # faster decay at 200 kV
+
+
+def test_job_clock_counts_from_the_job_start(tmp_path):
+    """Progress times and the job's run time count from its start, not from the phase that logs them."""
+    import time
+    from celeris2d import clock
+    from celeris2d.project import logged
+
+    prj = Project(str(tmp_path / "p"))
+    job = prj.new_job("Sharpen", {}, [], "t")
+    prj.update_params(job, run_pid=os.getpid(), run_started=time.time() - 50)   # the scheduler started it 50 s ago
+    seen = {}
+
+    @logged
+    def run(project, job, log=print):
+        t0 = time.time()                                    # a phase starting now
+        seen["since"] = clock.since(t0)
+        project.set_status(job, "finished", dict(seconds=round(time.time() - t0, 1)))
+
+    run(prj, job, log=lambda *a: None)
+    assert seen["since"] >= 50
+    assert prj.summary_of(job.id)["seconds"] >= 50
+    assert "finished in 5" in open(prj.job(job.id).log_path).read()
+    t0 = time.time()
+    assert clock.since(t0) < 1                              # outside a job: since t0

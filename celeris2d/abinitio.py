@@ -23,6 +23,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from .clock import since
 from .engine import TWO_PI, ctf_2d, freqs, ft_resize, gpu_free, rot_grid, upsample2, release_cache
 
 # A job may set LIVE = fn(stage, it, n_iter, maps, res, apix, counts=None): called with the current maps (real
@@ -670,7 +671,7 @@ def classes_to_volume(cls_ft: torch.Tensor, pops: torch.Tensor, box_a: float, di
         score = float((cc_k * w_cls).sum() / w_cls.sum())
         sizes = torch.bincount(zk, weights=w_cls * float(pops.max()), minlength=M).round().long().tolist()
         log(f"[3d] start {start + 1}/{n_starts}: class agreement {score:.3f}"
-            + (f", particles per model {sizes}" if M > 1 else "") + f" ({time.time() - t0:.1f}s)")
+            + (f", particles per model {sizes}" if M > 1 else "") + f" ({since(t0):.1f}s)")
         if M > 1 and min(sizes) == 0:
             score -= 1.0                                      # a start that left a model empty is not a split
         Ak = torch.empty((M, K, 3, 3), device=dev)           # each class's best orientation in every model
@@ -1052,7 +1053,7 @@ def particle_sgd(clf, idx: torch.Tensor, t: torch.Tensor, init: Volume, sym: str
     A, _, _ = global_search(clf, idx, torch.eye(3).expand(n, 3, 3), t, [V, V], zeros, res_end,
                             global_step(res_end, diam), box=bs)
     log(f"[3d] particle SGD: {n_iter} rounds of {min(batch, n)} particles, {res_start:.0f} -> {res_end:.0f} A "
-        f"({time.time() - t0:.1f}s)")
+        f"({since(t0):.1f}s)")
     return V, A
 
 
@@ -1361,7 +1362,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                 res[m] = max(resolution_from_fsc(fscs[m], box_a), 2.2 * box_a / b)
             if history:
                 history[-1]["res"] = [round(r, 3) if alive[m] else None for m, r in enumerate(res)]
-                history[-1]["seconds"] = round(time.time() - t0, 1)
+                history[-1]["seconds"] = round(since(t0), 1)
                 if iters is not None:      # the FSC of the poses found in that iteration
                     iters["fsc"].append([None if f is None else f.cpu().numpy().astype(np.float32) for f in fscs])
             pops_ = torch.bincount(z, minlength=M).tolist() if M > 1 else None      # the particles in these maps
@@ -1696,7 +1697,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             f"pose change median {ch['change_deg']:.2f} deg (90%: {ch['change_p90_deg']:.1f}), shift "
             f"{ch['shift_change_a']:.2f} A, {changed / n * 100:.0f}% off the grid centre" + (f", {switched / n * 100:.1f}% switched model, per model {pops}" if M > 1 else "")
             + (f", mean max posterior {float(post.max(1).values.mean()):.3f}" if soft and M > 1 else "")
-            + f" ({time.time() - t0:.1f}s)")
+            + f" ({since(t0):.1f}s)")
         history.append(dict(it=it + 1, align_res=round(al_res, 3), step=round(step, 3), moved=round(changed / n, 4),
                             switched=round(switched / n, 4), pops=pops, **ch, **({"nu": nu_it} if use_nu else {}),
                             **({"max_posterior": round(float(post.max(1).values.mean()), 4)} if M > 1 else {})))
@@ -1729,7 +1730,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     unmasked = [resolution_from_fsc(fsc(vols[m][0], vols[m][1]), box_a) if alive[m] and fscs[m] is not None
                 else float("nan") for m in range(M)]
     log(f"[3d] final resolution (FSC 0.143, {'soft sphere mask' if all(c is None for c in cur_masks) else 'solvent mask, corrected'}) {' / '.join(f'{r:.1f}' if r == r else 'merged' for r in res)} A"
-        f" (unmasked {' / '.join(f'{r:.1f}' if r == r else '-' for r in unmasked)} A), {time.time() - t0:.1f}s")
+        f" (unmasked {' / '.join(f'{r:.1f}' if r == r else '-' for r in unmasked)} A), {since(t0):.1f}s")
     refine_particles.last_weights = wpart.cpu()   # read by run(): which particles the final maps used
     refine_particles.last_score = score.cpu()
     refine_particles.last_scale = pscale.cpu()

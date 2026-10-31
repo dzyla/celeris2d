@@ -29,6 +29,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from .clock import since
+
 TWO_PI = 2.0 * math.pi
 
 
@@ -486,7 +488,7 @@ class Classifier2D:
                         self._n_loaded += len(rows)
                     if self._n_loaded >= next_log:
                         self.log(f"[load] {self._n_loaded}/{self.N} particles "
-                                 f"({time.time() - self._load_t0:.0f}s)")
+                                 f"({since(self._load_t0):.0f}s)")
                         next_log += max(50_000, self.N // 10)
             self.log(f"[load] all {self.N} particles loaded in {time.time() - self._load_t0:.1f}s")
         except BaseException as e:  # surfaced in the main thread by _wait_loaded

@@ -33,6 +33,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
+from .clock import since
 from .engine import ctf_2d, gpu_free
 from .preprocess import crop_half
 from .jobspec import params_of, settings_of
@@ -186,7 +187,7 @@ def run_mapscore(project: Project, job, log=print) -> dict:
             dctrl[idx] = sd.score(r).cpu().numpy()
         done += len(idx)
         if done % 20000 < len(idx):
-            log(f"[mapscore] {done:,}/{len(uid):,} ({time.time() - t0:.0f} s)")
+            log(f"[mapscore] {done:,}/{len(uid):,} ({since(t0):.0f} s)")
     val, cval = (score - dscore, ctrl - dctrl) if sd is not None else (score, ctrl)     # what is thresholded
     thr = float(np.quantile(cval, s.quantile))
     fits = val > thr
