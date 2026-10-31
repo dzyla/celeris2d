@@ -113,9 +113,18 @@ def map_views(path: str, px: int = 384) -> dict:
             r = max(r, float(d[on].max()))
     half = int(min(b / 2, max(b * 0.2, r * 1.12 + 2)))
     c = b // 2
+    # central sections of the map's Fourier transform (= the 2D transforms of the projections): even, round
+    # amplitudes out to the edge mean isotropic detail; streaks, a missing wedge or a lopsided disc mean preferred views
+    four = []
+    for im in ims[:3]:
+        f = np.log1p(np.abs(np.fft.fftshift(np.fft.fft2(im - im.mean()))))
+        lo, hi = np.percentile(f, [5, 99.8])
+        four.append(np.clip((f - lo) / max(hi - lo, 1e-9), 0, 1))
     ims = [im[max(c - half, 0):c + half, max(c - half, 0):c + half] for im in ims]
     return dict(name=os.path.basename(path), box=list(v.shape), apix=apix, crop=2 * half,
-                views=[dict(label=n, src=_thumb(im, px)) for n, im in zip(names, ims)])
+                views=[dict(label=n, src=_thumb(im, px)) for n, im in zip(names, ims)],
+                fourier=[dict(label=f"Fourier section {a}", src=_thumb(f, px)) for a, f in zip("zyx", four)],
+                nyquist_a=round(2 * apix, 2))
 
 
 def _downsample(v: np.ndarray, size: int) -> np.ndarray:

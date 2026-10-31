@@ -70,31 +70,45 @@
   .ask strong { color: var(--you); display: block; font-size: 13px; }
   .ask span { color: var(--ink2); font-size: 12px; }
   .q { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px; padding: 4px 2px; font-size: 13px; }
-  .q .who { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .q .who { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 7px; }
+  .q .who .ico { width: 20px; height: 20px; border-radius: 5px; } .q .who .ico svg { width: 13px; height: 13px; } .q .who .dot { margin: 0; }
   .q .who:hover { color: var(--data); }
   .q .st { color: var(--ink3); font-size: 12px; }
   .tog { display: flex; gap: 7px; align-items: center; color: var(--ink2); font-size: 12px; margin: 6px 0 2px; }
   .find { position: sticky; top: 0; z-index: 2; background: var(--surface); padding: 10px 14px; border-top: 1px solid var(--line); }
   .find input { width: 100%; }
-  .stg { position: relative; padding: 4px 0 8px; }
-  .stg::before { content: ""; position: absolute; left: 25px; top: 30px; bottom: 0; width: 2px; background: var(--line); }
-  .stg:last-child::before { bottom: 18px; }
-  .stg h3 { display: flex; align-items: baseline; gap: 8px; margin: 0; padding: 8px 14px 6px 14px; font-size: 13.5px; font-weight: 600; }
-  .stg h3 .mark { width: 24px; height: 24px; flex: none; border-radius: 50%; background: var(--plane); border: 2px solid var(--line); display: inline-grid;
-                  place-items: center; font-size: 11px; color: var(--ink2); position: relative; top: 6px; margin-right: 2px; }
-  .stg h3 .hl { margin-left: auto; color: var(--ink2); font-weight: 400; font-size: 12px; }
-  .job { position: relative; display: grid; grid-template-columns: 1fr auto; gap: 1px 8px; padding: 6px 14px 6px 46px; cursor: pointer; }
-  .job::before { content: ""; position: absolute; left: 22px; top: 12px; width: 8px; height: 8px; border-radius: 50%; background: var(--ink3); box-shadow: 0 0 0 3px var(--surface); }
-  .job.finished::before { background: var(--good); } .job.running::before { background: var(--you); } .job.failed::before { background: var(--bad); }
-  .job.queued::before { background: var(--surface); border: 1.5px solid var(--ink2); width: 5px; height: 5px; } .job.waiting::before { background: var(--you); border-radius: 2px; }
-  .job.cancelled::before { background: var(--axis); }
+  /* job types: category colour + glyph */
+  :root { --k-mic: #2fb8a8; --k-ptc: #a2c548; --k-d2: #4d8ff0; --k-d3: #9d7ff2; --k-map: #de6fb6; --k-x: #8a8f9c; }
+  .ico { width: 26px; height: 26px; border-radius: 7px; display: inline-grid; place-items: center; flex: none; background: color-mix(in srgb, var(--kc) 16%, transparent); color: var(--kc); }
+  .ico svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+  .k-mic { --kc: var(--k-mic); } .k-ptc { --kc: var(--k-ptc); } .k-d2 { --kc: var(--k-d2); } .k-d3 { --kc: var(--k-d3); } .k-map { --kc: var(--k-map); } .k-x { --kc: var(--k-x); }
+  .railbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .railbar h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--ink2); }
+  .job { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; grid-template-rows: auto auto; gap: 0 10px; align-items: center; padding: 6px 12px 6px 14px; cursor: pointer; border-left: 3px solid transparent; }
+  .job .ico { grid-row: 1 / span 2; }
   .job:hover { background: var(--well); }
-  .job.sel { background: var(--data-dim); }
-  .job.sel::before { box-shadow: 0 0 0 3px var(--data-dim); }
+  .job.sel { background: var(--data-dim); border-left-color: var(--data); }
   .job .t { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .job .t .n { color: var(--ink3); font-weight: 400; margin-left: 4px; }
-  .job .l { color: var(--ink3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; grid-column: 1 / -1; }
-  .job .k { color: var(--ink2); font-size: 12px; text-align: right; white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis; align-self: center; }
+  .job .t .n { color: var(--ink3); font-weight: 400; margin-left: 5px; }
+  .job .l { color: var(--ink3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; grid-column: 2 / -1; min-height: 0; }
+  .job .l:empty { display: none; }
+  .job .k { color: var(--ink2); font-size: 12px; text-align: right; white-space: nowrap; max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
+  .job .k .dot { margin-right: 5px; width: 7px; height: 7px; }
+  .job.cancelled .t, .job.failed .t { color: var(--ink2); }
+  .stg h3 { display: flex; align-items: baseline; gap: 8px; margin: 0; padding: 12px 14px 4px; font-size: 12.5px; font-weight: 600; color: var(--ink2); border-top: 1px solid var(--line); }
+  .stg:first-child h3 { border-top: none; }
+  .stg h3 .hl { margin-left: auto; font-weight: 400; font-size: 12px; color: var(--ink3); }
+  .plain { padding: 2px 0 20px; }
+  /* flow: lanes on the left, rows of fixed height */
+  .wrap.flowing { grid-template-columns: 380px 1fr; }
+  .flowr { position: relative; padding-bottom: 20px; }
+  .flowr .job { height: 46px; padding: 3px 12px 3px calc(var(--gut) + 4px); overflow: hidden; }
+  .flowr .job .l { display: block; }
+  .flowsvg { position: absolute; left: 0; top: 0; pointer-events: none; }
+  .flowsvg .edges path { fill: none; stroke: var(--axis); stroke-width: 1.6; }
+  .flowsvg circle { fill: var(--kc); stroke: var(--surface); stroke-width: 2; }
+  .flowsvg circle.queued, .flowsvg circle.cancelled { fill: var(--surface); stroke: var(--kc); stroke-width: 1.6; }
+  .flowsvg circle.failed { fill: var(--bad); }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; vertical-align: 1px; background: var(--ink3); }
   .dot.finished { background: var(--good); } .dot.running { background: var(--you); } .dot.failed { background: var(--bad); }
   .dot.queued { background: transparent; border: 1.5px solid var(--ink2); } .dot.waiting { background: var(--you); border-radius: 2px; }
@@ -128,9 +142,9 @@
   .empty h1 { color: var(--ink); font-size: 20px; }
 
   /* figures: a grid at their own size (a wide figure takes the row) */
-  .figs { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 18px; align-items: start; }
-  .fig { margin: 0; background: var(--surface); border-radius: 10px; overflow: hidden; min-width: 0; }
-  .fig.wide { grid-column: 1 / -1; }
+  .figsec { margin-bottom: 26px; } .figsec h3 { font-size: 13px; font-weight: 600; color: var(--ink2); margin: 0 0 10px; }
+  .figs { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+  .fig { margin: 0; background: var(--surface); border-radius: 10px; overflow: hidden; min-width: 0; width: min(100%, 760px); }
   .fig .bar { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; font-size: 13px; color: var(--ink2); border-bottom: 1px solid var(--line); }
   .fig .plot { min-height: 40px; }
   .fig img { width: 100%; display: block; }
@@ -138,6 +152,36 @@
   .seg button { border: none; border-radius: 0; padding: 3px 10px; font-size: 12px; background: var(--well); color: var(--ink2); }
   .seg button.on { background: var(--raise); color: var(--ink); }
 
+  /* New job: types by stage, then the form */
+  .jtg { margin: 6px 0 22px; } .jtg h3 { font-size: 13px; font-weight: 600; color: var(--ink2); margin: 0 0 10px; }
+  .jts { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; }
+  .jt { display: grid; grid-template-columns: 26px 1fr; gap: 3px 12px; text-align: left; padding: 12px 14px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); }
+  .jt .ico { grid-row: 1 / span 3; }
+  .jt:hover:not(:disabled) { border-color: var(--kc, var(--ink3)); background: var(--well); }
+  .jt .jtn { font-weight: 600; font-size: 14px; } .jt .jtb { color: var(--ink2); font-size: 12.5px; line-height: 1.4; } .jt .jtneed { color: var(--ink3); font-size: 12px; }
+  .jt.later { opacity: .55; } .jt.later:hover { opacity: .85; }
+  .form2 { max-width: 1050px; } .form2 .typ { margin: 0 0 14px; max-width: 760px; }
+  .form2 section { margin-bottom: 8px; } .form2 h3 { font-size: 13px; font-weight: 600; color: var(--ink2); margin: 14px 0 4px; }
+  .form2 h4 { font-size: 12.5px; font-weight: 600; color: var(--ink3); margin: 16px 0 2px; }
+  .fr { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 4px 18px; padding: 9px 0; border-bottom: 1px solid var(--line); align-items: start; }
+  .fr > label { padding-top: 7px; font-weight: 500; }
+  .fr input:not([type=checkbox]), .fr select { width: 100%; max-width: 460px; }
+  .fr .help { color: var(--ink3); font-size: 12.5px; margin-top: 4px; max-width: 680px; line-height: 1.4; }
+  .sw { display: inline-flex; gap: 8px; align-items: center; padding-top: 7px; color: var(--ink2); }
+  .checks { display: inline-flex; gap: 16px; padding-top: 7px; } .checks label { display: inline-flex; gap: 6px; align-items: center; }
+  details.adv { margin-top: 14px; border-top: 1px solid var(--line); }
+  details.adv summary { cursor: pointer; padding: 12px 0; font-weight: 600; font-size: 13.5px; }
+  .frun { margin-top: 22px; display: flex; gap: 14px; align-items: center; }
+  @media (max-width: 900px) { .fr { grid-template-columns: 1fr; } }
+  /* job pages of their own: Import, Extract */
+  .jv { padding: 14px 16px; }
+  .jvgrid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(300px, 1fr); gap: 14px; align-items: start; }
+  @media (max-width: 1200px) { .jvgrid { grid-template-columns: 1fr; } }
+  .card { background: var(--surface); border-radius: 10px; overflow: hidden; margin-bottom: 14px; }
+  .card.pad { padding: 14px 16px; } .card h4 { font-size: 12.5px; color: var(--ink2); margin: 16px 0 6px; font-weight: 600; }
+  .wrapt { word-break: break-all; }
+  .ptcl { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 4px; padding: 10px; max-height: 46vh; overflow-y: auto; }
+  .ptcl figure { margin: 0; } .ptcl img { width: 100%; display: block; aspect-ratio: 1; border-radius: 3px; }
   /* gallery */
   .gal-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 12px 14px; background: var(--surface); border-bottom: 1px solid var(--line); }
   .gal-tools .sum { margin-right: auto; font-size: 13.5px; }
@@ -173,6 +217,8 @@
   .views figure { margin: 0; }
   .views .tile { aspect-ratio: 1; background: #0a0a0a; border-radius: 4px; overflow: hidden; }
   .views .tile img { width: 100%; height: 100%; display: block; object-fit: contain; }
+  .views .tile.four { outline: 1px solid var(--line); }
+  .views .fnote { grid-column: span 3; align-self: center; font-size: 12.5px; color: var(--ink2); text-align: left; padding: 0 10px; } .views .fnote b { color: var(--ink); display: block; margin-bottom: 3px; }
   .views figcaption { font-size: 12px; color: var(--ink3); margin-top: 4px; }
   @media (max-width: 1400px) { .views { grid-template-columns: repeat(3, minmax(0, 1fr)); max-width: 900px; } }
   .mic { display: grid; grid-template-columns: 1fr; }
@@ -188,12 +234,15 @@
   .chip { background: var(--well); border: 1px solid var(--line); border-radius: 14px; padding: 3px 10px; font-size: 12.5px; cursor: pointer; }
   .chip:hover { border-color: var(--data); }
   .live, .mp { padding: 14px 16px; }
-  .l3d { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 340px); gap: 4px 14px; margin-bottom: 12px; }
-  .l3row { grid-column: 1; display: flex; gap: 6px; align-items: center; }
-  .l3row figure { margin: 0; flex: 1; min-width: 0; } .l3row img { width: 100%; display: block; border-radius: 4px; background: #0a0a0a; }
-  .l3row figcaption { font-size: 11px; color: var(--ink3); text-align: center; } .l3lab { width: 70px; font-size: 12px; }
-  .l3h { grid-column: 2; grid-row: 1 / span 6; background: var(--surface); border-radius: 8px; min-height: 200px; }
-  @media (max-width: 1100px) { .l3d { grid-template-columns: 1fr; } .l3h { grid-column: 1; grid-row: auto; } }
+  .l3m { display: grid; grid-template-columns: 1fr; gap: 10px; margin: 10px 0 12px; }
+  .l3m.multi { grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); }
+  .l3card { background: var(--surface); border-radius: 8px; padding: 8px 10px 10px; }
+  .l3t { display: flex; gap: 14px; align-items: baseline; font-size: 13px; color: var(--ink2); margin-bottom: 6px; } .l3t b { color: var(--ink); }
+  .l3row { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px; }
+  .l3row figure { margin: 0; min-width: 0; } .l3row img { width: 100%; display: block; border-radius: 4px; background: #0a0a0a; aspect-ratio: 1; object-fit: contain; }
+  .l3row figcaption { font-size: 11px; color: var(--ink3); text-align: center; } .l3row .four img { outline: 1px solid var(--line); }
+  .l3charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 10px; margin-bottom: 12px; }
+  .l3charts > div { background: var(--surface); border-radius: 8px; overflow: hidden; }
   .mpkpi { display: flex; flex-wrap: wrap; gap: 8px 30px; margin: 4px 0 14px; }
   .mpkpi .v { font-size: 20px; font-weight: 600; } .mpkpi .c { font-size: 12px; color: var(--ink3); }
   .mpview { display: grid; grid-template-columns: auto auto minmax(220px, 1fr); gap: 14px; align-items: start; justify-content: start; }
@@ -253,813 +302,17 @@
   <nav class="rail" aria-label="jobs">
     <div class="sect" id="asks"></div>
     <div class="sect" id="queue"></div>
-    <div class="find"><input id="q" placeholder="Find a job: number, type, label, status, final" aria-label="find a job"></div>
+    <div class="find"><div class="railbar"><h2>Jobs</h2><span class="seg" id="rv" role="tablist" aria-label="how the jobs are listed">
+        <button data-v="list" title="every job by number, newest on top">List</button><button data-v="stages" title="grouped by processing stage">Stages</button><button data-v="flow" title="which job was made from which">Flow</button></span></div>
+      <input id="q" placeholder="Find a job: number, type, label, status, final" aria-label="find a job"></div>
     <div id="list"></div>
   </nav>
   <main id="main"><div class="empty"><h1>Choose a job on the left</h1><p>or start one with New job.</p></div></main>
 </div>
 <script src="/web/plots.js"></script>
 <script src="/web/volume.js"></script>
-<script>
-'use strict';
-const $ = s => document.querySelector(s);
-const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
-const fmt = v => typeof v === 'number' ? (Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : String(+v.toFixed(3))) : esc(v);
-const file = p => `/api/project/file?path=${encodeURIComponent(p)}`;
-const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-const THEME = () => ({surface: css('--surface'), well: css('--well'), line: css('--line'), axis: css('--axis'), grid: css('--line'),
-                      ink: css('--ink'), ink2: css('--ink2'), ink3: css('--ink3'), font: css('--font')});
-const MAPJOBS = ['Refine3D', 'LocalRefine', 'InitialModel', 'Sharpen', 'Subtract', 'ModeMaps', 'MaskCreate', 'Polish', 'CtfRefine'];
-const CLASSJOBS = ['Class2D', 'HeteroRefine', 'Class3D', 'Select'];
-const MOVIEJOBS = ['MotionCtf', 'Pick', 'Extract'];
-const LIVE3D = ['InitialModel', 'Refine3D', 'HeteroRefine', 'Class3D', 'LocalRefine'];
-// per-micrograph statistics of a MotionCtf -> Pick -> Extract chain, shown together: [key, label, unit, digits]
-const MICSTATS = [['defocus_a', 'Defocus', 'Å', 0], ['astigmatism_a', 'Astigmatism', 'Å', 0], ['ctf_fit_a', 'CTF fit resolution', 'Å', 2],
-  ['ctf_score', 'CTF fit score', '', 3], ['drift_a', 'Total drift', 'Å', 1], ['local_rms_a', 'Local motion (rms)', 'Å', 2], ['tilt_deg', 'Ice tilt', '°', 1],
-  ['picks', 'Picks', '', 0], ['candidates', 'Pick candidates', '', 0], ['particles', 'Particles', '', 0]];
-let jobs = [], queue = {running: [], queued: [], waiting: []}, autoSelect = true, current = null, tab = 'plots', types = {};
-let pollTimer = null, logTimer = null, liveTimer = null, viewer = null;
-
-async function api(url, body) {
-  const r = await fetch(url, body === undefined ? {} : {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
-  const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(d.detail || r.statusText);
-  return d;
-}
-
-// ------------------------------------------------------------------ project, queue, list
-async function load() {
-  let d;
-  try { d = await api('/api/project'); } catch (e) { $('#pname').textContent = 'No project open'; $('#ppath').textContent = e.message; return; }
-  jobs = d.jobs;
-  $('#pname').textContent = d.root.split(/[\\/]/).filter(Boolean).pop();
-  $('#ppath').textContent = d.root;
-  try { const q = await api('/api/project/queue'); queue = q; autoSelect = q.auto_select; } catch (e) {}
-  renderPulse(); renderAsks(); renderQueue(); renderList();
-  clearTimeout(pollTimer);
-  const busy = queue.running.length + queue.queued.length;
-  pollTimer = setTimeout(async () => { const before = JSON.stringify(jobs.map(j => j.status)); await load();
-    if (current && JSON.stringify(jobs.map(j => j.status)) !== before) showJob(current, false); }, busy ? 4000 : 20000);
-}
-function renderPulse() {
-  const r = queue.running.length, q = queue.queued.length, w = queue.waiting.length;
-  $('#pulse').innerHTML = `<span class="d ${r ? 'on' : ''}"></span>` +
-    (r ? `running ${esc(queue.running[0].slice(0, 3))}` : 'idle') + (q ? `, ${q} queued` : '') + (w ? `, <b style="color:var(--you)">${w} waiting for you</b>` : '');
-}
-function renderAsks() {
-  const w = queue.waiting.map(n => jobs.find(j => j.name === n)).filter(Boolean);
-  $('#asks').innerHTML = w.length ? `<h2>Waiting for you</h2>` + w.map(j => `
-    <button class="ask" data-n="${esc(j.name)}"><strong>Choose the classes to keep</strong>
-      <span>${esc(j.name)} · from ${esc((j.inputs || [])[0] || '')}</span></button>`).join('') : '';
-  $('#asks').style.display = w.length ? '' : 'none';
-  document.querySelectorAll('.ask').forEach(b => b.onclick = () => showJob(b.dataset.n));
-}
-function renderQueue() {
-  const rows = [...queue.running.map(n => [n, 'running']), ...queue.queued.map(n => [n, 'queued'])];
-  $('#queue').innerHTML = `<h2>Queue <span class="muted" style="font-weight:400">${rows.length ? rows.length + ' job' + (rows.length > 1 ? 's' : '') : 'empty'}</span></h2>` +
-    rows.map(([n, s]) => `<div class="q"><span class="who" data-n="${esc(n)}"><span class="dot ${s}"></span>${esc(n)}</span>` +
-      (s === 'queued' ? `<button class="quiet" data-c="${esc(n)}" title="take it out of the queue">Cancel</button>` : `<button class="quiet" data-s="${esc(n)}" title="end the running job">Stop</button>`) + '</div>').join('') +
-    `<label class="tog"><input type="checkbox" id="autosel" ${autoSelect ? 'checked' : ''}> Ask me to choose classes after each classification</label>`;
-  document.querySelectorAll('#queue .who').forEach(e => e.onclick = () => showJob(e.dataset.n));
-  document.querySelectorAll('#queue [data-c]').forEach(b => b.onclick = async () => {
-    try { await api('/api/project/cancel', {job: b.dataset.c}); } catch (e) { alert(e.message); }
-    load();
-  });
-  document.querySelectorAll('#queue [data-s]').forEach(b => b.onclick = async () => {
-    if (!confirm(`Stop ${b.dataset.s}? Its process ends now; Restart runs it again.`)) return;
-    try { await api('/api/project/stop', {job: b.dataset.s}); } catch (e) { alert(e.message); }
-    load();
-  });
-  $('#autosel').onchange = async e => { await api('/api/project/queue', {auto_select: e.target.checked}); };
-}
-// the project as its processing line: stages in order, newest job first within a stage
-const STAGES = [
-  ['Micrographs', ['Import', 'MotionCtf', 'Curate', 'Pick', 'Extract', 'ImportParticles']],
-  ['2D classes', ['Class2D', 'Select']],
-  ['3D', ['InitialModel', 'Refine3D', 'HeteroRefine', 'Class3D', 'LocalRefine', 'SymExpand', 'Subtract', 'CtfRefine', 'Polish', 'Modes3D', 'ModeMaps']],
-  ['Maps', ['Sharpen', 'MaskCreate', 'MapScore']],
-];
-function stageOf(t) { const i = STAGES.findIndex(([, ts]) => ts.includes(t)); return i < 0 ? STAGES.length : i; }
-function headline(i, js) {
-  const fin = js.filter(j => j.status === 'finished');
-  const num = (k, re) => { const m = String(k || '').match(re); return m ? m[1] : null; };
-  if (i === 0) {
-    const mc = fin.find(j => j.type === 'MotionCtf'), ex = fin.find(j => j.type === 'Extract');
-    return [mc && num(mc.key, /([\d,]+) mics/) + ' micrographs', ex && num(ex.key, /([\d,]+) ptcls/) + ' particles'].filter(Boolean).join(', ');
-  }
-  if (i === 1) { const s = fin.find(j => j.type === 'Select'); return s ? num(s.key, /([\d,]+) kept/) + ' particles kept' : ''; }
-  const r = fin.map(j => parseFloat(num(j.key, /([\d.]+) Å/))).filter(x => x > 0);
-  return r.length ? `best ${Math.min(...r).toFixed(2)} Å` : '';
-}
-function renderList() {
-  const q = $('#q').value.trim().toLowerCase();
-  const rows = jobs.filter(j => !q || `${j.name} ${j.type} ${j.status} ${j.label || ''} ${j.final ? 'final' : ''}`.toLowerCase().includes(q)).reverse();
-  const groups = [...STAGES.map(([n]) => [n, []]), ['Other', []]];
-  rows.forEach(j => groups[stageOf(j.type)][1].push(j));
-  const row = j => `<div class="job ${esc(j.status)} ${j.name === current ? 'sel' : ''}" data-n="${esc(j.name)}" tabindex="0" title="${esc(j.status)}">
-      <div class="t">${esc(j.type)}<span class="n">${String(j.id).padStart(3, '0')}</span>${j.final ? '<span class="fin" title="' + esc(j.final_note || 'final') + '">★ final</span>' : ''}</div>
-      <div class="k" title="${esc(j.key || j.status)}">${esc(j.status === 'finished' ? (j.key || '') : j.status)}</div>
-      <div class="l">${esc(j.label || '')}</div></div>`;
-  $('#list').innerHTML = groups.filter(([, js]) => js.length).map(([n, js]) => `
-    <section class="stg"><h3><span class="mark">${STAGES.findIndex(([x]) => x === n) + 1 || '·'}</span>${esc(n)}<span class="hl">${esc(headline(STAGES.findIndex(([x]) => x === n), js))}</span></h3>
-      ${js.map(row).join('')}</section>`).join('') || `<div class="empty">${q ? 'No job matches.' : 'No jobs yet: start with New job, Import.'}</div>`;
-  document.querySelectorAll('.job').forEach(e => { e.onclick = () => showJob(e.dataset.n); e.onkeydown = ev => { if (ev.key === 'Enter') showJob(e.dataset.n); }; });
-}
-$('#q').oninput = renderList;
-
-// ------------------------------------------------------------------ a job
-function numbers(j) {
-  const s = j.summary || {}, sh = typeof s.sharpened === 'object' && s.sharpened ? s.sharpened : {};
-  const out = [];
-  const add = (v, unit, cap) => { if (v !== undefined && v !== null && v !== '' && typeof v !== 'object') out.push([v, unit, cap]); };
-  const res = s.resolution_solvent_mask_a ?? (j.type === 'Sharpen' ? s.resolution_a : undefined) ?? s.resolution_a;
-  add(res, 'Å', 'resolution, FSC 0.143');
-  add(s.resolution_unmasked_a, 'Å', 'unmasked');
-  add(sh.resolution_a, 'Å', 'sharpened');
-  add(s.b_factor ?? sh.b_factor, 'Å²', 'B-factor');
-  add(s.particles_used ?? s.particles ?? s.picks, '', s.particles_used ? 'particles used' : s.particles ? 'particles' : 'picks');
-  add(s.micrographs ?? s.movies, '', s.micrographs ? 'micrographs' : 'movies');
-  add(s.classes && typeof s.classes !== 'object' ? s.classes : undefined, '', 'classes');
-  add(s.seconds ? (s.seconds >= 120 ? Math.round(s.seconds / 60) : Math.round(s.seconds)) : undefined, s.seconds >= 120 ? 'min' : 's', 'run time');
-  return out.slice(0, 6);
-}
-async function showJob(name, scroll = true) {
-  current = name; renderList();
-  clearTimeout(logTimer);
-  let j;
-  try { j = await api('/api/project/job?job=' + encodeURIComponent(name)); } catch (e) { $('#main').innerHTML = `<div class="empty err">${esc(e.message)}</div>`; return; }
-  if (current !== j.name) return;
-  history.replaceState(null, '', '#' + j.name.slice(0, 3));
-  const meta = jobs.find(x => x.name === j.name) || {};
-  const s = j.summary || {};
-  const warns = s.warnings || [];
-  const canRerun = !['Import', 'Select'].includes(j.type);
-  const runLabel = ['failed', 'cancelled'].includes(j.status) ? 'Restart' : ['MotionCtf', 'Pick', 'Extract'].includes(j.type) ? 'Continue with new movies' : 'Run again';
-  $('#main').innerHTML = `
-    <div class="head">
-      <div class="title"><h1>${esc(j.type)} <span class="jn">${esc(j.name.slice(0, 3))}</span></h1>
-        <div class="sub"><span class="state ${esc(j.status)}"><span class="dot ${esc(j.status)}"></span>${esc(j.status === 'waiting' ? 'waiting for your choice' : j.status)}</span>
-          ${meta.label ? `<span class="lab">${esc(meta.label)}</span>` : ''}${j.final ? '<span class="fin">★ final</span>' : ''}</div></div>
-      <div class="nums">${numbers(j).map(([v, u, c]) => `<div class="num"><div class="v">${fmt(v)}${u ? `<small>${u}</small>` : ''}</div><div class="c">${esc(c)}</div></div>`).join('')}</div>
-      <div class="acts">
-        ${canRerun ? `<button id="rerun" class="${['failed', 'cancelled'].includes(j.status) ? 'go' : ''}" ${['running', 'queued', 'waiting'].includes(j.status) ? 'disabled' : ''} title="a new job with the same inputs and settings, through the queue">${runLabel}</button>` : ''}
-        ${types[j.type] ? `<button id="edit" title="the New job form with this job's inputs and settings">Change settings…</button>` : ''}
-        ${['queued', 'waiting'].includes(j.status) ? `<button id="cancel">Cancel</button>` : ''}
-        ${j.status === 'running' ? `<button id="stop" class="danger" title="end the job's process now; it is kept, marked cancelled, and can be restarted">Stop</button>` : ''}
-        <button id="final" title="final jobs and everything they came from make the publication report">${j.final ? '★ Final' : '☆ Mark final'}</button>
-        <button id="del" class="danger" ${j.status === 'running' ? 'disabled' : ''} title="move the job to the project's Trash folder">Delete</button>
-      </div>
-    </div>
-    ${j.error || s.error ? `<div class="warn err">${esc(j.error || s.error)}</div>` : ''}
-    ${warns.map(w => `<div class="warn">${esc(w)}</div>`).join('')}
-    <div id="stage"></div>
-    <div class="tabs" role="tablist">${['plots', 'files', 'log', 'settings', 'lineage'].map(t => `<button data-t="${t}" class="${t === tab ? 'on' : ''}" role="tab">${{plots: 'Plots', files: 'Files', log: 'Log', settings: 'Settings', lineage: 'Made from'}[t]}</button>`).join('')}</div>
-    <div class="pane" id="pane"></div>`;
-  document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { tab = b.dataset.t; document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b)); renderPane(j); });
-  renderStage(j);
-  renderPane(j);
-  const on = (id, fn) => { const b = $('#' + id); if (b) b.onclick = fn; };
-  on('rerun', async () => { try { const d = await api('/api/project/rerun', {job: j.name}); current = d.job; await load(); showJob(d.job); } catch (e) { alert(e.message); } });
-  on('edit', () => jobForm(j.type, j.params));
-  on('stop', async () => {
-    if (!confirm(`Stop ${j.name}? Its process ends now; what it wrote so far stays, and Restart runs it again.`)) return;
-    try { await api('/api/project/stop', {job: j.name}); await load(); showJob(j.name, false); } catch (e) { alert(e.message); }
-  });
-  on('cancel', async () => { try { await api('/api/project/cancel', {job: j.name}); await load(); showJob(j.name, false); } catch (e) { alert(e.message); } });
-  on('final', async () => {
-    let note = '';
-    if (!j.final) { note = prompt('A note for the report (for example "final map, Figure 2"):', ''); if (note === null) return; }
-    await api('/api/project/final', {job: j.name, final: !j.final, note}); await load(); showJob(j.name, false);
-  });
-  on('del', async () => {
-    if (!confirm(`Delete ${j.name}? It moves to the project's Trash folder.`)) return;
-    try { await api('/api/project/delete', {job: j.name}); }
-    catch (e) {
-      if (!/input of/.test(e.message)) { alert(e.message); return; }
-      if (!confirm(e.message + '\n\nDelete it anyway? Those jobs keep their own results.')) return;
-      try { await api('/api/project/delete', {job: j.name, force: true}); } catch (e2) { alert(e2.message); return; }
-    }
-    current = null; $('#main').innerHTML = '<div class="empty"><h1>Deleted</h1><p>It is in the project\'s Trash folder.</p></div>'; load();
-  });
-  if (scroll) $('#main').scrollTop = 0;
-}
-
-// the data stage: what the job made, first
-function renderStage(j) {
-  const st = $('#stage');
-  if (viewer) { viewer.dispose(); viewer = null; }
-  if (MOVIEJOBS.includes(j.type) && j.status !== 'queued') return stageMicPanel(st, j);
-  if (j.status === 'running') return stageLive(st, j);
-  if (CLASSJOBS.includes(j.type) && !['running', 'queued', 'cancelled', 'failed'].includes(j.status)) return stageGallery(st, j);
-  const maps = j.files.filter(f => /\.mrc$/.test(f.path) && !/half[12]|(^|_)mask\.mrc$|localres|nu_cutoff|_frames/.test(f.path.split('/').pop()));
-  if (MAPJOBS.includes(j.type) && maps.length) return stageVolume(st, j, maps);
-  if (j.movie_files && j.movie_files.length) return stageMics(st, j);
-  st.innerHTML = '';
-}
-// a running job: time, the last lines of its log and its newest figure, as they come
-function stageLive(st, j) {
-  st.className = 'stage';
-  const t0 = (j.params || {}).run_started, skew = Date.now() / 1000 - (j.now || Date.now() / 1000);
-  st.innerHTML = `<div class="live"><div class="lhead"><span class="dot running pulse"></span><b>Running</b> <span id="lel" class="muted"></span>
-      <span id="llast" class="muted lastline"></span></div>
-      ${LIVE3D.includes(j.type) ? `<div id="l3d"><div class="muted" style="padding:14px 4px">The map appears here once the job has made one.</div></div>` : ''}
-      ${j.type === 'Class2D' ? `<div id="lgal"><div class="muted" style="padding:18px 4px">The classes appear here after the first iteration.</div></div>` : ''}
-      <div class="lbody"><pre class="log ltail" id="ltail">waiting for the first lines of the log…</pre>
-      <figure class="lfig" id="lfig"><div class="muted" style="padding:30px;text-align:center">The job's figures appear here as it writes them.</div></figure></div></div>`;
-  let offset = 0, text = '', lastFig = '', n = 0, liveAt = 0, at3d = 0;
-  const live3d = async () => {                       // a 3D job's current maps (live.py), as they change
-    const d = await api('/api/project/live3d?job=' + encodeURIComponent(name));
-    if (!d.maps || d.updated === at3d || current !== name || !$('#l3d')) return;
-    at3d = d.updated;
-    const stage = {sgd: 'Particle SGD', refine: 'Refinement', classes: 'From the class averages'}[d.stage] || d.stage;
-    const res = (d.res || []).filter(r => r != null);
-    const views = await Promise.all(d.maps.map(m => api('/api/project/mapviews?path=' + encodeURIComponent(m)).catch(() => null)));
-    if (current !== name || !$('#l3d')) return;
-    $('#l3d').innerHTML = `<div class="gal-tools"><div class="sum">${esc(stage)} <b>${d.it}</b> of ${d.n_iter}${res.length ? ' · ' + res.map(r => r.toFixed(1) + ' Å').join(', ') : ''} · shown at ${d.apix.toFixed(2)} Å/px</div>
-        <button class="quiet" id="l3dv">Show the current map in 3D</button></div>
-      <div class="l3d">${views.map((v, k) => v ? `<div class="l3row">${d.maps.length > 1 ? `<div class="muted l3lab">model ${k + 1}${d.res[k] != null ? '<br>' + d.res[k].toFixed(1) + ' Å' : ''}</div>` : ''}
-        ${v.views.slice(0, d.maps.length > 1 ? 3 : 6).map(x => `<figure><img src="${x.src}" alt="${esc(x.label)}"><figcaption>${esc(x.label)}</figcaption></figure>`).join('')}</div>` : '').join('')}
-        <div id="l3h" class="l3h"></div></div>`;
-    $('#l3dv').onclick = () => openViewer($('#stage'), j, d.maps.map(path => ({path})), null);
-    const P = await CelerisPlots.plotly(), T = THEME(), h = d.history || [];
-    if (!$('#l3h') || !h.length) return;
-    const nm = Math.max(...h.map(x => (x.res || []).length), 1), cols = [css('--data'), css('--you'), css('--good'), css('--serious'), T.ink2];
-    const tr = Array.from({length: nm}, (_, m) => ({type: 'scatter', mode: 'lines+markers', name: nm > 1 ? 'model ' + (m + 1) : 'resolution',
-      x: h.map((_, i) => i + 1), y: h.map(x => (x.res || [])[m]), text: h.map(x => x.stage + ' ' + x.it),
-      line: {color: cols[m % cols.length], width: 1.6}, marker: {size: 5}, hovertemplate: '%{text}: %{y:.2f} Å<extra></extra>'}));
-    P.react($('#l3h'), tr, {height: 200, margin: {l: 44, r: 10, t: 24, b: 30}, paper_bgcolor: T.surface, plot_bgcolor: T.surface,
-      font: {family: T.font, size: 11, color: T.ink2}, showlegend: nm > 1, title: {text: '<b>Resolution</b> per step', x: 0.01, xanchor: 'left', font: {size: 12, color: T.ink}},
-      xaxis: {gridcolor: T.line, zeroline: false, title: {text: 'step', font: {size: 10}}}, yaxis: {gridcolor: T.line, zeroline: false, autorange: 'reversed', title: {text: 'Å', font: {size: 10}}}},
-      {displaylogo: false, responsive: true});
-  };
-  const name = j.name;
-  const liveClasses = async () => {                 // a Class2D job's live.json: the classes as they form
-    const d = await api('/api/project/live?job=' + encodeURIComponent(name));
-    if (!d.classes || d.updated === liveAt || current !== name || !$('#lgal')) return;
-    liveAt = d.updated;
-    const rnd = d.round ? `Round <b>${d.round}</b> on ${fmt(d.particles)} particles${d.streaming ? ' (extraction still running)' : ' (all particles: final round)'} · ` : '';
-    $('#lgal').innerHTML = `<div class="gal-tools"><div class="sum">${rnd}Iteration <b>${d.it}</b> of ${d.n_iter} · ${d.res} Å · ${d.changed}% changed class · ${d.classes.length} classes</div></div>
-      <div class="gal" style="max-height:52vh">${d.classes.map(c => `<div class="cls" style="cursor:default"><img src="${c.images[0]}" alt="class ${c.cls}">
-        <div class="lab"><span>${c.cls}</span><span>${fmt(c.n)} · ${(100 * c.share).toFixed(1)}%</span></div></div>`).join('')}</div>`;
-  };
-  const tick = async () => {
-    clearTimeout(liveTimer);
-    if (current !== name || !$('#ltail')) return;
-    if (t0) { const s = Math.max(0, Date.now() / 1000 - skew - t0); $('#lel').textContent = `for ${s >= 3600 ? Math.floor(s / 3600) + ' h ' : ''}${Math.floor(s % 3600 / 60)} min ${Math.floor(s % 60)} s`; }
-    try {
-      if (j.type === 'Class2D') await liveClasses();
-      if (LIVE3D.includes(j.type)) await live3d();
-      const d = await api(`/api/project/log?job=${encodeURIComponent(name)}&offset=${offset}`);
-      if (d.text) {
-        text = (text + d.text).split('\n').slice(-400).join('\n'); offset = d.offset;
-        const lines = text.trimEnd().split('\n');
-        $('#ltail').textContent = lines.slice(-18).join('\n');
-        $('#llast').textContent = lines[lines.length - 1].replace(/^\S+ \S+ /, '');
-      }
-      if (n++ % 2 === 0) {                     // every ~6 s: new figures
-        const jj = await api('/api/project/job?job=' + encodeURIComponent(name));
-        if (current !== name) return;
-        if (jj.status !== 'running') { await load(); return showJob(name, false); }
-        const figs = jj.files.filter(f => /\.png$/.test(f.path) && !/\.(light|dark)\.png$/.test(f.path)).sort((a, b) => b.mtime - a.mtime);
-        const mv = (jj.movie_files || []).slice(-1)[0];
-        const newest = figs[0] ? figs[0].path + '?' + figs[0].mtime : mv || '';
-        if (newest && newest !== lastFig) {
-          lastFig = newest;
-          const path = newest.split('?')[0];
-          $('#lfig').innerHTML = `<img src="${file(path)}&t=${Date.now()}" alt="newest figure"><figcaption>${esc(path.split('/').pop().replace(/^j\d+_/, '').replace('.png', '').replace(/_/g, ' '))}</figcaption>`;
-          if (tab === 'plots' && figs.length !== $('#pane').querySelectorAll('.fig').length) { j.files = jj.files; renderPane(j); }
-        }
-      }
-    } catch (e) { /* the next tick tries again */ }
-    liveTimer = setTimeout(tick, 3000);
-  };
-  tick();
-}
-// movie jobs, while they run and after: counters, one micrograph (render, power spectrum vs CTF, its numbers) and every
-// micrograph's numbers as charts; click a point to open that micrograph (cryoSPARC Live-like)
-function stageMicPanel(st, j) {
-  st.className = 'stage';
-  const name = j.name;
-  let running = j.status === 'running', fam = null;
-  st.innerHTML = `<div class="mp">
-    <div class="lhead"><span id="mpstate"></span> <span id="mpn" class="muted"></span>
-      <span id="llast" class="muted lastline"></span></div>
-    <div class="mpkpi" id="mpkpi"></div>
-    <div class="mpview">
-      <figure class="mpmic"><canvas id="mpc" aria-label="micrograph"></canvas><figcaption id="mpcap"></figcaption></figure>
-      <figure class="mpps"><img id="mpps" alt="power spectrum and CTF fit"><figcaption>spectrum (left) · fitted CTF (right) · ring: fit resolution</figcaption></figure>
-      <div class="mpside">
-        <div class="mpnav"><button id="mpp" aria-label="previous micrograph">‹</button><input type="range" id="mpr" min="1" max="1" value="1" aria-label="micrograph"><button id="mpx" aria-label="next micrograph">›</button></div>
-        <label class="tog"><input type="checkbox" id="mpf" ${running ? 'checked' : ''}> Follow the newest micrograph</label>
-        <div class="lp"><label for="mplp">Low-pass filter</label><input type="range" id="mplp" min="0" max="60" step="1"><span id="mplpv"></span></div>
-        <label class="tog" id="mpkl" style="display:none"><input type="checkbox" id="mpk" checked> Show picks</label>
-        <table class="mpt" id="mpt"></table>
-        <div id="mpdet"></div>
-      </div>
-    </div>
-    <div class="mpplots"><div id="mpctf" class="w2"></div><div id="mpmot"></div><div id="mploc"></div><div id="mppz"></div></div>
-    <div class="mpcharts" id="mpcharts"></div></div>`;
-  const defs = MICSTATS;
-  let rows = [], sel = null, lastN = -1, offset = 0;
-  const med = a => { const b = a.filter(v => v != null).sort((x, y) => x - y); return b.length ? b[Math.floor(b.length / 2)] : null; };
-  const fv = (v, d) => v == null ? '–' : Number(v).toLocaleString(undefined, {maximumFractionDigits: d, minimumFractionDigits: d});
-  const show = (i, fromUser) => {
-    if (!rows.length) return;
-    i = Math.max(1, Math.min(rows.length, i));
-    if (fromUser && $('#mpf')) $('#mpf').checked = i === rows.length && running;
-    sel = i; const r = rows[i - 1];
-    $('#mpr').max = rows.length; $('#mpr').value = i;
-    loadMic(r.stem);
-    $('#mpps').src = `/api/project/ps.png?job=${encodeURIComponent(name)}&stem=${encodeURIComponent(r.stem)}`;
-    $('#mpcap').textContent = `${i} of ${rows.length} · ${r.stem}`;
-    $('#mpt').innerHTML = defs.filter(([key]) => r[key] != null).map(([key, lab, u, d]) => `<tr><td>${lab}</td><td>${fv(r[key], d)} ${u}</td></tr>`).join('');
-    detail(r.stem);
-    const det = (j.movie_files || []).find(f => f.includes(r.stem));
-    $('#mpdet').innerHTML = det ? `<a href="${file(det)}" target="_blank" rel="noopener">detailed figure of this micrograph</a>` : '';
-    charts();
-  };
-  // the micrograph: unfiltered from the server, low-passed and contrast-stretched here (the slider), picks drawn here
-  let micImg = null, micPicks = null, micDet = null, micStem = '';
-  let lp = 20; try { lp = +(localStorage.getItem('celeris-lowpass') ?? 20); } catch (e) {}
-  const lpText = () => { $('#mplp').value = lp; $('#mplpv').textContent = lp ? lp + ' Å' : 'off'; };
-  const drawMic = () => {
-    const c = $('#mpc'); if (!c || !micImg || !micImg.naturalWidth) return;
-    const W = micImg.naturalWidth, H = micImg.naturalHeight, g = c.getContext('2d', {willReadFrequently: true});
-    if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
-    const ap = micDet && micDet.apix ? micDet.apix : 1, bin = micDet && micDet.shape ? micDet.shape[1] / W : 1, px = ap * bin;
-    const sigma = lp ? 0.1874 * lp / px : 0;                     // Gaussian: half amplitude at the low-pass resolution
-    g.filter = 'none'; g.fillStyle = '#808080'; g.fillRect(0, 0, W, H);
-    g.filter = sigma > 0.3 ? `blur(${sigma.toFixed(2)}px)` : 'none';
-    g.drawImage(micImg, 0, 0); g.filter = 'none';
-    const im = g.getImageData(0, 0, W, H), a = im.data, h = new Uint32Array(256);
-    const m = Math.max(2, Math.round(Math.min(W, H) * 0.03));   // the stretch from the inside (blur darkens edges)
-    for (let y = m; y < H - m; y += 2) for (let x = m; x < W - m; x += 2) h[a[(y * W + x) * 4]]++;
-    let tot = h.reduce((x, y) => x + y, 0), lo = 0, hi = 255, acc = 0;
-    for (let i = 0; i < 256; i++) { acc += h[i]; if (acc < tot * 0.005) lo = i; if (acc < tot * 0.995) hi = i + 1; }
-    const lut = new Uint8ClampedArray(256), span = Math.max(hi - lo, 1);
-    for (let i = 0; i < 256; i++) lut[i] = (i - lo) * 255 / span;
-    for (let i = 0; i < a.length; i += 4) { const v = lut[a[i]]; a[i] = a[i + 1] = a[i + 2] = v; }
-    g.putImageData(im, 0, 0);
-    if (micPicks && micPicks.xy && micPicks.xy.length && $('#mpk') && $('#mpk').checked) {
-      const r = 0.5 * (micPicks.diameter_a || 150) / px;
-      g.lineWidth = Math.max(1, W / 700);
-      [[0, 'rgba(160,160,160,.45)'], [1, css('--data')]].forEach(([k, col]) => {
-        g.strokeStyle = col; g.beginPath();
-        micPicks.xy.forEach((q, i) => { if (micPicks.keep[i] === k) { g.moveTo(q[0] / px + r, q[1] / px); g.arc(q[0] / px, q[1] / px, r, 0, 2 * Math.PI); } });
-        g.stroke();
-      });
-    }
-  };
-  const loadMic = async stem => {
-    micStem = stem;
-    const im = new Image();
-    im.onload = () => { if (micStem === stem) { micImg = im; drawMic(); } };
-    im.src = `/api/project/micraw.png?job=${encodeURIComponent(name)}&stem=${encodeURIComponent(stem)}`;
-    micPicks = null;
-    if (fam && fam.pick) api(`/api/project/micpicks?job=${encodeURIComponent(name)}&stem=${encodeURIComponent(stem)}`)
-      .then(d => { if (micStem === stem) { micPicks = d; drawMic(); } }).catch(() => {});
-  };
-  let detailFor = '';
-  const detail = async stem => {                    // this micrograph's 1D CTF fit and motion (drawn here, data from the server)
-    detailFor = stem;
-    let d;
-    try { d = await api(`/api/project/micdetail?job=${encodeURIComponent(name)}&stem=${encodeURIComponent(stem)}`); } catch (e) { return; }
-    if (detailFor !== stem || !$('#mpctf')) return;
-    micDet = d; drawMic();
-    const T = THEME(), P = await CelerisPlots.plotly();
-    const base = {paper_bgcolor: T.surface, plot_bgcolor: T.surface, font: {family: T.font, size: 11, color: T.ink2}, height: 250,
-      margin: {l: 48, r: 14, t: 30, b: 40}, showlegend: true, legend: {orientation: 'h', x: 1, xanchor: 'right', y: 1.12, font: {size: 11}},
-      hoverlabel: {bgcolor: T.well, bordercolor: T.line, font: {color: T.ink, family: T.font}}};
-    const ax = {gridcolor: T.line, zeroline: false, linecolor: T.axis};
-    const k = d.res_a.map(x => 1 / x), keep = k.map(x => x >= 1 / 40);
-    const sel = a => a.filter((_, i) => keep[i]);
-    const ticks = [20, 10, 7, 5, 4, 3, 2.5].filter(x => x >= d.res_a[d.res_a.length - 1]);
-    const tr = [{type: 'scatter', mode: 'lines', name: 'spectrum', x: sel(k), y: sel(d.measured), line: {color: T.ink2, width: 1.2},
-                 customdata: sel(d.res_a), hovertemplate: '%{customdata:.2f} Å<extra></extra>'}];
-    if (d.fit) tr.push({type: 'scatter', mode: 'lines', name: 'fitted CTF', x: sel(k), y: sel(d.fit), line: {color: css('--data'), width: 1.6}, hoverinfo: 'skip'});
-    const shapes = d.fit_res_a ? [{type: 'line', x0: 1 / d.fit_res_a, x1: 1 / d.fit_res_a, yref: 'paper', y0: 0, y1: 1, line: {color: css('--you'), width: 1, dash: 'dot'}}] : [];
-    P.react($('#mpctf'), tr, Object.assign({}, base, {shapes,
-      title: {text: `<b>CTF fit</b> · defocus ${fmt(Math.round((d.defocus_u + d.defocus_v) / 2))} Å · fit ${d.fit_res_a ? d.fit_res_a.toFixed(2) + ' Å' : '–'}`, x: 0.01, xanchor: 'left', font: {size: 12, color: T.ink}},
-      xaxis: Object.assign({title: {text: 'resolution (Å)', font: {size: 11}}, tickvals: ticks.map(x => 1 / x), ticktext: ticks.map(String)}, ax),
-      yaxis: Object.assign({showticklabels: false}, ax)}), {displaylogo: false, responsive: true});
-    const note = (id, t) => { $(id).innerHTML = `<div class="pnote"><b>${t[0]}</b><span>${t[1]}</span></div>`; };
-    const titled = t => ({text: t, x: 0.01, xanchor: 'left', font: {size: 12, color: T.ink}});
-    const sh = d.shifts || [];
-    if (sh.length > 1) {                                   // global: the whole frame's path, frame 1 marked
-      const x0 = sh[0][0], y0 = sh[0][1];
-      P.react($('#mpmot'), [{type: 'scatter', mode: 'lines+markers', x: sh.map(q => q[0] - x0), y: sh.map(q => q[1] - y0),
-          marker: {color: sh.map((_, i) => i), colorscale: [[0, css('--data-dim')], [1, css('--data')]], size: 6}, line: {color: T.ink3, width: 1},
-          customdata: sh.map((_, i) => i + 1), hovertemplate: 'frame %{customdata}: %{x:.2f}, %{y:.2f} Å<extra></extra>'}],
-        Object.assign({}, base, {showlegend: false, title: titled(`<b>Global motion</b> · ${sh.length} frames · ${fv(d.drift_a, 1)} Å path`),
-          xaxis: Object.assign({title: {text: 'x (Å)', font: {size: 11}}}, ax), yaxis: Object.assign({title: {text: 'y (Å)', font: {size: 11}}, scaleanchor: 'x'}, ax)}),
-        {displaylogo: false, responsive: true});
-    } else note('#mpmot', ['Motion', 'A single-frame micrograph: no frames to align.']);
-    $('#mploc').style.display = sh.length > 1 ? '' : 'none';     // single frames: one note for both
-    const L = d.local;
-    if (L && L.model && L.centres) {                       // local: each patch's path beyond the global one, exaggerated
-      const mx = Math.max(1e-6, ...L.model.flat().map(q => Math.hypot(q[0], q[1])));
-      const k = 0.16 / mx, tr = [];
-      L.model.forEach((path, p) => {
-        const [cx, cy] = L.centres[p];
-        tr.push({type: 'scatter', mode: 'lines', x: path.map(q => cx + k * q[0]), y: path.map(q => cy + k * q[1]), line: {color: css('--data'), width: 1.6}, hoverinfo: 'skip'});
-        if (L.measured) tr.push({type: 'scatter', mode: 'markers', x: L.measured[p].map(q => cx + k * q[0]), y: L.measured[p].map(q => cy + k * q[1]),
-          marker: {size: 3, color: T.ink3}, hoverinfo: 'skip'});
-        tr.push({type: 'scatter', mode: 'markers', x: [cx], y: [cy], marker: {size: 5, color: T.ink2}, hovertemplate: `patch ${p + 1}: up to ${Math.max(...path.map(q => Math.hypot(q[0], q[1]))).toFixed(2)} Å<extra></extra>`});
-      });
-      P.react($('#mploc'), tr, Object.assign({}, base, {showlegend: false, title: titled(`<b>Local motion</b> · rms ${fv(d.local_rms_a, 2)} Å · paths ×${(k * 1000 / 1000 * (d.shape ? d.shape[1] * d.apix / 2 : 1)).toFixed(0)}`),
-        xaxis: Object.assign({visible: false, range: [-1.15, 1.15]}, ax), yaxis: Object.assign({visible: false, range: [1.15, -1.15], scaleanchor: 'x'}, ax)}),
-        {displaylogo: false, responsive: true});
-    } else note('#mploc', ['Local motion', sh.length <= 1 ? 'Needs a movie with several frames.'
-      : L && L.rms_a != null ? `rms ${fv(L.rms_a, 2)} Å. The patch paths are kept by MotionCtf jobs run from now on; this one has only the rms.`
-      : 'No patch motion measured (patches = 0).']);
-    const pz = d.ctf_patch;
-    if (pz && pz.regions_a && pz.offsets_a) {             // patch defocus: each region's offset from the micrograph's fit
-      const lim = Math.max(30, ...pz.offsets_a.map(Math.abs));
-      P.react($('#mppz'), [{type: 'scatter', mode: 'markers+text', x: pz.regions_a.map(q => q[0]), y: pz.regions_a.map(q => q[1]),
-          text: pz.offsets_a.map(v => (v > 0 ? '+' : '') + Math.round(v)), textfont: {size: 11, color: T.ink},
-          marker: {symbol: 'square', size: 40, color: pz.offsets_a, cmin: -lim, cmax: lim, colorscale: [[0, '#2c7bb6'], [0.5, '#3a3d48'], [1, '#d7191c']]},
-          hovertemplate: 'region at %{x:.0f}, %{y:.0f} Å: %{text} Å<extra></extra>'}],
-        Object.assign({}, base, {showlegend: false, title: titled(`<b>Patch defocus</b> · tilt ${fv(pz.tilt_deg, 1)}° · ${pz.applied ? 'applied' : pz.significant ? 'significant, not applied' : 'not significant'}`),
-          xaxis: Object.assign({visible: false}, ax), yaxis: Object.assign({visible: false, autorange: 'reversed', scaleanchor: 'x'}, ax)}),
-        {displaylogo: false, responsive: true});
-    } else note('#mppz', ['Patch defocus', 'Not measured for this micrograph.']);
-  };
-  const charts = async () => {
-    const box = $('#mpcharts'); if (!box || !rows.length) return;
-    const T = THEME(), have = defs.filter(([key]) => new Set(rows.map(r => r[key]).filter(v => v != null)).size > 1);   // not constant
-    const cols = 3, nr = Math.ceil(have.length / cols), traces = [], lay = {
-      height: 200 * nr + 20, margin: {l: 52, r: 12, t: 28, b: 24}, paper_bgcolor: T.surface, plot_bgcolor: T.surface, showlegend: false,
-      font: {family: T.font, size: 11, color: T.ink2}, hovermode: 'closest', annotations: [],
-      hoverlabel: {bgcolor: T.well, bordercolor: T.line, font: {color: T.ink, family: T.font}}};
-    have.forEach(([key, lab, u, d], n) => {
-      const c = n % cols, r = Math.floor(n / cols), ax = n * 2 + 1, xs = 'x' + (ax > 1 ? ax : ''), ys = 'y' + (ax > 1 ? ax : ''), xh = 'x' + (ax + 1), yh = 'y' + (ax + 1);
-      const x0 = c / cols + 0.045, x1 = (c + 1) / cols - 0.075, y1 = 1 - r / nr - 0.13 / nr, y0 = 1 - (r + 1) / nr + 0.09 / nr;
-      const pts = rows.filter(q => q[key] != null);
-      const axis = {gridcolor: T.line, zeroline: false, linecolor: T.axis, tickfont: {size: 10}};
-      lay['xaxis' + (ax > 1 ? ax : '')] = Object.assign({domain: [x0, x1], anchor: ys}, axis);
-      lay['yaxis' + (ax > 1 ? ax : '')] = Object.assign({domain: [y0, y1], anchor: xs}, axis);
-      lay['xaxis' + (ax + 1)] = Object.assign({domain: [x1 + 0.005, (c + 1) / cols - 0.01], anchor: yh, showticklabels: false, showgrid: false}, axis);
-      lay['yaxis' + (ax + 1)] = Object.assign({domain: [y0, y1], anchor: xh, matches: ys, showticklabels: false}, axis);
-      const m = med(pts.map(q => q[key]));
-      lay.annotations.push({text: `<b>${lab}</b>${u ? ' (' + u + ')' : ''} · median ${fv(m, d)}`, xref: 'paper', yref: 'paper', x: x0, y: y1, xanchor: 'left', yanchor: 'bottom', showarrow: false, font: {size: 12, color: T.ink}});
-      traces.push({type: pts.length > 2000 ? 'scattergl' : 'scatter', mode: 'markers', x: pts.map(q => q.i), y: pts.map(q => q[key]), xaxis: xs, yaxis: ys,
-        marker: {color: css('--data'), size: 5, opacity: 0.8}, customdata: pts.map(q => q.i), text: pts.map(q => q.stem),
-        hovertemplate: `%{text}<br>${lab} %{y:.${d}f} ${u}<extra></extra>`});
-      const s = rows[(sel || 1) - 1];
-      if (s && s[key] != null) traces.push({type: 'scatter', mode: 'markers', x: [s.i], y: [s[key]], xaxis: xs, yaxis: ys, hoverinfo: 'skip',
-        marker: {color: css('--you'), size: 11, line: {color: T.surface, width: 2}}});
-      traces.push({type: 'histogram', y: pts.map(q => q[key]), xaxis: xh, yaxis: yh, marker: {color: css('--data-dim')}, hoverinfo: 'skip', nbinsy: 30});
-      if (m != null) traces.push({type: 'scatter', mode: 'lines', x: [1, rows.length], y: [m, m], xaxis: xs, yaxis: ys, hoverinfo: 'skip', line: {color: T.ink3, width: 1, dash: 'dot'}});
-    });
-    const P = await CelerisPlots.plotly();
-    if (!$('#mpcharts')) return;
-    await P.react(box, traces, lay, {displaylogo: false, responsive: true, modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d', 'toggleSpikelines']});
-    if (!box._wired) { box._wired = true; box.on('plotly_click', e => { const p = e.points.find(q => q.customdata); if (p) show(p.customdata, true); }); }
-  };
-  const kpis = d => {
-    const n = rows.length, k = [[`${n.toLocaleString()}${d.total ? ' / ' + d.total.toLocaleString() : ''}`, 'micrographs']];
-    if (n > 1 && running) { const dt = (rows[n - 1].t - rows[0].t) / (n - 1); if (dt > 0) k.push([`${(60 / dt).toFixed(1)}`, 'per minute' + (d.total ? ` · ~${Math.ceil((d.total - n) * dt / 60)} min left` : '')]); }
-    const m = key => med(rows.map(r => r[key]));
-    k.push([fv(m('defocus_a') / 1e4, 2) + ' µm', 'median defocus'], [fv(m('ctf_fit_a'), 2) + ' Å', 'median CTF fit'], [fv(m('astigmatism_a'), 0) + ' Å', 'median astigmatism']);
-    const good = rows.filter(r => r.ctf_fit_a != null && r.ctf_fit_a <= 5).length;
-    k.push([`${n ? Math.round(100 * good / n) : 0}%`, 'CTF fit ≤ 5 Å']);
-    if (rows.some(r => r.frames > 1)) k.push([fv(m('drift_a'), 1) + ' Å', 'median drift']);
-    const sum = key => rows.reduce((a, r) => a + (r[key] || 0), 0);
-    if (rows.some(r => r.picks != null)) k.push([sum('picks').toLocaleString(), `picks · ${fv(m('picks'), 0)} per micrograph`]);
-    if (rows.some(r => r.particles != null)) k.push([sum('particles').toLocaleString(), 'particles extracted']);
-    $('#mpkpi').innerHTML = k.map(([v, c]) => `<div class="num"><div class="v">${v}</div><div class="c">${esc(c)}</div></div>`).join('');
-  };
-  const tick = async () => {
-    clearTimeout(liveTimer);
-    if (current !== name || !$('#mpkpi')) return;
-    try {
-      const d = await api('/api/project/mics?job=' + encodeURIComponent(name));
-      if (current !== name) return;
-      rows = d.rows; fam = d.family || {};
-      const members = ['mc', 'pick', 'extract'].map(k => fam[k]).filter(Boolean);
-      running = members.some(x => x.status === 'running');
-      $('#mpstate').innerHTML = (running ? '<span class="dot running pulse"></span><b>Running</b> ' : '<b>Micrographs</b> ') +
-        members.map(x => `<a href="#${x.name.slice(0, 3)}" class="muted" style="margin-left:6px"><span class="dot ${esc(x.status)}"></span>${esc(x.name.split('_')[1])} ${esc(x.name.slice(0, 3))}</a>`).join('');
-      $('#mpkl').style.display = fam.pick ? '' : 'none';
-      $('#mpn').textContent = d.total ? `· ${rows.length} of ${d.total} micrographs` : `· ${rows.length} micrographs`;
-      if (rows.length !== lastN) {
-        lastN = rows.length; kpis(d);
-        if (!sel || ($('#mpf') && $('#mpf').checked)) show(rows.length); else charts();
-      }
-      if (running) {
-        const lg = await api(`/api/project/log?job=${encodeURIComponent((fam.mc || {}).name || name)}&offset=${offset}`);
-        if (lg.text) { offset = lg.offset; const ls = lg.text.trimEnd().split('\n'); $('#llast').textContent = ls[ls.length - 1].replace(/^\S+ \S+ /, ''); }
-        if (d.status !== 'running' && j.status === 'running') { await load(); return showJob(name, false); }
-      }
-    } catch (e) { /* next tick */ }
-    if (running || j.status === 'running') liveTimer = setTimeout(tick, 5000);
-  };
-  lpText();
-  $('#mplp').oninput = e => { lp = +e.target.value; lpText(); try { localStorage.setItem('celeris-lowpass', lp); } catch (err) {} drawMic(); };
-  $('#mpr').oninput = e => show(+e.target.value, true);
-  $('#mpp').onclick = () => show((sel || 1) - 1, true);
-  $('#mpx').onclick = () => show((sel || 1) + 1, true);
-  if ($('#mpk')) $('#mpk').onchange = drawMic;
-  st.tabIndex = 0;
-  st.onkeydown = e => { if (e.key === 'ArrowLeft') show((sel || 1) - 1, true); if (e.key === 'ArrowRight') show((sel || 1) + 1, true); };
-  tick();
-}
-async function stageGallery(st, j) {
-  st.className = 'stage';
-  st.innerHTML = '<div class="launch">loading classes…</div>';
-  let g;
-  try { g = await api('/api/project/classes?job=' + encodeURIComponent(j.name)); }
-  catch (e) { st.className = ''; st.innerHTML = ''; return; }
-  if (current !== j.name) return;
-  const sel = new Set(g.chosen || []);
-  const editable = j.type !== 'Select' || g.waiting;
-  const is3 = g.kind === '3d';
-  st.innerHTML = `<div class="gal-tools">
-      <div class="sum" id="gsum"></div>
-      ${editable ? `<button class="quiet" data-a="all">All</button><button class="quiet" data-a="none">None</button><button class="quiet" data-a="inv">Invert</button>
-      <label class="muted" style="font-size:12px">size <input type="range" id="gsize" min="90" max="220" value="${is3 ? 90 : 132}" style="width:90px;vertical-align:middle"></label>
-      <button class="${g.waiting ? 'you' : 'go'}" id="gsave" disabled>${g.waiting ? 'Keep these classes' : 'Make a selection'}</button>` : ''}
-    </div>
-    <div class="gal ${is3 ? 'three' : ''}" id="gal">${g.classes.map(c => `
-      <div class="cls ${sel.size ? (sel.has(c.cls) ? 'on' : 'off') : ''}" data-c="${c.cls}" title="class ${c.cls}: ${c.n.toLocaleString()} particles${c.res ? ', ' + c.res + ' Å' : ''}">
-        ${c.images.length > 1 ? `<div class="three">${c.images.map(s => `<img src="${s}" alt="">`).join('')}</div>` : c.images.length ? `<img src="${c.images[0]}" alt="class ${c.cls}">` : '<div style="aspect-ratio:3/1"></div>'}
-        <div class="lab"><span>${c.cls}</span><span>${c.n.toLocaleString()}${c.share != null ? ' · ' + (100 * c.share).toFixed(1) + '%' : ''}${c.res ? ' · ' + c.res + ' Å' : ''}</span></div>
-      </div>`).join('')}</div>`;
-  const total = g.classes.reduce((a, c) => a + c.n, 0);
-  const upd = () => {
-    const n = g.classes.filter(c => sel.has(c.cls)).reduce((a, c) => a + c.n, 0);
-    $('#gsum').innerHTML = editable ? (sel.size ? `<b>${sel.size}</b> of ${g.classes.length} classes, <b>${n.toLocaleString()}</b> particles (${(100 * n / Math.max(total, 1)).toFixed(1)}%)`
-      : `Click the classes to keep. ${g.classes.length} classes, ${total.toLocaleString()} particles`)
-      : `${sel.size} classes kept of ${esc(g.source)}`;
-    document.querySelectorAll('.cls').forEach(e => { const k = +e.dataset.c; e.classList.toggle('on', sel.has(k)); e.classList.toggle('off', sel.size > 0 && !sel.has(k)); });
-    const b = $('#gsave'); if (b) b.disabled = !sel.size;
-  };
-  if (editable) {
-    document.querySelectorAll('.cls').forEach(e => e.onclick = () => { const k = +e.dataset.c; sel.has(k) ? sel.delete(k) : sel.add(k); upd(); });
-    document.querySelectorAll('[data-a]').forEach(b => b.onclick = () => {
-      const a = b.dataset.a;
-      g.classes.forEach(c => { if (a === 'all') sel.add(c.cls); else if (a === 'none') sel.delete(c.cls); else sel.has(c.cls) ? sel.delete(c.cls) : sel.add(c.cls); });
-      upd();
-    });
-    $('#gsize').oninput = e => $('#gal').style.setProperty('--cell', e.target.value * (is3 ? 3 : 1) + 'px');
-    $('#gsave').onclick = async () => {
-      $('#gsave').disabled = true;
-      try { const d = await api('/api/project/select', {job: j.name, classes: [...sel].sort((a, b) => a - b)}); await load(); showJob(d.job); }
-      catch (e) { alert(e.message); $('#gsave').disabled = false; }
-    };
-  }
-  upd();
-}
-function stageVolume(st, j, maps) {
-  st.className = 'stage';
-  const rank = p => ['_map.mrc', 'sharpened_masked.mrc', 'sharpened.mrc', 'map_nomask.mrc'].findIndex(x => p.endsWith(x));
-  maps.sort((a, b) => (rank(a.path) < 0 ? 9 : rank(a.path)) - (rank(b.path) < 0 ? 9 : rank(b.path)));
-  const localres = j.files.find(f => /localres\.mrc$/.test(f.path));
-  const preview = j.files.find(f => /map_views\.png$/.test(f.path)) || j.files.find(f => /postprocess\.png$/.test(f.path));
-  const names = ['projection z', 'projection y', 'projection x', 'section z', 'section y', 'section x'];
-  st.innerHTML = `<div class="launch">
-      <div class="views" id="mviews">${names.map(n => `<figure><div class="tile"></div><figcaption>${n}</figcaption></figure>`).join('')}</div>
-      <div><button class="go" id="go3d">Show the map in 3D</button>
-      <div class="muted" id="mvname" style="font-size:12px;margin-top:6px">${maps.length} map${maps.length > 1 ? 's' : ''} in this job; the viewer loads a downsampled copy (~8 MB)</div></div></div>`;
-  $('#go3d').onclick = () => openViewer(st, j, maps, localres);
-  api('/api/project/mapviews?path=' + encodeURIComponent(maps[0].path)).then(d => {
-    if (!$('#mviews')) return;
-    $('#mviews').innerHTML = d.views.map(v => `<figure><div class="tile"><img src="${v.src}" alt="${esc(v.label)}"></div><figcaption>${esc(v.label)}</figcaption></figure>`).join('');
-    $('#mvname').textContent = `${d.name} · box ${d.box[0]} · ${d.apix.toFixed(2)} Å/px · ${maps.length} map${maps.length > 1 ? 's' : ''} in this job; the 3D viewer loads a downsampled copy`;
-  }).catch(() => {
-    if ($('#mviews') && preview) $('#mviews').outerHTML = `<img class="fallback" src="${file(preview.path)}" alt="map preview">`;
-  });
-}
-async function openViewer(st, j, maps, localres) {
-  st.innerHTML = `<div class="v3"><div style="position:relative"><canvas id="v3c" aria-label="3D map"></canvas><div class="hint">drag to rotate · wheel to zoom · double-click to reset</div></div>
-    <div class="ctl">
-      <div><label for="v3q">Detail</label><select id="v3q" title="voxels across the particle's cube; the map is cropped to the particle first, so most maps are shown at their full pixel size">
-        <option value="160">fast (160)</option><option value="256" selected>standard (256)</option><option value="384">full (384, large maps: slower)</option></select></div>
-      <div><label for="v3m">Map</label><select id="v3m">${maps.map(m => `<option value="${esc(m.path)}">${esc(m.path.split('/').pop())}</option>`).join('')}</select></div>
-      <div><label for="v3l">Threshold <span id="v3lv" class="lvl"></span></label><input type="range" id="v3l" min="0" max="1000" value="500">
-        <div class="row" id="v3p" style="margin-top:6px"></div></div>
-      <div><label class="tog" style="margin:0" title="small isolated pieces at the clean level (noise) are left out"><input type="checkbox" id="v3d" checked> Hide dust</label>
-        <label class="tog" style="margin:6px 0 0" title="a Gaussian of one displayed voxel, for the view only: on by default for rough (sharpened) maps"><input type="checkbox" id="v3g"> Smooth <span class="muted" id="v3gs"></span></label></div>
-      ${localres ? `<div><label class="tog" style="margin:0"><input type="checkbox" id="v3c2"> Colour by local resolution</label>
-        <div id="v3r" style="display:none;margin-top:6px">
-          <div class="ramp" id="v3ramp"></div>
-          <div class="row muted" style="justify-content:space-between;font-size:11.5px;margin-top:3px"><span id="v3r0"></span><span id="v3rm"></span><span id="v3r1"></span></div>
-          <div class="crange"><span class="muted">finest</span><input type="range" id="v3ca" min="0" max="1000"><span id="v3cav"></span>
-            <span class="muted">coarsest</span><input type="range" id="v3cb" min="0" max="1000"><span id="v3cbv"></span></div>
-          <div class="row" style="margin-top:6px"><select id="v3cm" aria-label="colour map"><option value="rdylbu">RdYlBu (blue = better)</option><option value="turbo">Turbo</option></select></div>
-          <div class="muted" style="font-size:11.5px;margin-top:4px">from the values on the surface; outside the range the colour is clipped</div>
-        </div></div>` : ''}
-      <div><label>View along</label><div class="row"><button data-ax="z">z</button><button data-ax="y">y</button><button data-ax="x">x</button></div></div>
-      <div class="muted" id="v3i" style="font-size:12px"></div>
-      <div><button id="v3s">Save image</button></div>
-    </div></div>`;
-  try { viewer = CelerisVolume.create($('#v3c'), {bg: '#000000'}); }
-  catch (e) { st.innerHTML = `<div class="launch err">${esc(e.message)}</div>`; return; }
-  let head = null, smoothChanged = false;
-  const lv = () => head ? head.min + (head.max - head.min) * $('#v3l').value / 1000 : 0;
-  const setLv = v => { $('#v3l').value = Math.round(1000 * (v - head.min) / (head.max - head.min)); viewer.setLevel(v); $('#v3lv').textContent = (+v.toPrecision(3)); };
-  const loadMap = async () => {
-    $('#v3i').textContent = 'loading…';
-    const path = $('#v3m').value;
-    const sameJob = localres && path.split('/').slice(0, 2).join('/') === localres.path.split('/').slice(0, 2).join('/');
-    const same = head && head.name === path.split('/').pop();
-    const keep = same && !smoothChanged ? lv() : null;     // dust toggled: same map, same level
-    const sm = same ? ($('#v3g').checked ? 1 : 0) : -1;     // a new map: smoothing chosen by the server
-    smoothChanged = false;
-    try { head = await viewer.load(`/api/project/volume?path=${encodeURIComponent(path)}&size=${$('#v3q').value}&dust=${$('#v3d').checked ? 1 : 0}&smooth=${sm}${sameJob ? '&color=' + encodeURIComponent(localres.path) : ''}`); }
-    catch (e) { $('#v3i').textContent = e.message; return; }
-    $('#v3p').innerHTML = Object.entries(head.levels).map(([k, v]) => `<button data-lv="${v}" title="${k === 'clean' ? 'the level where the map is one connected body (the default)' : k.endsWith('σ') ? k + ' above the noise at the box edge' : k + ' of the strongest density'}">${k}</button>`).join('');
-    document.querySelectorAll('[data-lv]').forEach(b => b.onclick = () => setLv(+b.dataset.lv));
-    setLv(keep ?? head.level);
-    $('#v3g').checked = !!head.smooth_a; $('#v3gs').textContent = head.smooth_a ? `(${head.smooth_a} Å)` : '';
-    const full = Math.abs(head.apix - head.apix_file) < 1e-3;
-    $('#v3i').innerHTML = `${esc(head.name)}<br>box ${head.box} px at ${head.apix_file.toFixed(3)} Å; the particle's ${head.crop} px shown ` +
-      (full ? 'at full resolution' : `at ${head.shape[0]} px, ${head.apix.toFixed(2)} Å/px`);
-    if (head.color && $('#v3ca')) {
-      const c = head.color, toS = x => Math.round(1000 * (x - c.lo) / Math.max(c.hi - c.lo, 1e-9)), toA = v => c.lo + (c.hi - c.lo) * v / 1000;
-      $('#v3ca').value = toS(c.min); $('#v3cb').value = toS(c.max);
-      const upd = () => {
-        let a = toA(+$('#v3ca').value), b = toA(+$('#v3cb').value);
-        if (b <= a + 0.05) { b = a + 0.05; }
-        viewer.setColorRange(a, b);
-        $('#v3cav').textContent = a.toFixed(1) + ' Å'; $('#v3cbv').textContent = b.toFixed(1) + ' Å';
-        $('#v3r0').textContent = a.toFixed(1) + ' Å'; $('#v3rm').textContent = ((a + b) / 2).toFixed(1); $('#v3r1').textContent = b.toFixed(1) + ' Å';
-      };
-      $('#v3ca').oninput = upd; $('#v3cb').oninput = upd; upd();
-    }
-  };
-  $('#v3l').oninput = () => { viewer.setLevel(lv()); $('#v3lv').textContent = +lv().toPrecision(3); };
-  $('#v3m').onchange = () => { head = null; loadMap(); };
-  $('#v3d').onchange = loadMap;
-  $('#v3q').onchange = loadMap;
-  $('#v3g').onchange = () => { smoothChanged = true; loadMap(); };
-  if ($('#v3c2')) $('#v3c2').onchange = e => { viewer.setColor(e.target.checked); $('#v3r').style.display = e.target.checked ? '' : 'none'; };
-  if ($('#v3cm')) $('#v3cm').onchange = e => { viewer.setColormap(e.target.value); $('#v3ramp').className = 'ramp ' + (e.target.value === 'turbo' ? 'turbo' : ''); };
-  document.querySelectorAll('[data-ax]').forEach(b => b.onclick = () => viewer.view(b.dataset.ax));
-  $('#v3s').onclick = () => { const a = document.createElement('a'); a.href = viewer.snapshot(); a.download = j.name + '_3d.png'; a.click(); };
-  loadMap();
-}
-function stageMics(st, j) {
-  st.className = 'stage';
-  const fs = j.movie_files;
-  st.innerHTML = `<div class="mic"><div class="nav"><button id="mp" aria-label="previous micrograph">‹</button>
-      <input type="range" id="mr" min="0" max="${fs.length - 1}" value="0" aria-label="micrograph"><button id="mn" aria-label="next micrograph">›</button>
-      <span class="muted" id="ml" style="min-width:220px;text-align:right"></span></div><img id="mi" alt="micrograph figure"></div>`;
-  const show = i => { i = Math.max(0, Math.min(fs.length - 1, i)); $('#mr').value = i; $('#mi').src = file(fs[i]);
-    $('#ml').textContent = `${i + 1} of ${fs.length}: ${fs[i].split('/').pop().replace(/^j\d+_/, '').replace('.png', '')}`; };
-  $('#mr').oninput = e => show(+e.target.value);
-  $('#mp').onclick = () => show(+$('#mr').value - 1);
-  $('#mn').onclick = () => show(+$('#mr').value + 1);
-  show(0);
-}
-
-// tabs
-function renderPane(j) {
-  const p = $('#pane');
-  clearTimeout(logTimer);
-  if (tab === 'plots') return panePlots(p, j);
-  if (tab === 'files') {
-    const fs = j.files.filter(f => !/\.(png|gif)$/.test(f.path) && !/\.plot\.json$/.test(f.path));
-    p.innerHTML = fs.length ? `<div class="files">${fs.map(f => `<a href="${file(f.path)}" download>${esc(f.path)} <span class="muted">${(f.size / 1e6).toFixed(1)} MB</span></a>`).join('')}</div>` : '<p class="muted">No files besides the figures.</p>';
-    return;
-  }
-  if (tab === 'log') { p.innerHTML = `<pre class="log" id="log"></pre>`; return followLog(j.name, 0); }
-  if (tab === 'settings') {
-    const hide = new Set(['history', 'figures', 'warnings', 'fsc_solvent', 'fsc_corrected']);
-    const summ = Object.fromEntries(Object.entries(j.summary || {}).filter(([k, v]) => !hide.has(k) && !(Array.isArray(v) && v.length > 12)));
-    p.innerHTML = `<h3 class="muted" style="margin:0 0 6px;font-size:13px">Results</h3>${kv(summ)}<h3 class="muted" style="margin:18px 0 6px;font-size:13px">Settings</h3>${kv(j.params)}`;
-    return;
-  }
-  if (tab === 'lineage') {
-    p.innerHTML = `<h3 class="muted" style="margin:0 0 6px;font-size:13px">Made from</h3>${chips(j.lineage.slice(1))}
-      <h3 class="muted" style="margin:0 0 6px;font-size:13px">Used by</h3>${chips(j.dependents)}
-      <button id="flowb">Draw the flowchart</button><div id="flowbox" class="flow" style="margin-top:12px"></div>`;
-    document.querySelectorAll('#pane .chip').forEach(e => e.onclick = () => showJob(e.dataset.n));
-    $('#flowb').onclick = async () => {
-      $('#flowbox').innerHTML = '<p class="muted">drawing…</p>';
-      try { const d = await api('/api/project/flow?job=' + encodeURIComponent(j.name));
-        $('#flowbox').innerHTML = `<img src="${file(d.png)}&t=${Date.now()}" alt="flowchart"><p><a href="${file(d.svg)}" download>flowchart.svg</a> (text stays editable)</p>`; }
-      catch (e) { $('#flowbox').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
-    };
-  }
-}
-const chips = arr => arr.length ? `<div class="chips">${arr.map(n => `<span class="chip" data-n="${esc(n)}">${esc(n)}</span>`).join('')}</div>` : '<p class="muted">none</p>';
-function kv(obj, depth = 0) {
-  const cell = v => (v && typeof v === 'object' && !Array.isArray(v) && depth < 2) ? kv(v, depth + 1)
-    : esc(Array.isArray(v) ? v.map(x => typeof x === 'object' ? JSON.stringify(x) : x).join(', ') : (typeof v === 'object' ? JSON.stringify(v) : v));
-  return '<table class="kv">' + Object.entries(obj).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${cell(v)}</td></tr>`).join('') + '</table>';
-}
-let interactive = true;
-try { interactive = localStorage.getItem('celeris-interactive') !== '0'; } catch (e) {}
-function panePlots(p, j) {
-  const figs = j.files.filter(f => /\.(png|gif)$/.test(f.path) && !/\.(light|dark)\.png$/.test(f.path));
-  const hasJson = f => j.files.some(x => x.path === f.path.replace(/\.png$/, '.plot.json'));
-  if (!figs.length) { p.innerHTML = `<p class="muted">${j.status === 'running' ? 'No figures yet: they appear here as the job writes them (its log is above).' : 'This job has no figures.'}</p>`; return; }
-  p.innerHTML = '<div class="figs">' + figs.map((f, i) => `<div class="fig" id="card${i}"><div class="bar"><span>${esc(f.path.split('/').pop().replace(/^j\d+_/, '').replace(/\.(png|gif)$/, '').replace(/_/g, ' '))}</span>
-      ${hasJson(f) ? `<span class="seg"><button data-i="${i}" data-m="live" class="${interactive ? 'on' : ''}">Interactive</button><button data-i="${i}" data-m="img" class="${interactive ? '' : 'on'}">Image</button></span>` : ''}</div>
-      <div class="plot" id="fig${i}"></div></div>`).join('') + '</div>';
-  const wide = (i, ratio) => { $('#card' + i).classList.toggle('wide', ratio > 2.1); };   // a strip of panels takes the row
-  const draw = (i, live) => {
-    const f = figs[i], box = $('#fig' + i);
-    if (live && hasJson(f)) {
-      box.innerHTML = '<p class="muted" style="padding:14px">drawing…</p>';
-      fetch(file(f.path.replace(/\.png$/, '.plot.json'))).then(r => r.json()).then(spec => { wide(i, spec.width / spec.height); box.innerHTML = ''; return CelerisPlots.render(box, spec, THEME()); })
-        .catch(e => { box.innerHTML = `<img src="${file(f.path)}" alt=""><p class="muted">${esc(e.message)}</p>`; });
-    } else {
-      box.innerHTML = `<img loading="lazy" src="${file(f.path)}" alt="${esc(f.path)}">`;
-      const im = box.querySelector('img'); im.onload = () => wide(i, im.naturalWidth / im.naturalHeight);
-    }
-  };
-  const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { io.unobserve(e.target); draw(+e.target.id.slice(3), interactive); } }), {rootMargin: '300px'});
-  figs.forEach((f, i) => io.observe($('#fig' + i)));
-  document.querySelectorAll('.seg button').forEach(b => b.onclick = () => {
-    const live = b.dataset.m === 'live';
-    interactive = live; try { localStorage.setItem('celeris-interactive', live ? '1' : '0'); } catch (e) {}
-    b.parentNode.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
-    draw(+b.dataset.i, live);
-  });
-}
-async function followLog(name, offset) {
-  clearTimeout(logTimer);
-  if (current !== name || !$('#log')) return;
-  let d;
-  try { d = await api(`/api/project/log?job=${encodeURIComponent(name)}&offset=${offset}`); } catch (e) { return; }
-  if (current !== name || !$('#log')) return;
-  const pre = $('#log'), atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
-  pre.textContent += d.text || (offset ? '' : 'No run log for this job.');
-  if (atEnd) pre.scrollTop = pre.scrollHeight;
-  if (d.status === 'running') logTimer = setTimeout(() => followLog(name, d.offset), 3000);
-}
-
-// ------------------------------------------------------------------ new job, report, open
-async function loadTypes() { try { types = Object.fromEntries((await api('/api/project/jobtypes')).map(t => [t.type, t])); } catch (e) {} }
-function jobForm(type, params = {}) {
-  current = null; renderList();
-  const names = Object.keys(types);
-  if (!names.length) { $('#main').innerHTML = '<div class="empty err">The server did not send job types.</div>'; return; }
-  type = type || names[0];
-  const t = types[type];
-  const usable = jobs.filter(x => ['finished', 'queued', 'waiting', 'running'].includes(x.status));
-  const opt = inp => {
-    const ok = usable.filter(x => inp.types.includes(x.type));
-    const pre = params[inp.name] != null ? Number(params[inp.name]) : (ok.length ? ok[ok.length - 1].id : null);
-    return (inp.optional ? '<option value="">(default)</option>' : '') +
-      ok.map(x => `<option value="${x.id}" ${x.id === pre ? 'selected' : ''}>${esc(x.name)}${x.status !== 'finished' ? ' (' + x.status + ')' : ' · ' + esc(x.key || '')}</option>`).join('');
-  };
-  const field = f => {
-    const v = params[f.name] === undefined ? f.default : params[f.name];
-    if (f.kind === 'bool') return `<input type="checkbox" id="f_${f.name}" ${v ? 'checked' : ''}>`;
-    const shown = Array.isArray(v) ? v.join(', ') : (v == null ? '' : v);
-    const num = f.kind === 'int' || f.kind === 'float';
-    return `<input ${num ? `type="number" step="${f.kind === 'float' ? 'any' : '1'}"` : 'type="text"'} id="f_${f.name}" value="${esc(shown)}">`;
-  };
-  $('#main').innerHTML = `<div class="head"><div><h1>New job</h1><div class="sub">It goes into the queue and runs when its inputs are ready.</div></div></div>
-    <div class="pane" style="padding-top:0">
-    <table class="form"><tr><td>Job type</td><td><select id="ftype">${names.map(n => `<option ${n === type ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select><div class="help">${esc(t.title)}</div></td></tr>
-    ${t.inputs.map(i => `<tr><td>${esc(i.name)}${i.optional ? '' : ' *'}</td><td><select id="in_${esc(i.name)}">${opt(i)}</select><div class="help">${esc(i.doc)} (${esc(i.types.join(', '))}); jobs still queued or waiting can be inputs</div></td></tr>`).join('')}
-    ${t.settings.map(f => `<tr><td>${esc(f.name)}</td><td>${field(f)}<div class="help">${esc(f.help)}</div></td></tr>`).join('')}
-    <tr><td>Label</td><td><input id="flabel" placeholder="optional, e.g. C8_nu"></td></tr></table>
-    <p><button class="go" id="frun">Add to the queue</button> <span class="err" id="ferr"></span></p></div>`;
-  $('#ftype').onchange = e => jobForm(e.target.value);
-  $('#frun').onclick = async () => {
-    const inputs = {}, settings = {};
-    t.inputs.forEach(i => { const v = $('#in_' + i.name).value; if (v) inputs[i.name] = Number(v); });
-    t.settings.forEach(f => { const el = $('#f_' + f.name); settings[f.name] = f.kind === 'bool' ? el.checked : el.value; });
-    $('#frun').disabled = true;
-    try { const d = await api('/api/project/new', {type, inputs, settings, label: $('#flabel').value}); await load(); showJob(d.job); }
-    catch (e) { $('#ferr').textContent = e.message; $('#frun').disabled = false; }
-  };
-}
-$('#newjob').onclick = () => { const j = jobs.find(x => x.name === current); jobForm(j && types[j.type] ? j.type : null); };
-$('#report').onclick = async () => {
-  current = null; renderList();
-  $('#main').innerHTML = '<div class="empty">Making the report…</div>';
-  let d;
-  try { d = await api('/api/project/report', {}); }
-  catch (e) { $('#main').innerHTML = `<div class="empty"><h1>No final jobs yet</h1><p>${esc(e.message)}</p><p>Open the jobs whose maps or particles the publication reports and press ☆ Mark final.</p></div>`; return; }
-  $('#main').innerHTML = `<div class="head"><div><h1>Report</h1><div class="sub">${d.jobs.length} jobs lead to ${d.finals.map(esc).join(', ')}; written to the project's report folder</div></div>
-      <div class="acts"><a href="${file(d.flowchart_svg)}" download><button>flowchart.svg</button></a><a href="${file(d.methods)}" download><button>methods.md</button></a><a href="${file(d.settings)}" download><button>settings.csv</button></a></div></div>
-    <div class="pane" style="padding-top:4px"><div class="flow"><img src="${file(d.flowchart)}&t=${Date.now()}" alt="flowchart"></div>
-    <h3 class="muted" style="margin:22px 0 6px;font-size:13px">Methods</h3><div class="methods">${esc(d.methods_text)}</div></div>`;
-};
-document.querySelectorAll('.menu-list button').forEach(b => b.addEventListener('click', () => b.closest('details').open = false));
-$('#open').onclick = async () => {
-  const root = prompt('Project folder (the one with project.db). Windows paths such as E:\\linux\\celeris\\inx6 work too:', '');
-  if (!root) return;
-  try { await api('/api/project/open', {root}); } catch (e) { alert(e.message); return; }
-  current = null; $('#main').innerHTML = '<div class="empty"><h1>Choose a job on the left</h1></div>'; load();
-};
-$('#create').onclick = async () => {
-  const root = prompt('Folder for the new project (new or empty). Windows paths such as E:\\linux\\celeris\\new work too:', '');
-  if (!root) return;
-  try { await api('/api/project/open', {root, create: true}); } catch (e) { alert(e.message); return; }
-  current = null; await load(); jobForm('Import');
-};
-
-window.addEventListener('hashchange', () => { const h = decodeURIComponent(location.hash.slice(1)); const m = jobs.find(j => j.name.startsWith(h)); if (m && m.name !== current) showJob(m.name); });
-loadTypes();
-if (location.hash.length > 1) current = decodeURIComponent(location.hash.slice(1));
-load().then(() => { if (current) { const m = jobs.find(j => j.name.startsWith(current)); if (m) showJob(m.name); } });
-</script>
+<script src="/web/dash.js"></script>
+<script src="/web/pages.js"></script>
+<script src="/web/picker.js" onerror="this.remove()"></script>
 </body>
 </html>

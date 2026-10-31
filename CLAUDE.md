@@ -94,7 +94,9 @@ Layers, bottom to top:
    reconstruction at known poses (docs/preprocess-status.md). Judge motion correction by such downstream FSC or
    the even/odd-frame FRC, not by FRC against another program's micrograph (shared shot noise).
 4. **Front ends**: `cli.py` (one-shot runs, output writers, `pick_devices`), `session.py` (stateful
-   `Session`), and `webapp.py` (FastAPI; its page is the project dashboard `web/project.html` at /project - `/`
+   `Session`), and `webapp.py` (FastAPI; its page is the project dashboard `web/project.html` at /project (markup, CSS; scripts `web/dash.js`: rail with
+   List / Stages / Flow views, job pages, the New job picker and forms from `uimeta.py`'s plain names, groups and basic /
+   advanced settings; `web/pages.js`: Import and Extract pages from `jobview.py`) - `/`
    redirects there; the old single-dataset 2D page is gone, its /api/* Session endpoints remain) and `mcp_server.py`,
    both thin wrappers around one `Session`, running one GPU job at a time; `mcp_server.py` also has the project tools.
    Movie jobs (Import, MotionCtf, Pick, Extract) are dashboard job types through `moviejobs.movie_registry()`.

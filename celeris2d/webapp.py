@@ -977,7 +977,8 @@ def create(workdir, project_dir=None):
         from .jobs import registry
         from .jobspec import describe
         from .moviejobs import movie_registry
-        return [describe(sp) for sp in [*movie_registry().values(), *registry().values()]]
+        from .uimeta import annotate        # + plain names, groups, labels, basic / advanced (uimeta.py)
+        return annotate([describe(sp) for sp in [*movie_registry().values(), *registry().values()]])
 
     @app.post("/api/project/new")
     def project_new(body: dict = Body(...)):
@@ -1064,7 +1065,7 @@ def create(workdir, project_dir=None):
         return dict(job=j.name, status="queued")
 
     # ------------------------------------------------------------------ the queue (scheduler.py)
-    proj_state["auto_select"] = True
+    proj_state["auto_select"] = False    # the class gallery of a finished run makes the Select job (no waiting one)
     wake = threading.Event()
 
     def _kick():
@@ -1262,6 +1263,24 @@ def create(workdir, project_dir=None):
         from .micview import picks_of
         prj = _prj()
         return picks_of(prj, prj.job(job), os.path.basename(stem))
+
+    @app.get("/api/project/jobview")
+    def project_jobview(job: str):
+        """An Import / Pick / Extract job's own numbers for its page (jobview.py): the movies, the picks, the particles."""
+        from . import jobview
+        prj = _prj()
+        j = prj.job(job)
+        fn = dict(Import=jobview.import_info, Pick=jobview.pick_stats, Extract=jobview.extract_stats).get(j.type)
+        if fn is None:
+            raise HTTPException(400, f"no job view for {j.type}")
+        return fn(prj, j)
+
+    @app.get("/api/project/ptcls")
+    def project_ptcls(job: str, n: int = 60, seed: int = 0, lowpass: float = 0.0):
+        """A random handful of an Extract job's particles as small images."""
+        from .jobview import particle_gallery
+        prj = _prj()
+        return particle_gallery(prj, prj.job(job), max(1, min(int(n), 200)), int(seed), float(lowpass))
 
     @app.get("/api/project/ps.png")
     def project_ps_png(job: str, stem: str):

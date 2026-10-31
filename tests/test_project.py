@@ -77,6 +77,16 @@ def test_jobs_picking_extraction_exports(tmp_path):
     assert prj.job("bin4").id == prj.job("005").id == prj.job("jobs/005_extract_bin4/").id == 5
     assert prj.lineage(eb) == [eb.name, pj.name, mc.name, imp.name]
     assert ex.params["box"] == pk.suggest_box(1.5 * DIAM, APIX) and eb.params["box"] == pk.suggest_box(1.5 * DIAM, 4 * APIX)
+    # the dashboard's job pages (jobview): each job's own numbers
+    from celeris2d import jobview
+    im = jobview.import_info(prj, imp)
+    assert im["movies"] == 2 and im["bytes"] == 2 * 4096 and len(im["times"]) == 2
+    ps = jobview.pick_stats(prj, pj)
+    assert len(ps["rows"]) == 2 and ps["kept"] == sum(r["picks"] for r in ps["rows"]) and ps["method"] == "blob"
+    es = jobview.extract_stats(prj, ex)
+    assert es["particles"] == sum(r["particles"] for r in es["rows"]) > 0 and es["box"] == ex.params["box"]
+    g = jobview.particle_gallery(prj, ex, n=5, lowpass_a=10)
+    assert len(g["tiles"]) == 5 and g["tiles"][0]["src"].startswith("data:image/png")
 
     # the picker finds the particles, positions within a few A
     for mid, pos in truth.items():

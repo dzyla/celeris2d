@@ -10,3 +10,4 @@ celeris2d_web/
 *.csg
 *.star
 *.npz
+.claude/
