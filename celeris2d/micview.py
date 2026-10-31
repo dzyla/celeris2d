@@ -27,6 +27,23 @@ def _stats_dir(project: Project, mc) -> str:
     return os.path.join(project.root, "data", f"{mc.id:03d}", "Stats")
 
 
+def _stats_files(project: Project, mc) -> list[str]:
+    """Every micrograph's stats file: Stats/<movie subdir>/<stem>.json (Project.per_movie; the subdir is the movies'
+    folder under the import root, often one level or more)."""
+    return glob.glob(os.path.join(_stats_dir(project, mc), "**", "*.json"), recursive=True)
+
+
+def _stats_path(project: Project, mc, stem: str) -> str:
+    p = os.path.join(_stats_dir(project, mc), stem + ".json")
+    if os.path.exists(p):
+        return p
+    mv = project.movies()
+    sub = mv[mv["stem"] == stem]["subdir"]
+    if len(sub) and sub.iloc[0]:
+        return os.path.join(_stats_dir(project, mc), sub.iloc[0], stem + ".json")
+    return p
+
+
 def _ctf_row(s: dict) -> dict:
     du, dv = s.get("defocus_u"), s.get("defocus_v")
     r = dict(defocus_a=None if du is None else round(0.5 * (du + dv)),
@@ -67,7 +84,7 @@ def mic_rows(project: Project, job) -> list[dict]:
     if mc is None:
         return []
     rows = {}
-    for p in glob.glob(os.path.join(_stats_dir(project, mc), "*.json")):
+    for p in _stats_files(project, mc):
         try:
             with open(p) as fh:
                 s = json.load(fh)
@@ -94,7 +111,7 @@ def mic_rows(project: Project, job) -> list[dict]:
 
 
 def _micrograph(project: Project, mc, stem: str):
-    with open(os.path.join(_stats_dir(project, mc), stem + ".json")) as fh:
+    with open(_stats_path(project, mc, stem)) as fh:
         s = json.load(fh)
     import mrcfile
     with mrcfile.open(project.abs(s["micrograph"]), permissive=True) as f:
@@ -197,7 +214,7 @@ def _cached(project: Project, mc, stem: str, kind: str, make):
     """A preview file of one micrograph (the dashboard's worker makes them as micrographs come in, see warm()):
     read when it is there and newer than the micrograph's stats, else made and written now."""
     p = _preview(project, mc, stem, kind)
-    st = os.path.join(_stats_dir(project, mc), stem + ".json")
+    st = _stats_path(project, mc, stem)
     if os.path.exists(p) and os.path.getmtime(p) >= os.path.getmtime(st):
         with open(p, "rb") as fh:
             data = fh.read()
@@ -268,7 +285,7 @@ def warm(project: Project, budget_s: float = 4.0) -> int:
     mcs = [project.job(int(r.id)) for r in jobs[jobs["type"] == "MotionCtf"].itertuples()]
     mcs.sort(key=lambda j: (j.status != "running", -j.id))
     for mc in mcs:
-        stats = sorted(glob.glob(os.path.join(_stats_dir(project, mc), "*.json")), key=os.path.getmtime, reverse=True)
+        stats = sorted(_stats_files(project, mc), key=os.path.getmtime, reverse=True)
         for st in stats[:400]:
             stem = os.path.splitext(os.path.basename(st))[0]
             if all(os.path.exists(_preview(project, mc, stem, k)) for k in (".json", ".ps.png", ".png")):
