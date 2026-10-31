@@ -25,18 +25,32 @@ import torch.nn.functional as F
 
 from .engine import TWO_PI, ctf_2d, freqs, ft_resize, gpu_free, rot_grid, upsample2, release_cache
 
-# A job may set LIVE = fn(stage, it, n_iter, maps, res, apix): called with the current maps (real space, one per
-# model, on the GPU) after every SGD round and refinement iteration - the dashboard's live view (jobs.live_maps). It
-# must be quick; failures are ignored.
+# A job may set LIVE = fn(stage, it, n_iter, maps, res, apix, counts=None): called with the current maps (real
+# space, one per model) after every class-stage start, SGD round, refinement iteration and 3D classification iteration -
+# the dashboard's live view (live.live_maps). counts: particles per model (None: one model, or unknown). maps is None
+# when LIVE.due(stage, it, n_iter) says no snapshot is wanted (history only: the maps are not made). It must be quick;
+# failures are ignored.
 LIVE = None
 
 
-def _live(stage, it, n_iter, vols, res, apix):
+def _live(stage, it, n_iter, vols, res, apix, counts=None):
+    """vols: per model a Volume, a pair of half Volumes (averaged) or a real map (tensor)."""
     if LIVE is None:
         return
+
+    def real(v):
+        if torch.is_tensor(v):
+            return v
+        if isinstance(v, (list, tuple)):        # halves (a 3D classification's two references may be one object)
+            return v[0].real() if v[0] is v[1] else (v[0].real() + v[1].real()).mul_(0.5)
+        return v.real()
     try:
-        maps = [(v[0].real() + v[1].real()).mul_(0.5) if isinstance(v, (list, tuple)) else v.real() for v in vols]
-        LIVE(stage, it, n_iter, maps, res, apix)
+        due = getattr(LIVE, "due", None)
+        maps = [real(v) for v in vols] if due is None or due(stage, it, n_iter) else None
+        if counts is None:
+            LIVE(stage, it, n_iter, maps, res, apix)
+        else:
+            LIVE(stage, it, n_iter, maps, res, apix, counts=[int(c) for c in counts])
     except Exception:                                # noqa: BLE001 - a live view never stops a job
         pass
 
@@ -666,6 +680,7 @@ def classes_to_volume(cls_ft: torch.Tensor, pops: torch.Tensor, box_a: float, di
         starts.append((score, vols, Ak))
         if best is None or score > best[0]:
             best = (score, vols, Ak, cc_k.clone(), zk.clone())
+        _live("classes", start + 1, n_starts, vols, [res_end] * M, box_a / b1, counts=sizes if M > 1 else None)
     log(f"[3d] best start: class agreement {best[0]:.3f} (per class {' '.join(f'{x:.2f}' for x in best[3].tolist())})"
         + (f"; classes per model {torch.bincount(best[4], minlength=M).tolist()}" if M > 1 else ""))
     starts.sort(key=lambda x: -x[0])
@@ -1236,8 +1251,9 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                 history[-1]["seconds"] = round(time.time() - t0, 1)
                 if iters is not None:      # the FSC of the poses found in that iteration
                     iters["fsc"].append([None if f is None else f.cpu().numpy().astype(np.float32) for f in fscs])
+            pops_ = torch.bincount(z, minlength=M).tolist() if M > 1 else None      # the particles in these maps
             _live("refine", it, n_iter, [vols[m] for m in range(M) if alive[m]], [res[m] for m in range(M) if alive[m]],
-                  box_a / b)
+                  box_a / b, counts=None if pops_ is None else [pops_[m] for m in range(M) if alive[m]])
         if it == n_iter:
             break
         A_prev, t_prev = A.clone(), t.clone()      # how far this iteration moves each pose (log, history)
@@ -1524,6 +1540,7 @@ def classify3d(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, n_model
     b = box or clf.bmax
     r = classify(clf, idx, A, t, n_models, res_a, sym=sym, n_iter=n_iter, z0=z0, seed=seed, init="random", reg_t=None,
                  soft=True, priors=False, ll_scale=0.5, relax_ops=expand_ops, final_box=b, log=log)
+    classify3d.last_history = r.history          # per iteration: class sizes, half-map resolution (class3d.classify)
     zero = torch.zeros((b, b, b))
     maps = torch.stack([(m if m is not None else zero) for m in r.maps]).to(dev)
     halves = [[_RealMap(h[0] if h else zero, dev), _RealMap(h[1] if h else zero, dev)] for h in r.halves]
@@ -1763,6 +1780,14 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
     unmasked_res = resolution_from_fsc(fsc(vols[0][0], vols[0][1]), box_a)   # comparable to RELION's "without masking"
     zk = torch.zeros(len(Ak), dtype=torch.long, device=dev)
     t0 = time.time()
+    consensus = None
+    if M > 1:   # the consensus's own numbers, before its halves make way for the classes'
+        dm0 = getattr(refine_particles, "last_masks", None)
+        cmask0 = dm0[0] if dm0 is not None and dm0[0] is not None else solvent_mask(consensus_map, box_a / b)
+        consensus = dict(resolution_a=round(res[0], 2), resolution_unmasked_a=round(unmasked_res, 2),
+                         resolution_solvent_mask_a=round(resolution_from_fsc(corrected_masked_fsc(
+                             vols[0][0].real(), vols[0][1].real(), cmask0), box_a), 2),
+                         particles_used=int(used.sum()))
     if M > 1:   # heterogeneity: 3D classification at the consensus poses, all classes filtered alike
         # a (pseudo-)symmetric particle sits in one of its symmetry-related poses at random, so a difference that
         # breaks the symmetry lands in a different place per particle: classify over the group's poses (the
@@ -1784,12 +1809,15 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
     apix = box_a / b
     pops_m = torch.bincount(z, minlength=M).tolist()
     order = sorted(range(M), key=lambda m: -pops_m[m])        # model 1 = most particles
-    solvent = []
+    solvent, res_solv, fsc_solv = [], {}, {}
     for r, m in enumerate(order):
         sfx = "" if M == 1 else f"_{r + 1}"
         dm = getattr(refine_particles, "last_masks", None)
         smask = dm[m] if dm is not None and len(dm) == M and dm[m] is not None else solvent_mask(maps[m], apix)
         solvent.append(smask)
+        if M > 1 and pops_m[m]:           # each class's corrected solvent-masked FSC (the table of the classes)
+            fsc_solv[m] = corrected_masked_fsc(vols[m][0].real(), vols[m][1].real(), smask).cpu().numpy()
+            res_solv[m] = resolution_from_fsc(torch.as_tensor(fsc_solv[m]), box_a)
         _save_mrc(os.path.join(outdir, f"map{sfx}.mrc"), maps[m] * smask, apix)          # automatic solvent mask
         _save_mrc(os.path.join(outdir, f"map_nomask{sfx}.mrc"), maps[m], apix)
         _save_mrc(os.path.join(outdir, f"mask{sfx}.mrc"), smask, apix)
@@ -1810,8 +1838,9 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
     fsc_unmasked = fsc(vols[order[0]][0], vols[order[0]][1])
     fsc_solvent = corrected_masked_fsc(vols[order[0]][0].real(), vols[order[0]][1].real(), solvent[0])
     tag = f"{len(idx):,} particles · {prm.sym}" + (f" (relaxed from {relaxed_from})" if relaxed_from else "")
-    if M > 1:
-        curves = [(f"3D class {r + 1}", fs[m].cpu().numpy()) for r, m in enumerate(order)]
+    if M > 1:   # per class: solvent mask, corrected (an empty class: the sphere)
+        curves = [(f"3D class {r + 1}", fsc_solv[m] if m in fsc_solv else fs[m].cpu().numpy())
+                  for r, m in enumerate(order)]
     else:
         curves = [("soft sphere mask", fs[0].cpu().numpy()), ("no mask", fsc_unmasked.cpu().numpy()),
                   ("solvent mask", fsc_solvent.cpu().numpy())]
@@ -1839,16 +1868,21 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
                     sphere_masked=fs[order[0]].cpu().numpy())
     for r_, m in enumerate(order if M > 1 else []):
         fsc_data[f"class{r_ + 1}_sphere_masked"] = fs[m].cpu().numpy()
+        if m in fsc_solv:
+            fsc_data[f"class{r_ + 1}"] = fsc_solv[m]
     diagnostics.write_fsc(os.path.join(outdir, "fsc"), fsc_data, box_a,
                           resolution_a=round(resolution_from_fsc(fsc_solvent, box_a), 3), title=tag)
     reproj_cc = _figures(outdir, clf, result, keep, Ak, [maps[m] for m in order], curves, rot, tilt, box_a, b, tag,
                          vstats)
-    if M > 1:
+    if M > 1:   # the consensus before the classification: unmasked (consensus.mrc), masked, and its mask
         _save_mrc(os.path.join(outdir, "consensus.mrc"), consensus_map, apix)
+        _save_mrc(os.path.join(outdir, "consensus_map.mrc"), consensus_map * cmask0, apix)
+        _save_mrc(os.path.join(outdir, "consensus_mask.mrc"), cmask0, apix)
     from dataclasses import asdict
     summary = dict(params=asdict(prm), particles=int(len(idx)), classes=int(keep.sum()), seconds_classes=round(t1, 1),
                    seconds_particles=round(t2, 1), resolution_a=round(res[order[0]], 2), apix=round(apix, 3), box=b,
-                   resolution_unmasked_a=round(unmasked_res, 2), fsc_mask="soft sphere of the particle diameter",
+                   resolution_unmasked_a=round(unmasked_res if M == 1 else resolution_from_fsc(fsc_unmasked, box_a), 2),
+                   fsc_mask="soft sphere of the particle diameter",
                    resolution_solvent_mask_a=round(resolution_from_fsc(fsc_solvent, box_a), 2),
                    particles_used=int(used.sum()), particles_dropped=int((~used).sum()),
                    relaxed_from=relaxed_from, seconds_sgd=round(timing["sgd"], 1), view_coverage=cov,
@@ -1859,8 +1893,14 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
                    reprojection_cc=[round(x, 3) for x in reproj_cc], seconds_total=round(t1 + t2, 1),
                    class_agreement=[round(float(x), 3) for x in cc],
                    models=[dict(model=r + 1, particles=pops_m[m], classes=int((zk == m).sum()),
-                                resolution_a=round(res[m], 2) if res[m] == res[m] else None)
+                                resolution_a=round(res[m], 2) if res[m] == res[m] else None,
+                                **({"resolution_solvent_mask_a": round(res_solv[m], 2) if m in res_solv else None}
+                                   if M > 1 else {}))
                            for r, m in enumerate(order)])
+    if M > 1:   # model 1 = most particles: the classification's history in that numbering
+        summary["consensus"] = consensus
+        summary["class_history"] = [dict(h, **{k: [h[k][m] for m in order] for k in ("pops", "weights", "res")
+                                               if k in h}) for h in getattr(classify3d, "last_history", [])]
     with open(os.path.join(outdir, "summary.json"), "w") as fh:
         json.dump(summary, fh, indent=1)
     models = " / ".join(f"{x['resolution_a'] or 'merged'} A ({x['particles']})" for x in summary["models"])

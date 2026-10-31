@@ -30,7 +30,7 @@ import torch
 
 from .plotstyle import GRAY, STATUS, T, grid_y, image_axes, plt, themed, title, top, warnings_text
 from .jobspec import params_of, settings_of
-from .project import CLASS_JOBS, Job, Project, logged
+from .project import CLASS_JOBS, Job, Project, has_classes, logged
 
 
 @dataclass
@@ -68,7 +68,7 @@ def sharpen_job(project: Project, refine, s: SharpenSettings, label: str = "") -
     r = project.job(refine)
     if r.type not in ("Refine3D", "LocalRefine", *CLASS_JOBS):
         raise ValueError(f"{r.name} is not a Refine3D, LocalRefine, HeteroRefine or Class3D job")
-    if r.type in CLASS_JOBS and not s.cls:
+    if has_classes(r) and not s.cls:
         raise ValueError(f"{r.name}: choose the class to sharpen (cls)")
     return project.new_job("Sharpen", dict(params_of(s), refine=r.id), [r],
                            label or (f"on{r.id:03d}" + (f"c{s.cls}" if s.cls else "")))
@@ -286,7 +286,7 @@ def sharpen_maps(project: Project, rj: Job, s: SharpenSettings, out, log=print) 
     """The sharpening of rj's half maps (class s.cls of a class job) with s; files through out.out(name) (a Sharpen
     job, or _InJob for the refinement job itself). Returns the summary."""
     t0 = time.time()
-    pre = f"class{s.cls:02d}_" if rj.type in CLASS_JOBS else ""
+    pre = f"class{s.cls:02d}_" if has_classes(rj) else ""
     h1, apix = _read(rj.find(f"{pre}half1_unfil.mrc"))
     h2, _ = _read(rj.find(f"{pre}half2_unfil.mrc"))
     mask_info = {}

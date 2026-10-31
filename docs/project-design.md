@@ -110,7 +110,18 @@ engine's model convention (the particle's centre is at +shift from the box centr
   `selected_classes.mrcs`, `rejected_classes.mrcs` and `selection.png` (kept framed green, rejected red). A Select
   job made by an agent says so in its label / note.
 - **InitialModel** (ab initio from a Class2D job's classes and particles; symmetry is the user's choice): maps,
-  half maps, figures, table `particles` = uid, rot, tilt, psi (RELION Euler), shifts, used, model.
+  half maps, figures, table `particles` = uid, rot, tilt, psi (RELION Euler), shifts, used, model. With
+  `n_models` > 1 the consensus is classified into that many 3D classes at its poses, and the classes are the result,
+  laid out as a Class3D's (`classNN_map.mrc` / `_map_nomask` / `_mask` / `_half1_unfil` / `_angdist.bild`, class 1 =
+  most particles, table column `cls`, summary `class_table`; `project.has_classes`), so the gallery, Select,
+  Refine3D `classes=`, MaskCreate / Subtract `cls=` take them; the consensus stays as `consensus_map.mrc` /
+  `consensus_map_nomask.mrc` / `consensus_mask.mrc` (summary `consensus`).
+- **Every multi-class 3D job** (Class3D, HeteroRefine, InitialModel with classes; ModeMaps shares the class keys):
+  summary `classes` (the number), `class_table` (per class: cls, particles, share, resolution_a,
+  resolution_solvent_mask_a, map, ...; older jobs kept the table under `classes`, read both with
+  `project.class_table`), `best_resolution_a`, `class_history` (per iteration: it, pops, share, res per class,
+  res_limit_a when the iterations' box caps the resolution), also as `data/jNNN_class_history.json`, drawn in
+  `class_history.png` (class distribution, per-class resolution, the final maps' values after the last iteration).
 - **Extract with `recenter=<job>`**: the aligned particles of a Class2D / InitialModel / Refine3D job cut at their
   aligned centre (centre in the extraction they were aligned on + shift), uid kept, pick position kept as dx_a /
   dy_a; particles whose new centres are closer than the duplicate distance are merged (best maxprob / fit kept).

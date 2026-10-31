@@ -1,6 +1,6 @@
 """Job queue of a project for the dashboard: jobs are made at once with status "queued" and run one at a time (one GPU
 job) as soon as every input has finished; a job whose input failed fails too, with the reason. After a
-classification (Class2D, HeteroRefine, Class3D) run from the queue, a Select job is made in status "waiting": it
+classification (Class2D, HeteroRefine, Class3D, InitialModel with several classes) run from the queue, a Select job is made in status "waiting": it
 waits for the user to choose the classes in the dashboard (complete_select), and jobs queued on it run after that.
 Agents (MCP) and scripts call the jobs directly and get no waiting selections.
 
@@ -17,9 +17,9 @@ import sys
 import threading
 import time
 
-from .project import Job, Project
+from .project import Job, Project, has_classes
 
-AUTO_SELECT = ("Class2D", "HeteroRefine", "Class3D")
+AUTO_SELECT = ("Class2D", "HeteroRefine", "Class3D")    # and an InitialModel with several classes (has_classes)
 MOVIE_JOBS = ("MotionCtf", "Pick", "Extract")
 DONE_OK = ("finished",)
 DONE_BAD = ("failed", "cancelled", "deleted")
@@ -149,7 +149,7 @@ def run_job(project: Project, job, log=print, auto_select: bool = True):
                 project.set_status(c, "failed", dict(project.summary_of(c), error=f"{type(e).__name__}: {e}"))
         raise
     j = project.job(j.id)
-    if auto_select and j.type in AUTO_SELECT and j.status == "finished":
+    if auto_select and (j.type in AUTO_SELECT or (j.type == "InitialModel" and has_classes(j))) and j.status == "finished":
         waiting_select(project, j)
     return j
 

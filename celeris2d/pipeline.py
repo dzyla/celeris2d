@@ -34,7 +34,7 @@ from . import picking as pk
 from . import regions as rg
 from . import preprocess as pp
 from .engine import Optics
-from .project import CLASS_JOBS, PARTICLE_JOBS, Job, Project, particle_uids, run_log
+from .project import PARTICLE_JOBS, Job, Project, has_classes, particle_uids, run_log
 
 
 @dataclass
@@ -161,7 +161,7 @@ def pick_templates(project: Project, s: PickSettings) -> tuple[np.ndarray, float
         out = (imgs, apix)
     else:
         cls = int(s.template_classes[0]) if s.template_classes else 1
-        names = ([f"class{cls:02d}_map.mrc", f"class{cls:02d}_map_nomask.mrc"] if j.type in CLASS_JOBS
+        names = ([f"class{cls:02d}_map.mrc", f"class{cls:02d}_map_nomask.mrc"] if has_classes(j)
                  else ["map.mrc", "map_nomask.mrc", "map_sharp.mrc"])
         path = next((j.find(n) for n in names if j.find(n)), None)
         if path is None:

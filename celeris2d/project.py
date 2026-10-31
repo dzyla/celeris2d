@@ -70,6 +70,26 @@ CLASS_JOBS = ("HeteroRefine", "Class3D", "ModeMaps")    # 3D jobs with several m
                                                         # "particles" with cls (ModeMaps: clusters / bins along modes)
 
 
+def has_classes(job) -> bool:
+    """A job whose result is several 3D classes (classNN_map.mrc ..., a summary class_table, a cls column in its
+    particle table): the CLASS_JOBS, and an InitialModel with n_models > 1 - except one finished before that layout
+    (map_1.mrc ..., no class files), which stays a single-map job (its map.mrc: the largest model)."""
+    if job.type in CLASS_JOBS:
+        return True
+    if job.type != "InitialModel" or int((job.params or {}).get("n_models") or 1) <= 1:
+        return False
+    return job.status != "finished" or job.find("class01_map.mrc") is not None
+
+
+def class_table(summary: dict) -> list:
+    """A multi-class job's per-class rows (cls 1-based, particles, share, resolution_a, resolution_solvent_mask_a,
+    ...): summary["class_table"]; jobs made before it kept the table under "classes"."""
+    t = summary.get("class_table")
+    if t is None and isinstance(summary.get("classes"), list):
+        t = summary["classes"]
+    return list(t or [])
+
+
 def movie_fingerprint(path: str, chunk: int = 1 << 20) -> str:
     h = hashlib.sha256()
     if not os.path.exists(path):                     # an imported particle set's micrograph that is not here: its path
