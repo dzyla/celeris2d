@@ -215,6 +215,11 @@ async function showJob(name, scroll = true) {
   const from = (j.lineage || []).length > 1 ? (jobs.find(x => x.name === j.name) || {}).inputs || [] : [];
   const fromText = from.map(n => { const x = jobs.find(y => y.name === n); return x ? `${(types[x.type] || {}).name || x.type} ${n.slice(0, 3)}` : n; }).join(' and ');
   const kp = ['Import', 'MotionCtf', 'Pick', 'Extract', 'ManualPick'].includes(j.type) ? [] : numbers(j);
+  // the usual next step: the first job type (in processing order) that takes this job as its main input
+  const NEXT = {Import: 'MotionCtf', MotionCtf: 'Pick', Pick: 'Extract', ManualPick: 'Extract', Extract: 'Class2D', Select: 'InitialModel',
+    InitialModel: 'Refine3D', Refine3D: 'Sharpen', HeteroRefine: 'Refine3D', Class3D: 'Refine3D', CtfRefine: 'Refine3D', Polish: 'Refine3D', LocalRefine: 'Sharpen'};
+  const nt = j.status === 'finished' && types[NEXT[j.type]] ? types[NEXT[j.type]] : null;
+  const nin = nt ? (nt.inputs || []).find(i => i.types.includes(j.type)) : null;
   $('#main').innerHTML = `
     <div class="jhead">
       ${icon(j.type).replace('class="ico', 'class="ico big')}
@@ -226,6 +231,7 @@ async function showJob(name, scroll = true) {
         ${['queued', 'waiting'].includes(j.status) ? `<button id="cancel">Cancel</button>` : ''}
         ${canRerun ? `<button id="rerun" class="${['failed', 'cancelled'].includes(j.status) ? 'go' : ''}" ${['running', 'queued', 'waiting'].includes(j.status) ? 'disabled' : ''} title="a new job with the same inputs and settings, through the queue">${runLabel}</button>` : ''}
         ${types[j.type] ? `<button id="edit" title="the New job form with this job's inputs and settings">Change settings…</button>` : ''}
+        ${nt && nin ? `<button id="nextj" class="go" title="${esc(nt.blurb || '')}">Next: ${esc(nt.name || nt.type)}</button>` : ''}
         <details class="menu"><summary aria-label="more actions">⋯</summary><div class="menu-list">
           <button id="final" title="final jobs and everything they came from make the publication report">${j.final ? '★ Unmark final' : '☆ Mark final (for the report)'}</button>
           <button id="del" ${j.status === 'running' ? 'disabled' : ''} title="move the job to the project's Trash folder">Delete…</button></div></details>
@@ -244,6 +250,7 @@ async function showJob(name, scroll = true) {
   document.querySelectorAll('.jhead .menu-list button').forEach(b => b.addEventListener('click', () => b.closest('details').open = false));
   on('rerun', async () => { try { const d = await api('/api/project/rerun', {job: j.name}); current = d.job; await load(); showJob(d.job); } catch (e) { alert(e.message); } });
   on('edit', () => jobForm(j.type, j.params));
+  on('nextj', () => jobForm(nt.type, {[nin.name]: j.id}));
   on('stop', async () => {
     if (!confirm(`Stop ${j.name}? Its process ends now; what it wrote so far stays, and Restart runs it again.`)) return;
     try { await api('/api/project/stop', {job: j.name}); await load(); showJob(j.name, false); } catch (e) { alert(e.message); }
@@ -575,6 +582,13 @@ function stageMicPanel(st, j) {
     };
   };
   let lastTotal = null;
+  const spark = sr => {                               // the trend over the micrographs: medians of 40 blocks
+    if (!sr || sr.length < 8) return '';
+    const nb = Math.min(40, sr.length), pts = [];
+    for (let b = 0; b < nb; b++) { const blk = sr.slice(Math.floor(b * sr.length / nb), Math.floor((b + 1) * sr.length / nb)); pts.push(med(blk)); }
+    const lo = Math.min(...pts), hi = Math.max(...pts), sp = hi - lo || 1;
+    return `<svg viewBox="0 0 200 30" class="spark" aria-hidden="true"><path d="${pts.map((p, i) => (i ? 'L' : 'M') + (i * 200 / (nb - 1)).toFixed(1) + ' ' + (27 - 24 * (p - lo) / sp).toFixed(1)).join('')}"/></svg>`;
+  };
   const charts = async () => {
     const box = $('#mpcharts'); if (!box || !rows.length) return;
     const T = THEME(), have = defs.filter(([key]) => new Set(rows.map(r => r[key]).filter(v => v != null)).size > 1);   // not constant
@@ -663,15 +677,17 @@ function stageMicPanel(st, j) {
       if (pk) k.push([fv(pk.diameter_a, 0) + ' Å', `particle diameter · ${pk.method}`]);
       const none = rows.filter(r => r.picks === 0).length;
       if (none) k.push([none.toLocaleString(), 'micrographs without picks']);
-      $('#mpkpi').innerHTML = k.map(([v, c, w]) => `<div class="kpi ${w ? 'warnk' : ''}"><div class="v">${v}</div><div class="c">${esc(c)}</div></div>`).join('');
+      $('#mpkpi').innerHTML = k.map(([v, c, w, sr]) => `<div class="kpi ${w ? 'warnk' : ''}"><div class="v">${v}</div><div class="c">${esc(c)}</div>${spark(sr)}</div>`).join('');
       return;
     }
-    k.push([fv(m('defocus_a') / 1e4, 2) + ' µm', 'median defocus'], [fv(m('ctf_fit_a'), 2) + ' Å', 'median CTF fit'], [fv(m('astigmatism_a'), 0) + ' Å', 'median astigmatism']);
+    const ser = key => rows.map(r => r[key]).filter(v => v != null);
+    k.push([fv(m('defocus_a') / 1e4, 2) + ' µm', 'median defocus', false, ser('defocus_a')], [fv(m('ctf_fit_a'), 2) + ' Å', 'median CTF fit', false, ser('ctf_fit_a')],
+      [fv(m('astigmatism_a'), 0) + ' Å', 'median astigmatism', false, ser('astigmatism_a')]);
     const good = rows.filter(r => r.ctf_fit_a != null && r.ctf_fit_a <= 5).length, out = rows.filter(outside).length;
     k.push([`${n ? Math.round(100 * good / n) : 0}%`, 'CTF fit ≤ 5 Å']);
     k.push([out.toLocaleString(), out ? 'outside the limits below' : 'all within the limits', out > 0]);
-    if (rows.some(r => r.frames > 1)) k.push([fv(m('drift_a'), 1) + ' Å', 'median drift']);
-    $('#mpkpi').innerHTML = k.map(([v, c, w]) => `<div class="kpi ${w ? 'warnk' : ''}"><div class="v">${v}</div><div class="c">${esc(c)}</div></div>`).join('');
+    if (rows.some(r => r.frames > 1)) k.push([fv(m('drift_a'), 1) + ' Å', 'median drift', false, ser('drift_a')]);
+    $('#mpkpi').innerHTML = k.map(([v, c, w, sr]) => `<div class="kpi ${w ? 'warnk' : ''}"><div class="v">${v}</div><div class="c">${esc(c)}</div>${spark(sr)}</div>`).join('');
   };
   const tick = async () => {
     clearTimeout(liveTimer);

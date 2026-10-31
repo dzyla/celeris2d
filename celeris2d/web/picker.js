@@ -31,7 +31,7 @@ const STYLE = `
 .pk-legend i { display: inline-block; width: 11px; height: 11px; border-radius: 50%; border: 2px solid; vertical-align: -1px; margin-right: 4px; }
 .pk-side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .pk-card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
-.pk-card h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink3); font-weight: 600; display: flex; justify-content: space-between; }
+.pk-card h4 { margin: 0 0 8px; font-size: 13.5px; color: var(--ink); font-weight: 600; display: flex; justify-content: space-between; }
 .pk-kpi { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 .pk-kpi div { background: var(--well); border-radius: 6px; padding: 6px 8px; }
 .pk-kpi .v { font-size: 18px; font-weight: 600; color: var(--ink); } .pk-kpi .c { font-size: 11px; color: var(--ink3); }
