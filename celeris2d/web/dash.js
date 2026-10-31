@@ -268,7 +268,7 @@ function renderStage(j) {
   if (j.type === 'Extract' && j.status !== 'queued') return stageExtract(st, j);
   if (MOVIEJOBS.includes(j.type) && j.status !== 'queued') return stageMicPanel(st, j);
   if (j.status === 'running') return stageLive(st, j);
-  if (CLASSJOBS.includes(j.type) && !['running', 'queued', 'cancelled', 'failed'].includes(j.status)) return stageGallery(st, j);
+  if ((CLASSJOBS.includes(j.type) || (j.summary || {}).class_table) && !['running', 'queued', 'cancelled', 'failed'].includes(j.status)) return stageGallery(st, j);
   const maps = j.files.filter(f => /\.mrc$/.test(f.path) && !/half[12]|(^|_)mask\.mrc$|localres|nu_cutoff|_frames/.test(f.path.split('/').pop()));
   if (MAPJOBS.includes(j.type) && maps.length) return stageVolume(st, j, maps);
   if (j.movie_files && j.movie_files.length) return stageMics(st, j);
@@ -637,7 +637,8 @@ async function stageGallery(st, j) {
       <div class="sum" id="gsum"></div>
       ${editable ? `<button class="quiet" data-a="all">All</button><button class="quiet" data-a="none">None</button><button class="quiet" data-a="inv">Invert</button>
       <label class="muted" style="font-size:12px">size <input type="range" id="gsize" min="90" max="220" value="${is3 ? 90 : 132}" style="width:90px;vertical-align:middle"></label>
-      <button class="${g.waiting ? 'you' : 'go'}" id="gsave" disabled>${g.waiting ? 'Keep these classes' : 'Make a selection'}</button>` : ''}
+      <button class="${g.waiting ? 'you' : 'go'}" id="gsave" disabled>${g.waiting ? 'Keep these classes' : 'Keep these classes (new Select job)'}</button>` : ''}
+      ${is3 && g.classes.some(c => c.map) ? `<button id="g3d">Show the class maps in 3D</button>` : ''}
     </div>
     <div class="gal ${is3 ? 'three' : ''}" id="gal">${g.classes.map(c => `
       <div class="cls ${sel.size ? (sel.has(c.cls) ? 'on' : 'off') : ''}" data-c="${c.cls}" title="class ${c.cls}: ${c.n.toLocaleString()} particles${c.res ? ', ' + c.res + ' Å' : ''}">
@@ -653,6 +654,7 @@ async function stageGallery(st, j) {
     document.querySelectorAll('.cls').forEach(e => { const k = +e.dataset.c; e.classList.toggle('on', sel.has(k)); e.classList.toggle('off', sel.size > 0 && !sel.has(k)); });
     const b = $('#gsave'); if (b) b.disabled = !sel.size;
   };
+  if ($('#g3d')) $('#g3d').onclick = () => openViewer(st, j, g.classes.filter(c => c.map).map(c => ({path: c.map})), null);
   if (editable) {
     document.querySelectorAll('.cls').forEach(e => e.onclick = () => { const k = +e.dataset.c; sel.has(k) ? sel.delete(k) : sel.add(k); upd(); });
     document.querySelectorAll('[data-a]').forEach(b => b.onclick = () => {
