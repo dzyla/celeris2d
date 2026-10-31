@@ -134,7 +134,7 @@ def extract_stats(project: Project, job) -> dict:
                select=j.params.get("select") or None)
     try:
         t = project.table(j, "particles")
-        cols = [k for k in ("score", "defocus_u", "defocus_v") if k in t.columns]
+        cols = [k for k in ("score", "defocus_u", "defocus_v", "dx_a", "dy_a") if k in t.columns]
         z = t.read(cols) if cols else {}
     except Exception:                                 # noqa: BLE001 - nothing extracted yet
         z = {}
@@ -146,6 +146,8 @@ def extract_stats(project: Project, job) -> dict:
             out["score"] = np.round(z["score"][idx], 4).tolist()
         if "defocus_u" in z:
             out["defocus_a"] = np.round(0.5 * (z["defocus_u"][idx] + z["defocus_v"][idx])).tolist()
+        if "dx_a" in z:                               # re-centred: how far each particle moved from its pick
+            out["shift_a"] = np.round(np.hypot(z["dx_a"][idx], z["dy_a"][idx]), 1).tolist()
     return _clean(out)
 
 

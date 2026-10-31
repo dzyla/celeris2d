@@ -253,7 +253,9 @@ def picks_of(project: Project, job, stem: str) -> dict:
     except Exception:                                 # noqa: BLE001 - not picked yet
         return dict(xy=[], keep=[], diameter_a=pj.params.get("diameter_a"))
     keep = np.asarray(p.get("keep", np.ones(len(p["xy_a"]), bool)), bool)
+    sc = p.get("score")
     return dict(xy=np.round(np.asarray(p["xy_a"], np.float32), 1).tolist(), keep=keep.astype(int).tolist(),
+                score=None if sc is None else np.round(np.asarray(sc, np.float32), 4).tolist(),
                 diameter_a=pj.params.get("diameter_a"), job=pj.name)
 
 

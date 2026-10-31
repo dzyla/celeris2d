@@ -291,8 +291,8 @@ function stageLive(st, j) {
       <div class="lhead"><span class="muted">Last line:</span> <span id="llast" class="lastline"></span></div>
       ${LIVE3D.includes(j.type) ? `<div id="l3d"><div class="muted" style="padding:14px 4px">The map appears here once the job has made one.</div></div>` : ''}
       ${j.type === 'Class2D' ? `<div id="lgal"><div class="muted" style="padding:18px 4px">The classes appear here after the first iteration.</div></div>` : ''}
-      <div class="lbody"><pre class="log ltail" id="ltail">waiting for the first lines of the log…</pre>
-      <figure class="lfig" id="lfig"><div class="muted" style="padding:30px;text-align:center">The job's figures appear here as it writes them.</div></figure></div></div>`;
+      <div class="lbody nofig" id="lbody"><pre class="log ltail" id="ltail">waiting for the first lines of the log…</pre>
+      <figure class="lfig" id="lfig"></figure></div></div>`;
   let offset = 0, text = '', lastFig = '', n = 0, liveAt = 0, at3d = 0;
   // the run strip: the job's stages, done / current (with its step of n) / to come, and the time left at the current pace
   const STAGES3D = {InitialModel: [['classes', 'Class averages'], ['sgd', 'Particle SGD'], ['refine', 'Refinement'], ['class3d', '3D classes']],
@@ -336,7 +336,12 @@ function stageLive(st, j) {
     const step = h.map((_, i) => i + 1), lab = h.map(x => x.stage + ' ' + x.it);
     const tr = Array.from({length: nm}, (_, m) => ({type: 'scatter', mode: 'lines+markers', name: nm > 1 ? 'class ' + (m + 1) : 'resolution',
       x: step, y: h.map(x => (x.res || [])[m]), text: lab, line: {color: cols[m % cols.length], width: 1.8}, marker: {size: 4}, hovertemplate: '%{text}: %{y:.2f} Å<extra></extra>'}));
+    const SN = {classes: 'class averages', sgd: 'SGD', refine: 'refinement', class3d: '3D classes'};
+    const cuts = h.map((x, i) => i && x.stage !== h[i - 1].stage ? i + 0.5 : null).filter(x => x != null);
+    const starts = [0.5, ...cuts];
     P.react($('#l3h'), tr, plotLayout(T, '<b>Resolution</b> per step (lower is better)', {showlegend: nm > 1,
+      shapes: cuts.map(x => ({type: 'line', x0: x, x1: x, yref: 'paper', y0: 0, y1: 1, line: {color: T.axis, width: 1, dash: 'dot'}})),
+      annotations: starts.map((x, i) => ({x, xanchor: 'left', y: 1, yref: 'paper', yanchor: 'top', showarrow: false, text: SN[h[Math.ceil(x) - 1].stage] || h[Math.ceil(x) - 1].stage, font: {size: 10.5, color: T.ink3}})),
       xaxis: {title: {text: 'step'}}, yaxis: {title: {text: 'Å'}}}), {displaylogo: false, responsive: true});
     if (K > 1 && $('#l3c')) {
       const hc = h.filter(x => x.counts && x.counts.length === K);
@@ -382,6 +387,7 @@ function stageLive(st, j) {
         if (newest && newest !== lastFig) {
           lastFig = newest;
           const path = newest.split('?')[0];
+          $('#lbody').classList.remove('nofig');
           $('#lfig').innerHTML = `<img src="${file(path)}&t=${Date.now()}" alt="newest figure"><figcaption>${esc(path.split('/').pop().replace(/^j\d+_/, '').replace('.png', '').replace(/_/g, ' '))}</figcaption>`;
           if (tab === 'plots' && figs.length !== $('#pane').querySelectorAll('.fig').length) { j.files = jj.files; renderPane(j); }
         }
@@ -413,10 +419,11 @@ function stageMicPanel(st, j) {
         <div id="mpdet"></div>
       </div>
     </div>
-    ${pickMode ? '<div class="mpplots" id="pkplots"><div id="pkscore" class="w2"></div><div id="pkper"></div><div id="pkdef"></div></div>'
+    ${pickMode ? '<div class="mplim card pad" id="pkth"></div><div class="mpplots" id="pkplots"><div id="pkscore" class="w2"></div><div id="pkper"></div><div id="pkdef"></div></div>'
       : '<div class="mpplots"><div id="mpmot"></div><div id="mploc"></div><div id="mpctf"></div><div id="mppz"></div></div>'}
+    ${pickMode ? '' : '<div class="mplim card pad" id="mplim"></div>'}
     <div class="mpcharts" id="mpcharts"></div></div>`;
-  const defs = MICSTATS.filter(([k]) => pickMode ? ['picks', 'candidates', 'defocus_a', 'ctf_fit_a'].includes(k) : !['picks', 'candidates', 'particles'].includes(k));
+  const defs = MICSTATS.filter(([k]) => pickMode ? ['picks', 'candidates'].includes(k) : !['picks', 'candidates', 'particles'].includes(k));
   let rows = [], sel = null, lastN = -1, offset = 0;
   const med = a => { const b = a.filter(v => v != null).sort((x, y) => x - y); return b.length ? b[Math.floor(b.length / 2)] : null; };
   const fv = (v, d) => v == null ? '–' : Number(v).toLocaleString(undefined, {maximumFractionDigits: d, minimumFractionDigits: d});
@@ -462,7 +469,8 @@ function stageMicPanel(st, j) {
       g.lineWidth = Math.max(1, W / 700);
       [[0, 'rgba(160,160,160,.45)'], [1, css('--data')]].forEach(([k, col]) => {
         g.strokeStyle = col; g.beginPath();
-        micPicks.xy.forEach((q, i) => { if (micPicks.keep[i] === k) { g.moveTo(q[0] / px + r, q[1] / px); g.arc(q[0] / px, q[1] / px, r, 0, 2 * Math.PI); } });
+        const kp = i => thPrev != null && micPicks.score ? (micPicks.score[i] >= thPrev ? 1 : 0) : micPicks.keep[i];
+        micPicks.xy.forEach((q, i) => { if (kp(i) === k) { g.moveTo(q[0] / px + r, q[1] / px); g.arc(q[0] / px, q[1] / px, r, 0, 2 * Math.PI); } });
         g.stroke();
       });
     }
@@ -542,6 +550,31 @@ function stageMicPanel(st, j) {
         {displaylogo: false, responsive: true});
     } else note('#mppz', ['Patch defocus', 'Not measured for this micrograph.']);
   };
+  // limits for curation (Curate job settings): points outside are orange, and Curate with these limits makes the job
+  const LIM = {ctf_fit_a: [null, 8, 'max_ctf_fit_a'], defocus_a: [3000, 40000, 'min_defocus_a', 'max_defocus_a'], astigmatism_a: [null, 2000, 'max_astigmatism_a']};
+  try { Object.assign(LIM, JSON.parse(localStorage.getItem('celeris-limits') || '{}')); } catch (e) {}
+  const outside = r => Object.entries(LIM).some(([k, [lo, hi]]) => r[k] != null && ((lo != null && r[k] < lo) || (hi != null && r[k] > hi)));
+  const limitsBar = () => {
+    const lb = $('#mplim'); if (!lb || pickMode) return;
+    const out = rows.filter(outside).length;
+    lb.innerHTML = `<b>Limits</b>
+      <label>CTF fit worse than <input type="number" step="0.5" data-l="ctf_fit_a" data-i="1" value="${LIM.ctf_fit_a[1]}"> Å</label>
+      <label>defocus <input type="number" step="0.1" data-l="defocus_a" data-i="0" data-s="1e4" value="${LIM.defocus_a[0] / 1e4}"> – <input type="number" step="0.1" data-l="defocus_a" data-i="1" data-s="1e4" value="${LIM.defocus_a[1] / 1e4}"> µm</label>
+      <label>astigmatism over <input type="number" step="100" data-l="astigmatism_a" data-i="1" value="${LIM.astigmatism_a[1]}"> Å</label>
+      <span class="${out ? 'warnt' : 'muted'}">${out.toLocaleString()} of ${rows.length.toLocaleString()} outside</span>
+      <button class="go" id="mpcur" ${fam && fam.mc ? '' : 'disabled'} title="a Curate micrographs job with these limits: Pick and Extract can then take only the micrographs it accepts">Curate with these limits</button>`;
+    lb.querySelectorAll('input').forEach(i => i.onchange = () => {
+      LIM[i.dataset.l][+i.dataset.i] = +i.value * (+i.dataset.s || 1);
+      try { localStorage.setItem('celeris-limits', JSON.stringify(LIM)); } catch (e) {}
+      limitsBar(); charts(); kpis({total: lastTotal});
+    });
+    $('#mpcur').onclick = async () => {
+      const mcj = jobs.find(x => x.name === fam.mc.name); if (!mcj) return;
+      const st = {max_ctf_fit_a: LIM.ctf_fit_a[1], min_defocus_a: LIM.defocus_a[0], max_defocus_a: LIM.defocus_a[1], max_astigmatism_a: LIM.astigmatism_a[1]};
+      try { const d = await api('/api/project/new', {type: 'Curate', inputs: {micrographs: mcj.id}, settings: st, label: ''}); await load(); showJob(d.job); } catch (e) { alert(e.message); }
+    };
+  };
+  let lastTotal = null;
   const charts = async () => {
     const box = $('#mpcharts'); if (!box || !rows.length) return;
     const T = THEME(), have = defs.filter(([key]) => new Set(rows.map(r => r[key]).filter(v => v != null)).size > 1);   // not constant
@@ -560,8 +593,10 @@ function stageMicPanel(st, j) {
       lay['yaxis' + (ax + 1)] = Object.assign({domain: [y0, y1], anchor: xh, matches: ys, showticklabels: false}, axis);
       const m = med(pts.map(q => q[key]));
       lay.annotations.push({text: `<b>${lab}</b>${u ? ' (' + u + ')' : ''} · median ${fv(m, d)}`, xref: 'paper', yref: 'paper', x: x0, y: y1, xanchor: 'left', yanchor: 'bottom', showarrow: false, font: {size: 12, color: T.ink}});
+      const lim = pickMode ? null : LIM[key], bad = q => lim && ((lim[0] != null && q[key] < lim[0]) || (lim[1] != null && q[key] > lim[1]));
+      if (lim) lim.slice(0, 2).forEach(v => { if (v != null) traces.push({type: 'scatter', mode: 'lines', x: [1, rows.length], y: [v, v], xaxis: xs, yaxis: ys, hoverinfo: 'skip', line: {color: css('--serious'), width: 1, dash: 'dash'}}); });
       traces.push({type: pts.length > 2000 ? 'scattergl' : 'scatter', mode: 'markers', x: pts.map(q => q.i), y: pts.map(q => q[key]), xaxis: xs, yaxis: ys,
-        marker: {color: css('--data'), size: 5, opacity: 0.8}, customdata: pts.map(q => q.i), text: pts.map(q => q.stem),
+        marker: {color: pts.map(q => bad(q) ? css('--serious') : css('--data')), size: 5, opacity: 0.85}, customdata: pts.map(q => q.i), text: pts.map(q => q.stem),
         hovertemplate: `%{text}<br>${lab} %{y:.${d}f} ${u}<extra></extra>`});
       const s = rows[(sel || 1) - 1];
       if (s && s[key] != null) traces.push({type: 'scatter', mode: 'markers', x: [s.i], y: [s[key]], xaxis: xs, yaxis: ys, hoverinfo: 'skip',
@@ -574,17 +609,38 @@ function stageMicPanel(st, j) {
     await P.react(box, traces, lay, {displaylogo: false, responsive: true, modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d', 'toggleSpikelines']});
     if (!box._wired) { box._wired = true; box.on('plotly_click', e => { const p = e.points.find(q => q.customdata); if (p) show(p.customdata, true); }); }
   };
-  let pk = null;                                     // a Pick job's own numbers (jobview.pick_stats)
+  let pk = null, thPrev = null;                      // a Pick job's own numbers (jobview.pick_stats); a threshold to try
+  const thBar = () => {
+    const b = $('#pkth'); if (!b || !pk || !pk.score || !pk.score.length) return;
+    const lo = Math.min(...pk.score), hi = Math.max(...pk.score), ths = (pk.rows || []).map(r => r.threshold).filter(x => x != null);
+    const t0 = thPrev ?? (ths.length ? med(ths) : lo), auto = ths.length > 1 && Math.min(...ths) !== Math.max(...ths);
+    const kept = thPrev == null ? pk.kept / pk.candidates : pk.score.filter(x => x >= thPrev).length / pk.score.length;
+    b.innerHTML = `<b>Threshold</b><input type="range" id="pkr" min="${lo}" max="${hi}" step="${((hi - lo) / 400).toPrecision(2)}" value="${t0}" style="flex:1;min-width:200px;accent-color:var(--you)">
+      <b id="pkv">${thPrev == null && auto ? 'automatic' : t0.toFixed(3)}</b><span class="muted" id="pke">keeps ${Math.round(kept * pk.candidates).toLocaleString()} of ${pk.candidates.toLocaleString()} (${(100 * kept).toFixed(0)}%)${auto ? ` · now per micrograph, median ${med(ths).toFixed(3)}` : ''}</span>
+      <button class="you" id="pkapply" title="a new Pick job with this threshold on the same candidates: no picking again, takes seconds">Apply to all micrographs</button>`;
+    $('#pkr').oninput = e => {
+      thPrev = +e.target.value; $('#pkv').textContent = thPrev.toFixed(3);
+      const f = pk.score.filter(x => x >= thPrev).length / pk.score.length;
+      $('#pke').textContent = `keeps ~${Math.round(f * pk.candidates).toLocaleString()} of ${pk.candidates.toLocaleString()} (${(100 * f).toFixed(0)}%)`;
+      drawMic(); pickPlots();
+    };
+    $('#pkapply').onclick = async () => {
+      $('#pkapply').disabled = true;
+      try { const d = await api('/api/project/rethreshold', {job: name, threshold: thPrev}); await load(); showJob(d.job); } catch (e) { alert(e.message); $('#pkapply').disabled = false; }
+    };
+  };
   const pickPlots = async () => {
     if (!pk || !$('#pkscore')) return;
     const P = await CelerisPlots.plotly(), T = THEME(), cfg = {displaylogo: false, responsive: true};
     if (pk.score && pk.score.length) {
-      const kept = pk.score.filter((_, i) => pk.keep[i]), rej = pk.score.filter((_, i) => !pk.keep[i]);
+      const isK = (x, i) => thPrev != null ? x >= thPrev : pk.keep[i];
+      const kept = pk.score.filter(isK), rej = pk.score.filter((x, i) => !isK(x, i));
       const ths = rows.map(r => r.threshold).filter(x => x != null);
       P.react($('#pkscore'), [
-        {type: 'histogram', x: rej, name: `below the threshold (${fv(pk.candidates - pk.kept, 0)})`, marker: {color: T.ink3}, opacity: 0.7, nbinsx: 80},
-        {type: 'histogram', x: kept, name: `kept (${fv(pk.kept, 0)})`, marker: {color: css('--data')}, opacity: 0.85, nbinsx: 80}],
-        plotLayout(T, '<b>Pick scores</b> · every candidate (sampled)', {barmode: 'overlay', xaxis: {title: {text: 'score'}}, yaxis: {title: {text: 'candidates'}}}), cfg);
+        {type: 'histogram', x: rej, name: 'below the threshold', marker: {color: T.ink3}, opacity: 0.7, xbins: {size: 0.01}},
+        {type: 'histogram', x: kept, name: 'kept', marker: {color: css('--data')}, opacity: 0.85, xbins: {size: 0.01}}],
+        plotLayout(T, '<b>Pick scores</b> · every candidate (sampled)', {barmode: 'overlay', xaxis: {title: {text: 'score'}}, yaxis: {title: {text: 'candidates'}},
+          shapes: thPrev != null ? [{type: 'line', x0: thPrev, x1: thPrev, yref: 'paper', y0: 0, y1: 1, line: {color: css('--you'), width: 2}}] : []}), cfg);
     }
     const n = rows.map(r => r.picks).filter(x => x != null);
     P.react($('#pkper'), [{type: 'histogram', x: n, marker: {color: css('--data')}, nbinsx: 40}],
@@ -607,14 +663,15 @@ function stageMicPanel(st, j) {
       if (pk) k.push([fv(pk.diameter_a, 0) + ' Å', `particle diameter · ${pk.method}`]);
       const none = rows.filter(r => r.picks === 0).length;
       if (none) k.push([none.toLocaleString(), 'micrographs without picks']);
-      $('#mpkpi').innerHTML = k.map(([v, c]) => `<div class="num"><div class="v">${v}</div><div class="c">${esc(c)}</div></div>`).join('');
+      $('#mpkpi').innerHTML = k.map(([v, c, w]) => `<div class="kpi ${w ? 'warnk' : ''}"><div class="v">${v}</div><div class="c">${esc(c)}</div></div>`).join('');
       return;
     }
     k.push([fv(m('defocus_a') / 1e4, 2) + ' µm', 'median defocus'], [fv(m('ctf_fit_a'), 2) + ' Å', 'median CTF fit'], [fv(m('astigmatism_a'), 0) + ' Å', 'median astigmatism']);
-    const good = rows.filter(r => r.ctf_fit_a != null && r.ctf_fit_a <= 5).length;
+    const good = rows.filter(r => r.ctf_fit_a != null && r.ctf_fit_a <= 5).length, out = rows.filter(outside).length;
     k.push([`${n ? Math.round(100 * good / n) : 0}%`, 'CTF fit ≤ 5 Å']);
+    k.push([out.toLocaleString(), out ? 'outside the limits below' : 'all within the limits', out > 0]);
     if (rows.some(r => r.frames > 1)) k.push([fv(m('drift_a'), 1) + ' Å', 'median drift']);
-    $('#mpkpi').innerHTML = k.map(([v, c]) => `<div class="num"><div class="v">${v}</div><div class="c">${esc(c)}</div></div>`).join('');
+    $('#mpkpi').innerHTML = k.map(([v, c, w]) => `<div class="kpi ${w ? 'warnk' : ''}"><div class="v">${v}</div><div class="c">${esc(c)}</div></div>`).join('');
   };
   const tick = async () => {
     clearTimeout(liveTimer);
@@ -631,7 +688,7 @@ function stageMicPanel(st, j) {
       $('#mpn').textContent = d.total ? `· ${rows.length} of ${d.total} micrographs` : `· ${rows.length} micrographs`;
       if (rows.length !== lastN) {
         if (pickMode) { try { pk = await api('/api/project/jobview?job=' + encodeURIComponent(name)); } catch (e) {} }
-        lastN = rows.length; kpis(d); pickPlots();
+        lastN = rows.length; lastTotal = d.total; kpis(d); pickPlots(); limitsBar(); thBar();
         if (!sel || ($('#mpf') && $('#mpf').checked)) show(rows.length); else charts();
       }
       if (running) {

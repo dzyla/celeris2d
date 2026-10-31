@@ -1279,6 +1279,18 @@ def create(workdir, project_dir=None):
             raise HTTPException(400, f"no job view for {j.type}")
         return fn(prj, j)
 
+    @app.post("/api/project/rethreshold")
+    def project_rethreshold(body: dict):
+        """{job, threshold}: a new Pick job keeping the candidates of a Pick job above this score (no picking again)."""
+        from .pipeline import rethreshold
+        prj = _prj()
+        j = prj.job(body["job"])
+        if j.type != "Pick" or j.status != "finished":
+            raise HTTPException(400, "a finished Pick job is needed")
+        th = body.get("threshold")
+        nj = rethreshold(prj, j, None if th is None else float(th))
+        return dict(job=nj.name)
+
     @app.get("/api/project/ptcls")
     def project_ptcls(job: str, n: int = 60, seed: int = 0, lowpass: float = 0.0):
         """A random handful of an Extract job's particles as small images."""

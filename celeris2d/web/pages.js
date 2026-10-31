@@ -59,6 +59,7 @@ async function stageExtract(st, j) {
         <button class="quiet" id="exmore">Show other particles</button></div>
         <div class="ptcl" id="exgal"><div class="muted" style="padding:20px">loading particles…</div></div></div>
       <div class="mpplots"><div id="exper" class="w2"></div><div id="exhist"></div><div id="exdef"></div></div>
+      <div class="mpplots"><div id="exbox" class="pad"></div><div id="exsh"></div></div>
     </div>`;
   let seed = 0, lp = 0, d = null, timer = null;
   lp = 10; try { lp = +(localStorage.getItem('celeris-ptcl-lowpass') ?? 10); } catch (e) {}
@@ -80,6 +81,18 @@ async function stageExtract(st, j) {
       plotLayout(T, '<b>Particles per micrograph</b> · in the order extracted', {showlegend: false, xaxis: {title: {text: 'micrograph'}}, yaxis: {title: {text: 'particles'}}}), cfg);
     P.react($('#exhist'), [{type: 'histogram', x: n, marker: {color: css('--data')}, nbinsx: 40}],
       plotLayout(T, '<b>Distribution</b> · particles per micrograph', {showlegend: false, xaxis: {title: {text: 'particles'}}, yaxis: {title: {text: 'micrographs'}}}), cfg);
+    if (d.shift_a) P.react($('#exsh'), [{type: 'histogram', x: d.shift_a, marker: {color: css('--k-ptc')}, nbinsx: 40}],
+      plotLayout(T, `<b>Re-centring shifts</b> · median ${d.shift_a.slice().sort((a, b) => a - b)[Math.floor(d.shift_a.length / 2)].toFixed(1)} Å`, {showlegend: false, xaxis: {title: {text: 'shift from the pick (Å)'}}, yaxis: {title: {text: 'particles'}}}), cfg);
+    else $('#exsh').style.display = 'none';
+    if (d.box_a && d.particle_a) {                 // the box to scale: particle, box, margin for the CTF spread
+      const B = 180, sc = B / d.box_a, rp = 0.5 * d.particle_a * sc;
+      $('#exbox').innerHTML = `<b>The box</b> <span class="muted">to scale</span>
+        <svg viewBox="0 0 ${B + 20} ${B + 20}" style="width:100%;max-width:260px;display:block;margin:8px auto 0" role="img" aria-label="box ${d.box_a} Å around a ${d.particle_a} Å particle">
+          <rect x="10" y="10" width="${B}" height="${B}" fill="none" stroke="${css('--k-ptc')}" stroke-width="1.5"></rect>
+          <circle cx="${10 + B / 2}" cy="${10 + B / 2}" r="${rp}" fill="${css('--axis')}"></circle>
+          <circle cx="${10 + B / 2}" cy="${10 + B / 2}" r="${Math.min(B / 2, rp * 1.25)}" fill="none" stroke="${css('--you')}" stroke-dasharray="4 3"></circle></svg>
+        <div class="muted" style="font-size:12.5px;margin-top:6px">Box ${d.box_a} Å (${d.box} px) around a ${d.particle_a} Å particle; the dashed circle is the 2D classification mask (1.25 × the particle). The space beyond holds the particle's CTF-spread signal.</div>`;
+    } else $('#exbox').style.display = 'none';
     if (d.defocus_a) P.react($('#exdef'), [{type: 'histogram', x: d.defocus_a.map(v => v / 1e4), marker: {color: css('--data')}, nbinsx: 50}],
       plotLayout(T, '<b>Defocus</b> of the particles (sampled)', {showlegend: false, xaxis: {title: {text: 'defocus (µm)'}}, yaxis: {title: {text: 'particles'}}}), cfg);
   };

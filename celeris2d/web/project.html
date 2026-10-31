@@ -294,7 +294,9 @@
   .l3row figcaption { font-size: 11px; color: var(--ink3); text-align: center; } .l3row .four img { outline: 1px solid var(--line); }
   .l3charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 10px; margin-bottom: 12px; }
   .l3charts > div { background: var(--surface); border-radius: 8px; overflow: hidden; }
-  .mpkpi { display: flex; flex-wrap: wrap; gap: 8px 30px; margin: 4px 0 14px; }
+  .mplim { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; margin-top: 16px; font-size: 13px; }
+  .mplim input { width: 70px; padding: 4px 6px; } .mplim label { color: var(--ink2); display: flex; gap: 6px; align-items: center; } .mplim .warnt { color: var(--serious); font-weight: 600; } .mplim button { margin-left: auto; }
+  .mpkpi { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 4px 0 14px; }
   .mpkpi .v { font-size: 20px; font-weight: 600; } .mpkpi .c { font-size: 12px; color: var(--ink3); }
   .mpview { display: grid; grid-template-columns: auto auto minmax(220px, 1fr); gap: 14px; align-items: start; justify-content: start; }
   .mpmic, .mpps { margin: 0; background: #000; border-radius: 8px; overflow: hidden; }
@@ -311,7 +313,7 @@
   .mpplots { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
   .mpplots .w2 { grid-column: span 2; }
   @media (max-width: 1500px) { .mpplots { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-  .mpplots > div { background: var(--surface); border-radius: 8px; min-height: 120px; overflow: hidden; }
+  .mpplots > div { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; min-height: 120px; overflow: hidden; } .mpplots > div.pad { padding: 14px 16px; }
   @media (max-width: 1100px) { .mpplots { grid-template-columns: 1fr; } .mpplots .w2 { grid-column: auto; } }
   @media (max-width: 1300px) { .mpview { grid-template-columns: auto auto; } .mpside { grid-column: 1 / -1; } }
   @media (max-width: 900px) { .mpview { grid-template-columns: 1fr; } .mpmic img, .mpps img { height: auto; width: 100%; } }
@@ -324,7 +326,8 @@
   .lhead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; min-width: 0; }
   .lastline { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; text-align: right; font-size: 12px; }
   .lbody { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
-  .ltail { margin: 0; min-height: 300px; max-height: 420px; background: #0a0a0a; color: var(--ink2); }
+  .lbody.nofig { grid-template-columns: 1fr; } .lbody.nofig .lfig { display: none; }
+  .ltail { margin: 0; min-height: 160px; max-height: 360px; background: #0a0a0a; color: var(--ink2); }
   .lfig { margin: 0; background: #0a0a0a; border-radius: 8px; overflow: hidden; }
   .lfig img { width: 100%; display: block; }
   .lfig figcaption { font-size: 12px; color: var(--ink3); padding: 6px 10px; }
