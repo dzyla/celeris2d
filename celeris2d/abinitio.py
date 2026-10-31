@@ -790,7 +790,7 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
         for p0 in range(0, len(sel_h), npc):
             sel = sel_h[p0:p0 + npc]
             j = idx[sel.cpu()]
-            x = clf._fetch(j, dev, b)
+            x = clf._fetch_align(j, dev, b)
             ctf = ctf_2d(clf.ctf_p[j].to(dev), clf.optics, fy, fx, box_a)
             tt = t[sel]
             e_t = torch.exp(-1j * ph * (fx[None, None, :] * tt[:, 0, None, None] + fy[None, :, None] * tt[:, 1, None, None]))
@@ -870,7 +870,7 @@ def score_poses(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs, 
         for p0 in range(0, len(sel_h), npc):
             sel = sel_h[p0:p0 + npc]
             j = idx[sel.cpu()]
-            x = clf._fetch(j, dev, b)
+            x = clf._fetch_align(j, dev, b)
             ctf = ctf_2d(clf.ctf_p[j].to(dev), clf.optics, fy, fx, box_a)
             tt = t[sel]
             P = refs[h].project(A[sel].reshape(-1, 3, 3), band).reshape(len(sel), J, -1)    # (m, J, F)
@@ -1077,7 +1077,7 @@ def cross_fit(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, halves, 
     for i in range(0, len(sub), 1024):
         s = sub[i:i + 1024]
         j = idx[s.cpu()]
-        x = clf._fetch(j, dev, b)[:, band]
+        x = clf._fetch_align(j, dev, b)[:, band]
         ctf = ctf_2d(clf.ctf_p[j].to(dev), clf.optics, fy, fx, box_a)[:, band]
         e_t = torch.exp(-1j * ph * (fxb * t[s, 0, None] + fyb * t[s, 1, None]))
         mdl = torch.empty_like(x)
@@ -1572,7 +1572,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             j = idx[i:i + bt]
             nb = len(j)
             hh = half[i:i + bt].to(dev)
-            x = clf._fetch(j, dev, b)[:, band]                    # (nb, F)
+            x = clf._fetch_align(j, dev, b)[:, band]                    # (nb, F)
             ctf = ctf_2d(clf.ctf_p[j].to(dev), clf.optics, fy, fx, box_a)[:, band]
             if xo:   # around every symmetry-related copy of the pose: (nb, M, J0 * S, 3, 3)
                 Ac = (Rc[None, None, :, None] @ (A[i:i + bt][:, :, None, None] @ ops_x[None, None, None])).reshape(

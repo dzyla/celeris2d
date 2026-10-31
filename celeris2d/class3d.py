@@ -168,12 +168,13 @@ def classify(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, n_classes
     pad_e = 2
     t0 = time.time()
 
-    def fetch(sl, b):
-        """Spectra and CTFs of rows sl at box b (each particle read once, then repeated for its rows)."""
+    def fetch(sl, b, align=False):
+        """Spectra and CTFs of rows sl at box b (each particle read once, then repeated for its rows); align: with the
+        particle mask (the E-step; reconstructions use the unmasked images)."""
         pr = rows[sl]
         u, inv = torch.unique_consecutive(pr, return_inverse=True)
         j = idx[u]
-        x = clf._fetch(j, dev, b)
+        x = (clf._fetch_align if align else clf._fetch)(j, dev, b)
         fyy, fxx = freqs(b, dev)
         ctf = ctf_2d(clf.ctf_p[j].to(dev), clf.optics, fyy, fxx, box_a)
         inv = inv.to(dev)
@@ -267,7 +268,7 @@ def classify(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, n_classes
         bp = int(max(32, min(2048, 2e8 // (be * (be // 2 + 1) * 8))))
 
         def residuals(sl):
-            x, ctf = fetch(sl, be)
+            x, ctf = fetch(sl, be, align=True)
             tt = t[sl]
             e_t = torch.exp(-1j * ph * (fxb * tt[:, 0, None] + fyb * tt[:, 1, None]))
             cb = ctf[:, band]
@@ -389,7 +390,7 @@ def classify(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, n_classes
         for r0 in range(0, R, B):
             sl = slice(r0, min(R, r0 + B))
             nb = sl.stop - sl.start
-            x, ctf = fetch(sl, be)
+            x, ctf = fetch(sl, be, align=True)
             x, ctf = x[:, band], ctf[:, band]
             tt = t[sl]
             ce = ctf * torch.exp(-1j * ph * (fxb * tt[:, 0, None] + fyb * tt[:, 1, None]))     # (nb, F)
@@ -618,7 +619,8 @@ def run_class3d(project, job, log=print) -> dict:
         raise ValueError(f"{qj.name} is already symmetry-expanded: leave sym_expand empty")
     max_res = s.max_res_a or 2.0 * src.apix
     t0 = time.time()
-    ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log, nyquist_margin=1.0, max_c64_gb=1.5)
+    ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log, nyquist_margin=1.0, max_c64_gb=1.5,
+                         image_mask_a=-1.0)      # reconstruct from unmasked images (alignment masks them)
     clf = ses.clf
     clf._wait_loaded(clf.N)
     dev, box_a, n, K = clf.dev, clf.box_a, clf.N, int(s.n_classes)

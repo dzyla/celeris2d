@@ -659,7 +659,8 @@ def run_local_refine(project: Project, job, log=print) -> dict:
     # symmetry-expanded poses (a SymExpand job): one row per copy, the image of each row loaded once (img)
     src, poses, t_start, half, n_dup, dist, img = _posed_particles(project, job, pj, qj, (), log, expand=True)
     max_res = s.max_res_a or 2.0 * src.apix
-    ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log, nyquist_margin=1.0, max_c64_gb=1.5)
+    ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log, nyquist_margin=1.0, max_c64_gb=1.5,
+                         image_mask_a=-1.0)      # reconstruct from unmasked images (alignment masks them)
     clf = ses.clf
     clf._wait_loaded(clf.N)
     dev, b, box_a = clf.dev, clf.bmax, clf.box_a

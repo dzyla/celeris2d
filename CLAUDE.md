@@ -112,6 +112,10 @@ Layers, bottom to top:
   pad 1 (gridding-corrected) when pad 2 does not fit (box 512 in 16 GB), `Volume.real` / `set_real` work in slabs.
   Symmetry in `refine_particles` (pad 2): each image inserted once, then `Volume.symmetrize` resamples the
   accumulators (RELION's way; per-operator insertion was ~90 % of a C8 iteration).
+- **Particle images in 3D**: the loader applies `Params.image_mask_a` to every image (0 = the particle mask, the 2D
+  default). The 3D jobs (Refine3D, HeteroRefine, Class3D, LocalRefine) load with -1 (box-edge window) and reconstruct
+  from those images; alignment reads `clf._fetch_align` (a soft circle 1.5 x the particle mask radius). Reconstructing
+  from particle-masked images cut the CTF-delocalised high-resolution signal (HCN1: 4.16 vs 3.74 A at cryoSPARC's poses).
 - **Refinement masks**: every refinement job has `mask` = auto (dynamic, from each model's map every iteration below
   15 A) / static (once from the starting map) / none (particle sphere) / a MaskCreate job or .mrc
   (`jobs.solvent_mask_arg`). NU refinements write `nu_cutoff.mrc`, `nu.png` and per-iteration `nu` statistics.

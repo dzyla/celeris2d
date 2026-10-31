@@ -262,6 +262,14 @@ class Params:
                                     # high-SNR data; scrambles poses on low-SNR data such as J43 -> opt-in;
                                     # classes are converged, so noise gets one pass, not a feedback loop)
     normalize: bool = True          # per-particle background mean/std normalisation
+    image_mask_a: float = 0.0       # soft circle applied to every particle image as it is loaded: 0 = the particle mask
+                                    # (diameter_a), > 0 its diameter (A), < 0 a window at the box edge (0.85-1 x the box
+                                    # radius, cryoSPARC's real-space window). The 3D jobs use the window (and _fetch_align
+                                    # for alignment): a mask at the particle size cuts away the CTF-delocalised
+                                    # high-resolution signal. HCN1 (39k) at cryoSPARC's poses: 4.16 -> 3.74 A, = cryoSPARC's
+                                    # own reconstruction at 3.74 A; Refine3D, RELION-scored: HCN1 4.38 -> 4.06 A (4.5 A FSC
+                                    # 0.21 -> 0.50), dz_2025_10 5.20 -> 5.12, J341 3.38 -> 3.41, beta-gal 3.15 -> 3.19 (FSC
+                                    # curves equal or higher)
     mstep_fp16: bool = True         # fp16 tensor-core M-step GEMMs
     frc_reg: bool = True            # Wiener filter from odd/even half-set FRC (not from a class's own power)
     particle_scale: bool = False    # E-step: fit a per-particle amplitude for every hypothesis (contrast varies
@@ -443,7 +451,11 @@ class Classifier2D:
             r = torch.arange(B, device=dev, dtype=torch.float32) - B // 2
             rr = torch.sqrt(r[:, None] ** 2 + r[None, :] ** 2)
             rad_px = self.radius_a / self.apix_full
-            mask = soft_circle(B, rad_px, 0.05 * B, dev)
+            if self.p.image_mask_a < 0:
+                mask = soft_circle(B, 0.85 * B / 2, 0.15 * B / 2, dev)
+            else:
+                mask = soft_circle(B, (self.p.image_mask_a / 2 / self.apix_full) if self.p.image_mask_a else rad_px,
+                                   0.05 * B, dev)
             bg = rr > rad_px
             if bg.sum() < 0.05 * B * B:  # mask fills the box: normalise on the outer ring instead
                 bg = rr > 0.8 * (B / 2)
@@ -527,6 +539,23 @@ class Classifier2D:
         if self.notch is not None:
             x = x * self.notch.to(x.device)
         return ft_resize(x, b)
+
+    def _fetch_align(self, idx: torch.Tensor, dev, b: int) -> torch.Tensor:
+        """_fetch for alignment: images loaded without the particle mask (image_mask_a != 0, the 3D jobs: they
+        reconstruct from the unmasked images, as RELION does) get a soft circle here, at box b, 1.5 x the particle mask
+        radius: neighbours and solvent far from the particle do not enter the scores, the delocalised high-resolution
+        signal near it does. RELION-scored vs the window alone / the particle mask: HCN1 4.06 vs 4.01 / 4.11 A (4.5 A FSC
+        0.50 / 0.50 / 0.41), dz_2025_10 5.12 (5 A 0.122 / 0.091 / 0.130), J341 3.41 vs 3.38 / 3.35 (4 A 0.545 / 0.550 /
+        0.546)."""
+        x = self._fetch(idx, dev, b)
+        if not self.p.image_mask_a:
+            return x
+        key = (b, str(x.device))
+        m = getattr(self, "_align_masks", {}).get(key)
+        if m is None:
+            m = soft_circle(b, 1.5 * self.radius_a / (self.box_a / b), 0.05 * b, x.device)
+            self._align_masks = {**getattr(self, "_align_masks", {}), key: m}
+        return torch.fft.rfft2(torch.fft.irfft2(x, s=(b, b), norm="forward") * m, norm="forward")
 
     def ensure_polarity(self, n_wait: int = 20000):
         """Decide the contrast once per loaded dataset, before particle data is used. Everything that reads

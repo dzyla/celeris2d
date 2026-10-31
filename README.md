@@ -164,12 +164,13 @@ claude mcp add celeris2d -- ssh <gpu-host> ~/miniconda3/envs/celeris2d/bin/celer
 better, 4.76 vs 5.28 A with the same mask.
 
 **NU refinement vs cryoSPARC NU-refine, same particles and start map, all maps scored by RELION `relion_postprocess` with
-one mask recipe (`scripts/relion_fsc.py`), Refine3D defaults (rescue on)**: J341 (24k, C3) 3.38 vs 3.17 Å; J20 (157k,
-C3; rescue of 40 %) 3.30 vs 3.22 Å; HCN1 (CryoPPP 10081, 39k, C4) 4.38 vs 3.70 Å; dz_2025_10 (38k, D2) 5.12-5.20 vs 4.83 Å;
-RELION tutorial β-gal 3.15 Å = RELION Refine3D + PostProcess 3.15 Å. The rescue (all particles searched again over
-all views and ±30 Å, best 16 hypotheses polished) cut the particles > 20° from cryoSPARC's pose 29 → 13 % (HCN1) and
-9.6 → 4.4 % (J341). What remains is mostly local-search drift: started from cryoSPARC's own poses our refinement moves
-them ~1° and ends at 4.1 Å on HCN1, while a plain reconstruction at those poses matches cryoSPARC's.
+one mask recipe (`scripts/relion_fsc.py`), Refine3D defaults**: J341 (24k, C3) 3.41 vs 3.17 Å; J20 (157k, C3) 3.30 vs
+3.22 Å; HCN1 (CryoPPP 10081, 39k, C4) 4.06 vs 3.70 Å; dz_2025_10 (38k, D2) 5.12 vs 4.83 Å; RELION tutorial β-gal 3.19 Å
+vs RELION Refine3D + PostProcess 3.15 Å. Two changes got here: the rescue (all particles searched again over all views
+and ±30 Å, best 16 hypotheses polished) cut the particles > 20° from cryoSPARC's pose 29 → 13 % (HCN1) and 9.6 → 4.4 %
+(J341); the 3D jobs reconstruct from unmasked particle images (a box-edge window, the particle mask only for alignment),
+which on HCN1 took a reconstruction at cryoSPARC's own poses from 4.16 to 3.74 Å (= cryoSPARC's) and our refinement
+from 4.38 to 4.06 Å.
 
 **RELION tutorial β-gal (Tutorial5.0 Extract/job018, 4,452 particles, 256 px, RTX 5080)** vs RELION Class2D (K=20, same GPU):
 RELION 524 s, 16/20 populated classes, 76.7 % ψ-consistent with the 3D refinement, half-set FRC 7.75 Å;
