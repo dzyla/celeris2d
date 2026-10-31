@@ -129,10 +129,15 @@ def streaming(j: Job) -> bool:
     return j.type == "Class2D" and bool(j.params.get("stream"))
 
 
-def next_job(project: Project, stream_only: bool = False) -> Job | None:
+# quick jobs on one map that run on the CPU beside a running GPU job (seconds: Sharpen with local resolution at box
+# 240 took 9 s), so they do not wait for a refinement, nor take GPU memory it planned on
+LIGHT_JOBS = ("Sharpen", "MaskCreate")
+
+
+def next_job(project: Project, stream_only: bool = False, light_only: bool = False) -> Job | None:
     """The oldest queued job whose inputs have all finished - or, for a streaming Class2D, whose Extract job is
-    running (it runs beside that job; stream_only: only such jobs, for when another job holds the GPU); queued jobs
-    with a failed / cancelled input fail."""
+    running (it runs beside that job; stream_only: only such jobs, for when another job holds the GPU; light_only:
+    only LIGHT_JOBS, for the CPU beside it); queued jobs with a failed / cancelled input fail."""
     jobs = project.jobs(include_deleted=True)
     status = dict(zip(jobs["id"].astype(int), jobs["status"]))
     for r in jobs[jobs["status"] == "queued"].itertuples():
@@ -146,6 +151,8 @@ def next_job(project: Project, stream_only: bool = False) -> Job | None:
         if streaming(j) and all(status.get(i) in ("running", "finished") for i in j.inputs) \
                 and any(status.get(i) == "running" for i in j.inputs):
             return j
+        if light_only and j.type not in LIGHT_JOBS:
+            continue
         if not stream_only and all(status.get(i) in DONE_OK for i in j.inputs):
             return j
     return None
@@ -207,7 +214,7 @@ def queue_state(project: Project) -> dict:
     return dict(running=pick("running"), queued=pick("queued"), waiting=pick("waiting"))
 
 
-def start(project: Project, job, auto_select: bool = True, **popen) -> subprocess.Popen:
+def start(project: Project, job, auto_select: bool = True, device: str | None = None, **popen) -> subprocess.Popen:
     """Run a queued job in a process of its own (main() below), so that stop() can end it - GPU memory and the
     movie reader processes with it. The caller waits for the process; the job records its status itself."""
     import celeris2d
@@ -215,6 +222,8 @@ def start(project: Project, job, auto_select: bool = True, **popen) -> subproces
     env = dict(os.environ)
     pkg = os.path.dirname(os.path.dirname(os.path.abspath(celeris2d.__file__)))
     env["PYTHONPATH"] = os.pathsep.join([pkg] + [p for p in [env.get("PYTHONPATH")] if p])
+    if device:                                  # e.g. "cpu": a light job beside a running GPU job (gpu.kind)
+        env["CELERIS2D_DEVICE"] = device
     cmd = [sys.executable, "-u", "-m", "celeris2d.scheduler", project.root, str(j.id)]
     if not auto_select:
         cmd.append("--no-auto-select")

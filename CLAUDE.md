@@ -123,7 +123,10 @@ Layers, bottom to top:
 - **3D volumes** (`abinitio.Volume`): 2x-padded full complex grids, 64 b^3 bytes each; `refine_particles` picks
   pad 1 (gridding-corrected) when pad 2 does not fit (box 512 in 16 GB), `Volume.real` / `set_real` work in slabs.
   Symmetry in `refine_particles` (pad 2): each image inserted once, then `Volume.symmetrize` resamples the
-  accumulators (RELION's way; per-operator insertion was ~90 % of a C8 iteration).
+  accumulators (RELION's way; per-operator insertion was ~90 % of a C8 iteration). Class3D and Modes3D do the same at pad 2. `symmetry_ops` has Cn, Dn, T, O, I (I2) and I1 in RELION's frames
+  (`_POLY`); `symalign` finds only Cn / Dn frames. `view_coverage` counts each particle at all its symmetry copies.
+  Refine3D (one model, no search limits: not LocalRefine; `FAST_STEPS`): once the poses settle the step halves every iteration, and the run stops at
+  `step_min` when < 15 % move (INX-6 C8: 8 of 10 iterations, 3.61 vs 3.65 A).
 - **Particle images in 3D**: the loader applies `Params.image_mask_a` to every image (0 = the particle mask, the 2D
   default). The 3D jobs (Refine3D, HeteroRefine, Class3D, LocalRefine) load with -1 (box-edge window) and reconstruct
   from those images; alignment reads `clf._fetch_align` (a soft circle 1.5 x the particle mask radius). Reconstructing
@@ -137,7 +140,7 @@ Layers, bottom to top:
   default); a refinement / Class3D starts from any class map of a multi-class reference job (`reference_class`; the form shows
   the class maps to click; HeteroRefine references "job:class"); ManualPick (`manualpick.py`, `web/picker.js`): hand picks ->
   templates -> suggestions to check -> every micrograph, output read by Extract like a Pick job's; a Pick job re-thresholded on
-  its stored candidates is `pipeline.rethreshold` (the Pick page's Apply to all); the MotionCtf page's limits make a Curate job; a Pick job made without a diameter waits (status waiting) until the user measures one on its page, and its Extract job's box is fixed then (`pipeline.extract_box` / `ensure_box`, particle size 0 = 1.3 x the pick diameter); `scheduler.change_settings` (/api/project/settings) changes a queued / waiting job's settings in place, not the ones naming other jobs; a Select job of 2D classes draws kept.png and rejected.png apart). `gallery.py` gives
+  its stored candidates is `pipeline.rethreshold` (the Pick page's Apply to all); the MotionCtf page's limits make a Curate job; a Pick job made without a diameter waits (status waiting) until the user measures one on its page, and its Extract job's box is fixed then (`pipeline.extract_box` / `ensure_box`, particle size 0 = 1.3 x the pick diameter); `scheduler.change_settings` (/api/project/settings) changes a queued / waiting job's settings in place, not the ones naming other jobs; a Select job of 2D classes draws kept.png and rejected.png apart; Sharpen / MaskCreate (`scheduler.LIGHT_JOBS`) run on the CPU beside a running GPU job, one at a time (`start(device="cpu")`); the job page's Results / Log / Settings / Files panel starts folded, jobs without a viewer or gallery show a Numbers card (`stageNumbers`), and shift-click in the list selects 2-4 jobs for the Compare view (numbers, settings that differ, FSC and per-iteration overlays)). `gallery.py` gives
   class galleries and 8-bit volumes for the browser's WebGL2 raymarcher (`web/volume.js`; cropped to the particle first, so most maps are shown at full pixel size; default level = the map in one piece, dust hidden, rough maps smoothed by one voxel; local-resolution colour range from the values on the surface). Every `themed` figure also
   writes `x.plot.json` (`figjson.py`; `Job.out` keeps it next to x.png) that `web/plots.js` draws with Plotly in the
   same layout; panels it cannot describe (projections, meshes, colour bars) are embedded as pictures. `report.py`:

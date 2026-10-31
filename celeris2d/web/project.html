@@ -135,7 +135,7 @@
   .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 11px 14px; min-width: 0; }
   .kpi .v { font-size: 20px; font-weight: 700; letter-spacing: -.3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .kpi .v small { font-size: 13px; font-weight: 500; color: var(--ink2); margin-left: 3px; }
-  .kpi .c { color: var(--ink2); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kpi .c { color: var(--ink2); font-size: 12.5px; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .kpi .spark { width: 100%; height: 26px; display: block; margin-top: 4px; } .kpi .spark path { fill: none; stroke: var(--data); stroke-width: 1.5; }
   .kpi.warnk { border-color: #6B3A28; } .kpi.warnk .c { color: var(--serious); }
   .num .v { font-size: 21px; font-weight: 700; letter-spacing: -.4px; line-height: 1.15; white-space: nowrap; }
@@ -154,6 +154,7 @@
   table.vst { width: 100%; border-collapse: collapse; font-size: 13px; }
   table.vst td { padding: 3px 0; vertical-align: top; } table.vst td:first-child { color: var(--ink2); padding-right: 10px; white-space: nowrap; }
   table.vst td:last-child { text-align: right; }
+  table.vst .ok { color: var(--good); }
   @media (max-width: 1200px) { .vgrid { grid-template-columns: 1fr; } }
   .vstrip { margin-top: 10px; } .vrow { display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); gap: 6px; }
   .vrow figure { margin: 0; } .vrow .tile { aspect-ratio: 1; background: #000; border-radius: 6px; overflow: hidden; } .vrow .tile img { width: 100%; height: 100%; object-fit: contain; display: block; }
@@ -165,17 +166,44 @@
   .tabs { display: flex; gap: 2px; padding: 18px 28px 0; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--plane); z-index: 3; }
   .tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--ink2); padding: 8px 12px; font-size: 13.5px; }
   .tabs button.on { color: var(--ink); border-bottom-color: var(--data); }
+  .tabs button::before { content: "▸"; display: inline-block; width: 1em; color: var(--ink3); transition: transform .15s; }
+  .tabs button.on::before { transform: rotate(90deg); color: var(--data); }
+  .tabs .cnt { font-size: 11.5px; color: var(--ink3); margin-left: 3px; }
+  .tabs .tabhint { margin-left: auto; align-self: center; font-size: 12px; }
   .pane { padding: 20px 28px 70px; }
+  .pane[hidden] { display: none; }
+  .numcard { margin: 0 0 12px; }
+  .cmpbar { display: flex; gap: 6px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--well); font-size: 13px; }
+  .cmpbar span { margin-right: auto; color: var(--ink2); }
+  .job.cmp { box-shadow: inset 3px 0 0 var(--you); }
+  .cmpgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding: 0 28px 40px; }
+  @media (max-width: 1200px) { .cmpgrid { grid-template-columns: 1fr; } }
+  table.cmpt { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.cmpt th, table.cmpt td { padding: 4px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+  table.cmpt td:first-child { color: var(--ink2); white-space: nowrap; }
+  table.cmpt th a { color: var(--ink); text-decoration: none; font-weight: 600; }
+  .cmpdot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+  .numfigs { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; }
+  .numfigs .vplot img { max-height: 520px; object-fit: contain; }
+  dl.nums { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px 22px; margin: 4px 0 2px; }
+  dl.nums div { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px solid var(--line); padding: 3px 0; min-width: 0; }
+  dl.nums dt { color: var(--ink2); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  dl.nums dd { margin: 0; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .muted { color: var(--ink2); }
   .empty { color: var(--ink2); padding: 60px 30px; text-align: center; }
   .empty h1 { color: var(--ink); font-size: 20px; }
 
   /* figures: a grid at their own size (a wide figure takes the row) */
   .figsec { margin-bottom: 28px; } .figsec h3 { font-size: 15px; font-weight: 600; color: var(--ink); margin: 0 0 10px; }
-  .figs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
-  @media (max-width: 1100px) { .figs { grid-template-columns: 1fr; } }
+  .figs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
+  @media (max-width: 1500px) { .figs { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 1100px) { .figs { grid-template-columns: 1fr; } .fig.wide { grid-column: auto; } }
   .fig { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; min-width: 0; }
-  .fig.wide { grid-column: 1 / -1; }
+  .fig.wide { grid-column: span 2; }
+  .fig.big { grid-column: 1 / -1; }
+  .fig:not(.big) .plot img { max-height: 460px; object-fit: contain; }
+  .fig .bar .row { display: flex; gap: 6px; align-items: center; }
+  .fig button.grow { padding: 1px 7px; font-size: 13px; line-height: 1.3; color: var(--ink2); }
   .fig .bar { display: flex; justify-content: space-between; align-items: center; padding: 9px 14px; font-size: 13.5px; font-weight: 600; color: var(--ink); border-bottom: 1px solid var(--line); }
   .fig .plot { min-height: 40px; }
   .fig img { width: 100%; display: block; }

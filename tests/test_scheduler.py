@@ -106,3 +106,16 @@ def test_streaming_class2d_starts_beside_its_running_extraction(tmp_path):
     assert next_job(p) is None
     p.set_status(p.job(ex.id), "finished", {})
     assert next_job(p).id == plain.id and next_job(p, stream_only=True) is None
+
+
+def test_light_jobs_beside_a_running_gpu_job(tmp_path):
+    """While a GPU job runs, only a quick map job (scheduler.LIGHT_JOBS) is offered, to run on the CPU beside it."""
+    from celeris2d.scheduler import LIGHT_JOBS
+    p = Project(str(tmp_path / "p"))
+    ref = _job(p, "Refine3D", label="done")
+    _job(p, "Refine3D", status="running", label="gpu")
+    _job(p, "Class3D", [ref], "queued", "waits")
+    sh = _job(p, "Sharpen", [ref], "queued", "quick")
+    assert "Sharpen" in LIGHT_JOBS
+    assert next_job(p, light_only=True).id == sh.id
+    assert next_job(p).type == "Class3D"            # the GPU queue itself is unchanged

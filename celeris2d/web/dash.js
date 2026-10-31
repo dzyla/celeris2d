@@ -18,7 +18,7 @@ function plotLayout(T, title, extra = {}) {
   ['xaxis', 'yaxis'].forEach(a => { L[a] = Object.assign({}, ax, extra[a] || {}, {title: Object.assign({}, ax.title, (extra[a] || {}).title || {})}); });
   return L;
 }
-const MAPJOBS = ['Refine3D', 'LocalRefine', 'InitialModel', 'Sharpen', 'Subtract', 'ModeMaps', 'MaskCreate', 'Polish', 'CtfRefine'];
+const MAPJOBS = ['Refine3D', 'LocalRefine', 'InitialModel', 'Sharpen', 'Subtract', 'ModeMaps', 'MaskCreate', 'Polish', 'CtfRefine', 'Modes3D'];
 const CLASSJOBS = ['Class2D', 'HeteroRefine', 'Class3D', 'Select'];
 const MOVIEJOBS = ['MotionCtf', 'Pick', 'Extract'];
 const LIVE3D = ['InitialModel', 'Refine3D', 'HeteroRefine', 'Class3D', 'LocalRefine'];
@@ -26,7 +26,8 @@ const LIVE3D = ['InitialModel', 'Refine3D', 'HeteroRefine', 'Class3D', 'LocalRef
 const MICSTATS = [['defocus_a', 'Defocus', 'Å', 0], ['astigmatism_a', 'Astigmatism', 'Å', 0], ['ctf_fit_a', 'CTF fit resolution', 'Å', 2],
   ['ctf_score', 'CTF fit score', '', 3], ['drift_a', 'Total drift', 'Å', 1], ['local_rms_a', 'Local motion (rms)', 'Å', 2], ['tilt_deg', 'Ice tilt', '°', 1],
   ['picks', 'Picks', '', 0], ['candidates', 'Pick candidates', '', 0], ['particles', 'Particles', '', 0]];
-let jobs = [], queue = {running: [], queued: [], waiting: []}, autoSelect = true, current = null, tab = 'plots', types = {};
+const cmpSel = new Set();                    // jobs chosen to compare (shift-click in the list)
+let jobs = [], queue = {running: [], queued: [], waiting: []}, autoSelect = true, current = null, tab = '', types = {};     // tab '': the panel below the job is folded
 let pollTimer = null, logTimer = null, liveTimer = null, viewer = null;
 
 async function api(url, body) {
@@ -153,8 +154,87 @@ function renderList() {
         ${js.map(row).join('')}</section>`).join('');
   } else if (railView === 'flow' && !q) html = flowRail(rows, row);
   else html = `<div class="plain">${rows.map(row).join('')}</div>`;
-  $('#list').innerHTML = html || `<div class="empty">${q ? 'No job matches.' : 'No jobs yet: start with New job, Import movies.'}</div>`;
-  document.querySelectorAll('.job').forEach(e => { e.onclick = () => showJob(e.dataset.n); e.onkeydown = ev => { if (ev.key === 'Enter') showJob(e.dataset.n); }; });
+  $('#list').innerHTML = (cmpSel.size ? `<div class="cmpbar"><span>${cmpSel.size} selected${cmpSel.size < 2 ? ' · shift-click more' : ''}</span>
+      <button class="go" id="cmpgo" ${cmpSel.size < 2 ? 'disabled' : ''}>Compare</button><button id="cmpclr">Clear</button></div>` : '')
+    + (html || `<div class="empty">${q ? 'No job matches.' : 'No jobs yet: start with New job, Import movies.'}</div>`);
+  document.querySelectorAll('.job').forEach(e => {
+    e.classList.toggle('cmp', cmpSel.has(e.dataset.n));
+    // shift- / ctrl-click: select jobs to compare (2 to 4)
+    e.onclick = ev => { if (ev.shiftKey || ev.ctrlKey || ev.metaKey) { toggleCmp(e.dataset.n); return; } showJob(e.dataset.n); };
+    e.onkeydown = ev => { if (ev.key === 'Enter') showJob(e.dataset.n); };
+  });
+  if ($('#cmpgo')) { $('#cmpgo').onclick = () => showCompare([...cmpSel]); $('#cmpclr').onclick = () => { cmpSel.clear(); renderList(); }; }
+}
+function toggleCmp(n) {
+  if (cmpSel.has(n)) cmpSel.delete(n); else if (cmpSel.size < 4) cmpSel.add(n);
+  renderList();
+}
+// jobs side by side: key numbers, the settings that differ, FSC curves and resolution per iteration
+async function showCompare(names) {
+  current = null; renderList();
+  $('#main').innerHTML = '<div class="empty"><p>loading…</p></div>';
+  let js;
+  try { js = await Promise.all(names.map(n => api('/api/project/job?job=' + encodeURIComponent(n)))); }
+  catch (e) { $('#main').innerHTML = `<div class="empty err">${esc(e.message)}</div>`; return; }
+  const C = [css('--data'), css('--you'), css('--good'), css('--serious')];
+  const head = js.map((j, i) => `<th><span class="cmpdot" style="background:${C[i]}"></span><a href="#${esc(j.name.slice(0, 3))}" data-n="${esc(j.name)}">${esc(j.name)}</a></th>`).join('');
+  const val = (j, f) => { try { const v = f(j.summary || {}, j); return v === undefined || v === null || v === '' ? '–' : v; } catch (e) { return '–'; } };
+  const A = v => typeof v === 'number' ? v.toFixed(2) + ' Å' : undefined;
+  const ROWS = [['Type', (s, j) => (types[j.type] || {}).name || j.type], ['Status', (s, j) => j.status],
+    ['Resolution', s => A(s.resolution_solvent_mask_a ?? s.resolution_a)], ['Unmasked', s => A(s.resolution_unmasked_a)],
+    ['Sharpened', s => A((s.sharpened || {}).resolution_a)], ['B-factor', s => { const b = s.b_factor ?? (s.sharpened || {}).b_factor; return typeof b === 'number' ? b.toFixed(0) + ' Å²' : undefined; }],
+    ['Particles', s => typeof (s.particles_used ?? s.particles) === 'number' ? (s.particles_used ?? s.particles).toLocaleString() : undefined],
+    ['Classes', s => typeof s.classes === 'number' ? s.classes : undefined], ['Symmetry', s => s.sym],
+    ['Iterations', s => Array.isArray(s.history) ? s.history.length : undefined],
+    ['Run time', s => { const t = s.seconds ?? s.seconds_total; return typeof t === 'number' ? (t >= 120 ? Math.round(t / 60) + ' min' : Math.round(t) + ' s') : undefined; }]];
+  const rows = ROWS.map(([k, f]) => [k, js.map(j => val(j, f))]).filter(([, v]) => v.some(x => x !== '–'));
+  const skip = /^(run_|settings_version$|gpus$)/;
+  const keys = [...new Set(js.flatMap(j => Object.keys(j.params || {})))].filter(k => !skip.test(k)).sort();
+  const show = v => v === undefined ? '–' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+  const diff = keys.filter(k => new Set(js.map(j => show((j.params || {})[k]))).size > 1);
+  $('#main').innerHTML = `<div class="jhead"><div class="title"><h1>Compare ${js.length} jobs</h1>
+      <div class="sub muted">shift-click jobs in the list to change the selection</div></div>
+      <div class="acts"><button id="cmpdone">Done</button></div></div>
+    <div class="cmpgrid">
+      <div class="vcard"><h3>Numbers</h3><table class="cmpt"><tr><th></th>${head}</tr>${rows.map(([k, v]) => `<tr><td>${esc(k)}</td>${v.map(x => `<td>${esc(String(x))}</td>`).join('')}</tr>`).join('')}</table></div>
+      <div class="vcard"><h3>Settings that differ</h3>${diff.length ? `<table class="cmpt"><tr><th></th>${head}</tr>${diff.map(k => `<tr><td>${esc(k)}</td>${js.map(j => `<td>${esc(show((j.params || {})[k]))}</td>`).join('')}</tr>`).join('')}</table>` : '<p class="muted">The same settings (inputs aside).</p>'}</div>
+      <div class="vcard"><h3>Fourier shell correlation</h3><div id="cmpfsc" class="vplot"><p class="muted">no FSC curves in these jobs</p></div></div>
+      <div class="vcard"><h3>Resolution per iteration</h3><div id="cmpit" class="vplot"><p class="muted">no iteration history in these jobs</p></div></div>
+    </div>`;
+  $('#cmpdone').onclick = () => { cmpSel.clear(); renderList(); if (js[0]) showJob(js[0].name); };
+  document.querySelectorAll('.cmpt a[data-n]').forEach(a => a.onclick = ev => { ev.preventDefault(); showJob(a.dataset.n); });
+  const P = await CelerisPlots.plotly(), T = THEME();
+  // FSC: each job's data/jNNN_fsc.json, its main curve
+  const fsc = await Promise.all(js.map(async j => {
+    const f = (j.files || []).find(x => /^j\d+_fsc\.json$/.test(x.path.split('/').pop()) && /\/data\//.test(x.path));
+    if (!f) return null;
+    try { const d = await (await fetch(file(f.path))).json(); const cv = d.curves || {}; return {x: d.spatial_frequency_inv_a, y: cv[d.main_curve] || cv.corrected, r: d.resolution_a}; } catch (e) { return null; }
+  }));
+  if (fsc.some(Boolean)) {
+    const xmax = Math.max(...fsc.filter(Boolean).flatMap(d => d.x.filter(v => v != null)));
+    const ticks = [30, 15, 10, 7, 5, 4, 3.5, 3, 2.5, 2].filter(v => 1 / v <= xmax * 1.001);
+    const tr = fsc.map((d, i) => d && {type: 'scatter', mode: 'lines', name: `${js[i].name.slice(0, 3)}${d.r ? ' · ' + d.r.toFixed(2) + ' Å' : ''}`, x: d.x, y: d.y,
+      line: {color: C[i], width: 1.8}, hovertemplate: `${js[i].name.slice(0, 3)}: %{y:.3f}<extra></extra>`}).filter(Boolean);
+    $('#cmpfsc').innerHTML = '';
+    P.react($('#cmpfsc'), tr, plotLayout(T, '', {height: 300, margin: {l: 40, r: 10, t: 10, b: 38},
+      legend: {x: 0.98, xanchor: 'right', y: 0.98, bgcolor: 'rgba(0,0,0,0)', font: {size: 11}},
+      xaxis: {range: [0, xmax], tickvals: ticks.map(v => 1 / v), ticktext: ticks.map(String), title: {text: 'resolution (Å)', standoff: 4}},
+      yaxis: {range: [-0.05, 1.03], tickvals: [0, 0.143, 0.5, 1], ticktext: ['0', '.143', '.5', '1']},
+      shapes: [{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 0.143, y1: 0.143, line: {color: T.axis, width: 1, dash: 'dash'}}]}),
+      {displaylogo: false, responsive: true, displayModeBar: false});
+  }
+  // resolution per iteration from each job's history (the first model's resolution)
+  const its = js.map(j => (Array.isArray((j.summary || {}).history) ? j.summary.history : []).map(h => [h.it, Array.isArray(h.res) ? h.res[0] : h.res, h.seconds]).filter(([, r]) => typeof r === 'number'));
+  if (its.some(a => a.length)) {
+    const tr = its.map((a, i) => a.length && {type: 'scatter', mode: 'lines+markers', name: js[i].name.slice(0, 3), x: a.map(v => v[0]), y: a.map(v => v[1]),
+      customdata: a.map(v => v[2] == null ? '' : Math.round(v[2]) + ' s'), line: {color: C[i], width: 1.8}, marker: {size: 5},
+      hovertemplate: `${js[i].name.slice(0, 3)} it %{x}: %{y:.2f} Å · %{customdata}<extra></extra>`}).filter(Boolean);
+    $('#cmpit').innerHTML = '';
+    P.react($('#cmpit'), tr, plotLayout(T, '', {height: 300, margin: {l: 44, r: 10, t: 10, b: 38},
+      legend: {x: 0.98, xanchor: 'right', y: 0.98, bgcolor: 'rgba(0,0,0,0)', font: {size: 11}},
+      xaxis: {title: {text: 'iteration', standoff: 4}, dtick: 1}, yaxis: {title: {text: 'resolution (Å)', standoff: 4}, autorange: 'reversed'}}),
+      {displaylogo: false, responsive: true, displayModeBar: false});
+  }
 }
 // the jobs as a flowchart: one row per job (newest on top), each job a node on its own lane, a line from every input
 // up to the jobs made from it (a straight lane where a job feeds the next one)
@@ -186,6 +266,8 @@ $('#q').oninput = renderList;
 document.querySelectorAll('#rv button').forEach(b => b.onclick = () => { railView = b.dataset.v; try { localStorage.setItem('celeris-rail', railView); } catch (e) {} renderList(); });
 
 // ------------------------------------------------------------------ a job
+// 2D class tiles: the width the user chose last (84 px: ~11 a row)
+function gcell() { try { return +localStorage.getItem('celeris-gcell') || 84; } catch (e) { return 84; } }
 function numbers(j) {
   const s = j.summary || {}, sh = typeof s.sharpened === 'object' && s.sharpened ? s.sharpened : {};
   const out = [];
@@ -198,8 +280,24 @@ function numbers(j) {
   add(s.particles_used ?? s.particles ?? s.picks, '', s.particles_used ? 'particles used' : s.particles ? 'particles' : 'picks');
   add(s.micrographs ?? s.movies, '', s.micrographs ? 'micrographs' : 'movies');
   add(s.classes && typeof s.classes !== 'object' ? s.classes : undefined, '', 'classes');
-  add(s.seconds ? (s.seconds >= 120 ? Math.round(s.seconds / 60) : Math.round(s.seconds)) : undefined, s.seconds >= 120 ? 'min' : 's', 'run time');
-  return out.slice(0, 7);
+  if (j.type === 'Select' && typeof s.rejected === 'number') add(s.rejected, '', 'particles rejected');
+  if (j.type === 'Class2D') add(s.max_res_a, 'Å', 'finest resolution used');
+  add(s.sym && j.type !== 'Modes3D' ? s.sym : undefined, '', 'symmetry');
+  if (j.type === 'Modes3D' && Array.isArray(s.modes)) {
+    add(`${s.reproducible ?? 0} of ${s.n_modes ?? s.modes.length}`, '', 'modes reproduce in both half sets');
+    const m1 = s.modes[0];
+    if (m1 && typeof m1.sd_rel_mean === 'number') add((100 * m1.sd_rel_mean).toFixed(1), '%', 'mode 1 size: sd / |mean map|');
+    if (m1 && typeof m1.half_cc === 'number') add(m1.half_cc.toFixed(2), '', 'mode 1: halves agree, |cc|');
+    add(s.filter_res_a, 'Å', 'modes to');
+  }
+  if (j.type === 'CtfRefine') {
+    add(s.delta_median_a, 'Å', 'defocus change, median');
+    add(s.per_particle_scatter_about_plane_a, 'Å', 'scatter about each micrograph\'s plane');
+    if (typeof s.cc_improved_share === 'number') add((100 * s.cc_improved_share).toFixed(1), '%', 'particles that fit better');
+  }
+  const sec = s.seconds ?? s.seconds_total;
+  add(sec ? (sec >= 120 ? Math.round(sec / 60) : Math.round(sec)) : undefined, sec >= 120 ? 'min' : 's', 'run time');
+  return out.slice(0, 8);
 }
 async function showJob(name, scroll = true) {
   current = name; renderList();
@@ -214,7 +312,7 @@ async function showJob(name, scroll = true) {
   const canRerun = !['Import', 'Select'].includes(j.type);
   const editable = ['queued', 'waiting'].includes(j.status) && j.type !== 'Select';     // its own settings change, in place
   const runLabel = ['failed', 'cancelled'].includes(j.status) ? 'Restart' : ['MotionCtf', 'Pick', 'Extract'].includes(j.type) ? 'Continue with new movies' : 'Run again';
-  const tname = (types[j.type] || {}).name || j.type, dur = s.seconds ? (s.seconds >= 120 ? Math.round(s.seconds / 60) + ' min' : Math.round(s.seconds) + ' s') : '';
+  const tname = (types[j.type] || {}).name || j.type, sec_ = s.seconds ?? s.seconds_total, dur = sec_ ? (sec_ >= 120 ? Math.round(sec_ / 60) + ' min' : Math.round(sec_) + ' s') : '';
   const stateText = {running: 'running', finished: dur ? 'finished in ' + dur : 'finished', waiting: 'waiting for you', queued: 'queued', failed: 'failed', cancelled: 'stopped'}[j.status] || j.status;
   const from = (j.lineage || []).length > 1 ? (jobs.find(x => x.name === j.name) || {}).inputs || [] : [];
   const fromText = from.map(n => { const x = jobs.find(y => y.name === n); return x ? `${(types[x.type] || {}).name || x.type} ${n.slice(0, 3)}` : n; }).join(' and ');
@@ -237,17 +335,25 @@ async function showJob(name, scroll = true) {
         ${types[j.type] ? `<button id="edit" title="${editable ? 'change this job\'s settings before it starts' : 'the New job form with this job\'s inputs and settings: a new job'}">Change settings…</button>` : ''}
         ${nt && nin ? `<button id="nextj" class="go" title="${esc(nt.blurb || '')}">Next: ${esc(nt.name || nt.type)}</button>` : ''}
         <details class="menu"><summary aria-label="more actions">⋯</summary><div class="menu-list">
+          <button id="cmpw" title="select this job, then shift-click other jobs in the list">Compare with other jobs…</button>
           <button id="final" title="final jobs and everything they came from make the publication report">${j.final ? '★ Unmark final' : '☆ Mark final (for the report)'}</button>
           <button id="del" ${j.status === 'running' ? 'disabled' : ''} title="move the job to the project's Trash folder">Delete…</button></div></details>
       </div>
     </div>
-    ${kp.length ? `<div class="kpis">${kp.map(([v, u, c]) => `<div class="kpi"><div class="v">${u === 'Å' && typeof v === 'number' ? v.toFixed(2) : fmt(v)}${u ? `<small>${u}</small>` : ''}</div><div class="c">${esc(c)}</div></div>`).join('')}</div>` : ''}
+    ${kp.length ? `<div class="kpis">${kp.map(([v, u, c]) => `<div class="kpi"><div class="v">${u === 'Å' && typeof v === 'number' ? v.toFixed(Math.abs(v) >= 100 ? 0 : Math.abs(v) >= 10 ? 1 : 2) : fmt(v)}${u ? `<small>${u}</small>` : ''}</div><div class="c" title="${esc(c)}">${esc(c)}</div></div>`).join('')}</div>` : ''}
     ${j.error || s.error ? `<div class="warn err">${esc(j.error || s.error)}</div>` : ''}
     ${warns.map(w => `<div class="warn">${esc(w)}</div>`).join('')}
     <div id="stage"></div>
-    <div class="tabs" role="tablist">${['plots', 'log', 'settings', 'files', 'lineage'].map(t => `<button data-t="${t}" class="${t === tab ? 'on' : ''}" role="tab">${{plots: 'Results', files: 'Files', log: 'Log', settings: 'Settings', lineage: 'Made from'}[t]}</button>`).join('')}</div>
-    <div class="pane" id="pane"></div>`;
-  document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { tab = b.dataset.t; document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b)); renderPane(j); });
+    <div class="tabs" role="tablist">${['plots', 'log', 'settings', 'files', 'lineage'].map(t => `<button data-t="${t}" class="${t === tab ? 'on' : ''}" role="tab" aria-expanded="${t === tab}">${{plots: 'Results', files: 'Files', log: 'Log', settings: 'Settings', lineage: 'Made from'}[t]}${tabCount(j, t)}</button>`).join('')}
+      <span class="tabhint muted">${tab ? 'click the open tab to fold it' : 'click a tab to open it'}</span></div>
+    <div class="pane" id="pane" ${tab ? '' : 'hidden'}></div>`;
+  document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+    tab = tab === b.dataset.t ? '' : b.dataset.t;          // the open tab folds again
+    document.querySelectorAll('.tabs button').forEach(x => { x.classList.toggle('on', x.dataset.t === tab); x.setAttribute('aria-expanded', x.dataset.t === tab); });
+    $('.tabhint').textContent = tab ? 'click the open tab to fold it' : 'click a tab to open it';
+    renderPane(j);
+    if (tab) $('.tabs').scrollIntoView({behavior: 'smooth', block: 'start'});
+  });
   renderStage(j);
   renderPane(j);
   const on = (id, fn) => { const b = $('#' + id); if (b) b.onclick = fn; };
@@ -255,6 +361,7 @@ async function showJob(name, scroll = true) {
   on('rerun', async () => { try { const d = await api('/api/project/rerun', {job: j.name}); current = d.job; await load(); showJob(d.job); } catch (e) { alert(e.message); } });
   on('edit', () => jobForm(j.type, j.params, editable ? j.name : null));
   on('nextj', () => jobForm(nt.type, {[nin.name]: j.id}));
+  on('cmpw', () => { cmpSel.add(j.name); renderList(); });
   on('stop', async () => {
     if (!confirm(`Stop ${j.name}? Its process ends now; what it wrote so far stays, and Restart runs it again.`)) return;
     try { await api('/api/project/stop', {job: j.name}); await load(); showJob(j.name, false); setTimeout(load, 3000); } catch (e) { alert(e.message); }
@@ -289,10 +396,45 @@ function renderStage(j) {
   if (MOVIEJOBS.includes(j.type) && j.status !== 'queued') return stageMicPanel(st, j);
   if (j.status === 'running') return stageLive(st, j);
   if ((CLASSJOBS.includes(j.type) || (j.summary || {}).class_table) && !['running', 'queued', 'cancelled', 'failed'].includes(j.status)) return stageGallery(st, j);
-  const maps = j.files.filter(f => /\.mrc$/.test(f.path) && !/half[12]|(^|_)mask\.mrc$|localres|nu_cutoff|_frames/.test(f.path.split('/').pop()));
+  const maps = j.files.filter(f => /\.mrc$/.test(f.path) && !/half[12]|(^|_)mask\.mrc$|localres|nu_cutoff|_frames|_f\d+\.mrc$/.test(f.path.split('/').pop()));
   if (MAPJOBS.includes(j.type) && maps.length) return stageVolume(st, j, maps);
   if (j.movie_files && j.movie_files.length) return stageMics(st, j);
-  st.innerHTML = '';
+  stageNumbers(st, j);
+}
+// a job without a page of its own (no map, classes or micrographs): its numbers, so they are not only under Settings
+function stageNumbers(st, j) {
+  const s = j.summary || {}, skip = new Set(['seconds', 'warnings', 'error', 'figures', 'history']);
+  const rows = Object.entries(s).filter(([k, v]) => !skip.has(k) && v !== null && v !== '' && (typeof v !== 'object'));
+  if (!rows.length || j.status !== 'finished') { st.innerHTML = ''; return; }
+  st.className = 'stage';
+  // and the job's main figures (at most two; every figure is under Results)
+  const figs = j.files.filter(f => /\.png$/.test(f.path) && !/\.(light|dark)\.png$/.test(f.path) && !/\/movies\//.test(f.path)).slice(0, 2);
+  st.innerHTML = `<div class="vcard numcard"><h3>Numbers</h3><dl class="nums">${rows.map(([k, v]) =>
+    `<div><dt title="${esc(k)}">${esc(human(k))}</dt><dd>${esc(fmtNum(k, v))}</dd></div>`).join('')}</dl></div>
+    ${figs.length ? `<div class="numfigs">${figs.map((f, i) => `<div class="vcard"><div class="vplot" id="nfig${i}"></div></div>`).join('')}</div>` : ''}`;
+  figs.forEach(async (f, i) => {
+    const box = $('#nfig' + i), js = f.path.replace(/\.png$/, '.plot.json');
+    if (interactive && j.files.some(x => x.path === js)) {
+      try { const spec = await (await fetch(file(js))).json(); box.innerHTML = ''; await CelerisPlots.render(box, spec, THEME()); return; } catch (e) {}
+    }
+    box.innerHTML = `<img src="${file(f.path)}" alt="${esc(f.path.split('/').pop())}" style="width:100%">`;
+  });
+}
+// summary keys in words: delta_median_a -> "delta median (Å)"
+function human(k) {
+  return k.replace(/_a$/, ' (Å)').replace(/_a2$/, ' (Å²)').replace(/_deg$/, ' (°)').replace(/_s$/, ' (s)').replace(/_pct$/, ' (%)')
+    .replace(/_gb$/, ' (GB)').replace(/_/g, ' ');
+}
+function fmtNum(k, v) {
+  if (typeof v === 'boolean') return v ? 'yes' : 'no';
+  if (typeof v !== 'number') return String(v);
+  if (/share|frac/.test(k) && Math.abs(v) <= 1) return (100 * v).toFixed(1) + ' %';
+  return Number.isInteger(v) ? v.toLocaleString() : (+v.toPrecision(4)).toLocaleString();
+}
+function tabCount(j, t) {
+  const n = t === 'plots' ? j.files.filter(f => /\.(png|gif)$/.test(f.path) && !/\.(light|dark)\.png$/.test(f.path) && !/\/movies\//.test(f.path)).length
+    : t === 'files' ? j.files.filter(f => !/\.(png|gif)$/.test(f.path) && !/\.plot\.json$/.test(f.path)).length : 0;
+  return n ? ` <span class="cnt">${n}</span>` : '';
 }
 // a running job: time, the last lines of its log and its newest figure, as they come
 function stageLive(st, j) {
@@ -783,7 +925,7 @@ async function stageGallery(st, j) {
           <input type="range" id="grs" min="${rlo}" max="${rhi}" step="0.5" value="${rhi}"></label><div class="muted" style="font-size:12.5px;margin-top:6px">Selects the classes that pass; click any class to change it.</div></div>` : ''}
         <div class="card pad"><b>Class sizes</b> <span class="muted">largest first, chosen in blue</span><svg id="gsz" viewBox="0 0 240 110" style="width:100%;height:auto;margin-top:6px" role="img" aria-label="class sizes"></svg></div>
         <div class="card pad muted" style="font-size:12.5px">${editable ? 'Saving makes a Select job: Ab initio 3D, refinements and Extract take it as their particles.' : `The classes kept from ${esc(g.source)}.`}
-          <label class="muted" style="display:flex;gap:8px;align-items:center;margin-top:10px">Size <input type="range" id="gsize" min="90" max="220" value="${is3 ? 90 : 120}" style="flex:1"></label></div>
+          <label class="muted" style="display:flex;gap:8px;align-items:center;margin-top:10px">Size <input type="range" id="gsize" min="64" max="220" value="${is3 ? 90 : gcell()}" style="flex:1"></label></div>
       </aside></div>`;
   const total = g.classes.reduce((a, c) => a + c.n, 0), maxN = Math.max(...g.classes.map(c => c.n), 1);
   const draw = () => {
@@ -813,7 +955,9 @@ async function stageGallery(st, j) {
     $('#gsz').innerHTML = bars.map((c, i) => `<rect x="${(i * w).toFixed(2)}" y="${(108 - 104 * c.n / maxN).toFixed(1)}" width="${Math.max(w - 0.8, 0.8).toFixed(2)}" height="${(104 * c.n / maxN).toFixed(1)}" fill="${sel.has(c.cls) ? css('--data') : css('--axis')}"><title>class ${c.cls}: ${c.n.toLocaleString()}</title></rect>`).join('');
   };
   if ($('#g3d')) $('#g3d').onclick = () => openViewer(st, j, g.classes.filter(c => c.map).map(c => ({path: c.map})), null);
-  $('#gsize').oninput = e => st.querySelectorAll('.gal').forEach(x => x.style.setProperty('--cell', e.target.value * (is3 ? 3 : 1) + 'px'));
+  const setCell = v => st.querySelectorAll('.gal').forEach(x => x.style.setProperty('--cell', v * (is3 ? 3 : 1) + 'px'));
+  $('#gsize').oninput = e => { setCell(e.target.value); if (!is3) try { localStorage.setItem('celeris-gcell', e.target.value); } catch (er) {} };
+  setCell($('#gsize').value);
   if (editable) {
     document.querySelectorAll('.selbar [data-s]').forEach(b => b.onclick = () => { sortBy = b.dataset.s; document.querySelectorAll('.selbar [data-s]').forEach(x => x.classList.toggle('on', x === b)); draw(); });
     document.querySelectorAll('.selbar [data-a]').forEach(b => b.onclick = () => {
@@ -923,18 +1067,27 @@ function volStats(s) {
   if (typeof s.orientation_change_deg_median === 'number') add('Pose change', `${s.orientation_change_deg_median.toFixed(1)}° median` +
     (typeof s.orientation_change_over_10deg === 'number' ? ` · ${(100 * s.orientation_change_over_10deg).toFixed(1)}% > 10°` : ''), 'how far the orientations moved from the ones the job started from');
   if (s.view_coverage && typeof s.view_coverage.occupied === 'number') add('Views covered', (100 * s.view_coverage.occupied).toFixed(0) + '%');
-  if (typeof s.seconds === 'number') add('Run time', s.seconds >= 120 ? Math.round(s.seconds / 60) + ' min' : Math.round(s.seconds) + ' s');
+  (Array.isArray(s.modes) ? s.modes : []).forEach(m => add('Mode ' + m.mode,
+    `${(100 * m.sd_rel_mean).toFixed(1)}% · |cc| ${m.half_cc == null ? '–' : m.half_cc.toFixed(2)} <span class="${m.status === 'reproducible' ? 'ok' : 'muted'}">${esc(m.status === 'reproducible' ? 'reproducible' : 'noise')}</span>`,
+    'size along the mode (sd / |mean map|), agreement between the half sets, and whether the mode reproduces'));
+  if (typeof s.filter_res_a === 'number' && Array.isArray(s.modes)) add('Modes to', A(s.filter_res_a));
+  if (typeof s.duplicates_removed === 'number' && s.duplicates_removed > 0) add('Duplicates left out', n(s.duplicates_removed),
+    `particles whose aligned centres were within ${s.duplicate_distance_a ?? '?'} Å of a better-fitting one`);
+  const sec = s.seconds ?? s.seconds_total;
+  if (typeof sec === 'number') add('Run time', sec >= 120 ? Math.round(sec / 60) + ' min' : Math.round(sec) + ' s');
   return out;
 }
 function stageVolume(st, j, maps) {
   st.className = 'stage';
-  const rank = p => ['_map.mrc', 'sharpened_masked.mrc', 'sharpened.mrc', 'map_nomask.mrc'].findIndex(x => p.endsWith(x));
+  const rank = p => ['_map.mrc', '_mean.mrc', 'sharpened_masked.mrc', 'sharpened.mrc', 'map_nomask.mrc'].findIndex(x => p.endsWith(x));
   maps.sort((a, b) => (rank(a.path) < 0 ? 9 : rank(a.path)) - (rank(b.path) < 0 ? 9 : rank(b.path)));
   const localres = j.files.find(f => /localres\.mrc$/.test(f.path));
   const preview = j.files.find(f => /map_views\.png$/.test(f.path)) || j.files.find(f => /postprocess\.png$/.test(f.path));
   // beside the map (3 : 1): the numbers, FSC and angular distribution, so the viewer is not the whole width
   const fig = re => j.files.find(f => /\.png$/.test(f.path) && !/\.(light|dark)\.png$/.test(f.path) && re.test(f.path.split('/').pop().replace(/^j\d+_/, '')));
-  const figs = [['Fourier shell correlation', fig(/^fsc\.png$/)], ['Angular distribution', fig(/^(views|angdist)\.png$/)]].filter(([, f]) => f);
+  const gif = re => j.files.find(f => /\.gif$/.test(f.path) && re.test(f.path.split('/').pop().replace(/^j\d+_/, '')));
+  const figs = [['Fourier shell correlation', fig(/^fsc\.png$/)], ['Angular distribution', fig(/^(views|angdist)\.png$/)],
+    ['Mode 1, from −2 to +2 sd', gif(/^mode1(_\w+)?\.gif$/)]].filter(([, f]) => f);
   const rows = volStats(j.summary || {});
   const side = rows.length || figs.length;
   // the map itself first (the viewer opens at once), then its projections, central sections and Fourier sections
@@ -944,13 +1097,13 @@ function stageVolume(st, j, maps) {
     ${side ? `<aside class="vside" aria-label="map statistics">
       ${rows.length ? `<div class="vcard"><h3>Statistics</h3><table class="vst">${rows.map(([k, v, t]) => `<tr${t ? ` title="${esc(t)}"` : ''}><td>${esc(k)}</td><td>${v}</td></tr>`).join('')}</table></div>` : ''}
       ${figs.map(([n], i) => `<div class="vcard"><h3>${esc(n)}</h3><div class="vplot" id="vside${i}"></div></div>`).join('')}
-      <div class="muted" style="font-size:12px">All figures are under Results below.</div></aside>` : ''}</div>`;
+      <div class="muted" style="font-size:12px">Every figure: open Results below.</div></aside>` : ''}</div>`;
   openViewer($('#v3host'), j, maps, localres);
   figs.forEach(async ([, f], i) => {
     const box = $('#vside' + i), js = f.path.replace(/\.png$/, '.plot.json');
-    const data = i === 0 && j.files.find(x => /^j\d+_fsc\.json$/.test(x.path.split('/').pop()) && /\/data\//.test(x.path));
+    const data = /fsc\.png$/.test(f.path) && j.files.find(x => /^j\d+_fsc\.json$/.test(x.path.split('/').pop()) && /\/data\//.test(x.path));
     if (data) { try { await sideFSC(box, data); return; } catch (e) {} }
-    if (interactive && j.files.some(x => x.path === js)) {
+    if (interactive && /\.png$/.test(f.path) && j.files.some(x => x.path === js)) {
       try { const spec = await (await fetch(file(js))).json(); box.innerHTML = ''; await CelerisPlots.render(box, spec, THEME(), {minFont: 10, noTitles: true, minWidth: 200}); return; } catch (e) {}
     }
     box.innerHTML = `<img src="${file(f.path)}" alt="${esc(f.path.split('/').pop())}">`;
@@ -1051,6 +1204,8 @@ function stageMics(st, j) {
 function renderPane(j) {
   const p = $('#pane');
   clearTimeout(logTimer);
+  p.hidden = !tab;
+  if (!tab) { p.innerHTML = ''; return; }
   if (tab === 'plots') return panePlots(p, j);
   if (tab === 'files') {
     const fs = j.files.filter(f => !/\.(png|gif)$/.test(f.path) && !/\.plot\.json$/.test(f.path));
@@ -1096,17 +1251,24 @@ const FIGSECTIONS = [
 // two columns of equal cards; a figure much wider than tall (a strip of panels) takes the whole row
 function panePlots(p, j) {
   const figs = j.files.filter(f => /\.(png|gif)$/.test(f.path) && !/\.(light|dark)\.png$/.test(f.path) && !/\/movies\//.test(f.path));
-  const hasJson = f => j.files.some(x => x.path === f.path.replace(/\.png$/, '.plot.json'));
+  const hasJson = f => /\.png$/.test(f.path) && j.files.some(x => x.path === f.path.replace(/\.png$/, '.plot.json'));
   if (!figs.length) { p.innerHTML = `<p class="muted">${j.status === 'running' ? 'No figures yet: they appear here as the job writes them.' : 'This job has no figures.'}</p>`; return; }
   const base = f => f.path.split('/').pop().replace(/^j\d+_/, '').replace(/\.(png|gif)$/, '');
   const secs = [...FIGSECTIONS.map(([n]) => [n, []]), ['More', []]];
-  figs.forEach((f, i) => { const k = FIGSECTIONS.findIndex(([, re]) => re.test(base(f))); secs[k < 0 ? secs.length - 1 : k][1].push(i); });
+  const bySection = !['Modes3D'].includes(j.type);       // Modes3D's figures are all about its modes: one group
+  figs.forEach((f, i) => { const k = bySection ? FIGSECTIONS.findIndex(([, re]) => re.test(base(f))) : -1; secs[k < 0 ? secs.length - 1 : k][1].push(i); });
   const used = secs.filter(([, is]) => is.length);
   p.innerHTML = used.map(([n, is]) => `<section class="figsec">${used.length > 1 ? `<h3>${esc(n)}</h3>` : ''}<div class="figs">${is.map(i => `
-      <div class="fig" id="card${i}"><div class="bar"><span>${esc(base(figs[i]).replace(/_/g, ' '))}</span>
-      ${hasJson(figs[i]) ? `<span class="seg"><button data-i="${i}" data-m="live" class="${interactive ? 'on' : ''}">Interactive</button><button data-i="${i}" data-m="img" class="${interactive ? '' : 'on'}">Image</button></span>` : ''}</div>
+      <div class="fig" id="card${i}"><div class="bar"><span>${esc(base(figs[i]).replace(/_/g, ' '))}</span><span class="row">
+      <button class="grow" data-g="${i}" title="show this figure across the whole width (click again: back)" aria-label="enlarge">⤢</button>
+      ${hasJson(figs[i]) ? `<span class="seg"><button data-i="${i}" data-m="live" class="${interactive ? 'on' : ''}">Interactive</button><button data-i="${i}" data-m="img" class="${interactive ? '' : 'on'}">Image</button></span>` : ''}</span></div>
       <div class="plot" id="fig${i}"></div></div>`).join('')}</div></section>`).join('');
   const size = (i, ratio) => { $('#card' + i).classList.toggle('wide', ratio > 1.9); };
+  p.querySelectorAll('button.grow').forEach(b => b.onclick = () => {
+    const c = $('#card' + b.dataset.g), big = c.classList.toggle('big');
+    b.textContent = big ? '⤡' : '⤢';
+    if (hasJson(figs[+b.dataset.g]) && interactive) draw(+b.dataset.g, true);   // a live plot is drawn for its width
+  });
   const draw = async (i, live) => {
     const f = figs[i], box = $('#fig' + i);
     if (live && hasJson(f)) {

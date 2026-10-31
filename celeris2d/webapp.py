@@ -1108,6 +1108,26 @@ def create(workdir, project_dir=None, password: str = ""):
     def _small(summ):
         return {k: v for k, v in (summ or {}).items() if not isinstance(v, (list, dict))}
 
+    summ_cache = {}
+
+    def _summary_cached(root, name):
+        """A job's summary.json, read again only when the file changed: the job list is polled every few seconds and
+        re-reading every summary took ~2 s on a project of 86 jobs on a Windows drive."""
+        p = os.path.join(root, "jobs", name, "summary.json")
+        try:
+            m = os.stat(p).st_mtime_ns
+        except OSError:
+            return {}
+        hit = summ_cache.get(p)
+        if hit is None or hit[0] != m:
+            try:
+                with open(p) as f:
+                    hit = (m, json.load(f))
+            except (OSError, ValueError):            # being written: the last good copy, or nothing
+                return hit[1] if hit else {}
+            summ_cache[p] = hit
+        return hit[1]
+
     from .manualpick_api import router as manualpick_router
     app.include_router(manualpick_router(_prj))         # the ManualPick job's picker (web/picker.js)
 
@@ -1130,15 +1150,17 @@ def create(workdir, project_dir=None, password: str = ""):
         reg = registry()
         finals = prj.final_marks()
         out = []
-        for r in prj.jobs().itertuples():
-            summ = prj.summary_of(int(r.id))
+        rows = prj.jobs()
+        names = dict(zip(rows["id"].astype(int), rows["name"]))
+        for r in rows.itertuples():
+            summ = _summary_cached(prj.root, r.name)
             out.append(dict(id=int(r.id), name=r.name, type=r.type, label=r.label,
                             # a stopped / finished job's own status wins over its watcher thread, still waiting for
                             # the process to end (Stop: SIGTERM, then up to 15 s)
                             status="running" if r.name in live and r.status in ("queued", "running") else r.status,
                             final=int(r.id) in finals,
                             final_note=finals.get(int(r.id), {}).get("note", ""),
-                            inputs=[prj.job(int(i)).name for i in json.loads(r.inputs)],
+                            inputs=[names.get(int(i), f"{int(i):03d}") for i in json.loads(r.inputs)],
                             created=float(r.created), updated=float(r.updated),
                             key=key_of(r.type, summ, reg), summary=_small(summ)))
         running = [k for k, t in proj_state["runs"].items() if t["thread"].is_alive()]
@@ -1319,7 +1341,8 @@ def create(workdir, project_dir=None, password: str = ""):
         wake.set()
 
     def _run_stream(prj, j, proc):
-        """A streaming Class2D beside the running movie chain: its own process, outside the one-job slot."""
+        """A streaming Class2D beside the running movie chain, or a light job on the CPU beside the GPU job: its own
+        process, outside the one-job slot."""
         from .scheduler import process_log
         try:
             code = proc.wait()
@@ -1359,6 +1382,15 @@ def create(workdir, project_dir=None, password: str = ""):
                         st._log(f"[queue] {s2.name} started beside the running jobs (streaming 2D, process {proc.pid})")
                         threading.Thread(target=_run_stream, args=(prj, s2, proc), daemon=True,
                                          name=f"stream-{s2.id}").start()
+                    lt = proj_state.get("light")
+                    if lt is None or not lt.is_alive():   # one quick job at a time on the CPU (LIGHT_JOBS)
+                        s3 = next_job(prj, light_only=True)
+                        if s3 is not None:
+                            proc = start(prj, s3, auto_select=proj_state["auto_select"], device="cpu")
+                            st._log(f"[queue] {s3.name} started on the CPU beside the running GPU job (process {proc.pid})")
+                            proj_state["light"] = threading.Thread(target=_run_stream, args=(prj, s3, proc), daemon=True,
+                                                                   name=f"light-{s3.id}")
+                            proj_state["light"].start()
                     continue
                 j = next_job(prj)
                 if j is None:

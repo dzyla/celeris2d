@@ -144,10 +144,23 @@
     const n = parseInt(hex.slice(1), 16);
     return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
   }
+  // matplotlib mathtext in labels ($\\mathdefault{10^{-2}}$, $\\AA$) as plain text
+  const SUP = {'0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹', '-': '⁻', '+': '⁺', '.': '·'};
+  function mathtext(s) {
+    return s.replace(/\$([^$]*)\$/g, (_, m) => m.replace(/\\mathdefault\{([^}]*)\}/g, '$1')
+      .replace(/\^\{([^}]*)\}/g, (__, e) => [...e].map(c => SUP[c] || c).join('')).replace(/\^(\w)/g, (__, e) => SUP[e] || e)
+      .replace(/\\AA/g, 'Å').replace(/\\times/g, '×').replace(/\\pm/g, '±').replace(/\\circ/g, '°').replace(/\\/g, '').replace(/[{}]/g, ''));
+  }
+  function plain(o) {
+    if (typeof o === 'string') return o.includes('$') ? mathtext(o) : o;
+    if (Array.isArray(o)) return o.map(plain);
+    if (o && typeof o === 'object') { const r = {}; for (const k in o) r[k] = k === 'src' ? o[k] : plain(o[k]); return r; }
+    return o;
+  }
   async function render(div, spec, theme, opts = {}) {
     const P = await plotly();
     const width = Math.max(opts.minWidth ?? 320, div.clientWidth || 900);
-    const {traces, layout} = build(spec, theme, width, opts);
+    const {traces, layout} = build(plain(spec), theme, width, opts);
     await P.react(div, traces, layout, {displaylogo: false, responsive: false, scrollZoom: false,
       modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d', 'toggleSpikelines'],
       toImageButtonOptions: {format: 'svg', filename: 'celeris2d_plot'}});
