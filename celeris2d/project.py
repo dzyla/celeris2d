@@ -58,8 +58,9 @@ CREATE TABLE IF NOT EXISTS chunks (
 
 JOB_TYPES = ("Import", "ImportParticles", "MotionCtf", "Curate", "Pick", "Extract", "Select", "Class2D", "InitialModel", "Refine3D", "HeteroRefine",
              "Polish", "CtfRefine", "Sharpen", "MaskCreate", "MapScore", "Class3D", "Subtract", "LocalRefine", "SymExpand",
-             "Modes3D", "ModeMaps")
-PER_MOVIE = dict(MotionCtf="micrographs", Pick="picks", Extract="chunks", Polish="chunks", Subtract="chunks")
+             "Modes3D", "ModeMaps", "ManualPick")
+PER_MOVIE = dict(MotionCtf="micrographs", Pick="picks", ManualPick="picks", Extract="chunks", Polish="chunks",
+                 Subtract="chunks")
 HEAVY = dict(MotionCtf=(".mrc",), Extract=(".mrcs",), Polish=(".mrcs",), Subtract=(".mrcs",))   # purgeable files of a job's data folder
 REBUILDABLE = ("MotionCtf", "Extract")         # purged files can be made again from the recorded parameters
 PARTICLE_JOBS = ("Extract", "Polish", "CtfRefine", "Subtract")   # jobs that hold particle images (a "particles" table
@@ -825,7 +826,7 @@ class Project:
             path = os.path.join(job.path, "micrographs.npz")
             _save_table(path, self.micrographs(job).drop(columns=["meta"]))
             return path
-        name = "picks" if job.type == "Pick" else "particles"
+        name = "picks" if job.type in ("Pick", "ManualPick") else "particles"
         self.table(job, name).close()
         return os.path.join(job.path, name)
 

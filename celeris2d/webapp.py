@@ -889,6 +889,9 @@ def create(workdir, project_dir=None):
     def _small(summ):
         return {k: v for k, v in (summ or {}).items() if not isinstance(v, (list, dict))}
 
+    from .manualpick_api import router as manualpick_router
+    app.include_router(manualpick_router(_prj))         # the ManualPick job's picker (web/picker.js)
+
     @app.get("/project", response_class=HTMLResponse)
     def project_page():
         with open(os.path.join(os.path.dirname(__file__), "web", "project.html")) as fh:

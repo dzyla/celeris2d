@@ -260,6 +260,7 @@
 </div>
 <script src="/web/plots.js"></script>
 <script src="/web/volume.js"></script>
+<script src="/web/picker.js"></script>
 <script>
 'use strict';
 const $ = s => document.querySelector(s);
@@ -448,6 +449,7 @@ async function showJob(name, scroll = true) {
 function renderStage(j) {
   const st = $('#stage');
   if (viewer) { viewer.dispose(); viewer = null; }
+  if (j.type === 'ManualPick') return CelerisPicker.mount(st, {job: j, api, file, css, theme: THEME()});
   if (MOVIEJOBS.includes(j.type) && j.status !== 'queued') return stageMicPanel(st, j);
   if (j.status === 'running') return stageLive(st, j);
   if (CLASSJOBS.includes(j.type) && !['running', 'queued', 'cancelled', 'failed'].includes(j.status)) return stageGallery(st, j);

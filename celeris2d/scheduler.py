@@ -29,7 +29,7 @@ def queue_job(project: Project, job_type: str, inputs: dict, settings: dict | No
     """A new job of any registered type, queued (inputs may themselves be queued or waiting)."""
     from .jobs import new_job
     j = new_job(project, job_type, inputs, settings or {}, label)
-    if j.status != "finished":                  # an Import is done when made
+    if j.status not in ("finished", "waiting"):  # an Import is done when made; a ManualPick waits for the user
         project.set_status(j, "queued")
     return j
 
@@ -40,7 +40,7 @@ def queue_rerun(project: Project, ref) -> Job:
     from .jobs import registry
     from .jobspec import settings_of
     old = project.job(ref)
-    if old.type in MOVIE_JOBS:
+    if old.type in MOVIE_JOBS or old.type == "ManualPick":     # ManualPick: Pick all again (with its picks now)
         project.set_status(old, "queued")
         return old
     spec = registry().get(old.type)
@@ -137,7 +137,8 @@ def run_job(project: Project, job, log=print, auto_select: bool = True):
         if j.type in MOVIE_JOBS:
             pl.run(project, chain, log=log)
         else:
-            spec = registry().get(j.type)
+            from .moviejobs import movie_registry
+            spec = registry().get(j.type) or movie_registry().get(j.type)    # ManualPick: its Pick all
             if spec is None:
                 raise ValueError(f"{j.type} jobs cannot run from the queue")
             from .live import live_maps

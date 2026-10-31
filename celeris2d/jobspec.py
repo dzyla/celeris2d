@@ -180,6 +180,8 @@ MOVIE_KEYS = {
     "Import": lambda s: f"{_n(s.get('movies'))} movies",
     "MotionCtf": lambda s: f"{_n(s.get('micrographs'))} mics",
     "Pick": lambda s: f"{_n(s.get('picks'))} picks",
+    "ManualPick": lambda s: (f"{_n(s.get('picks'))} picks · {_n(s.get('reviewed'))} reviewed"
+                             if s.get("picks") is not None else "picking by hand"),
     "Extract": lambda s: f"{_n(s.get('particles'))} ptcls · {s.get('box', '')} px",
     "Select": lambda s: f"{_n(s.get('particles'))} kept"
                         + (f" · {_n(s.get('rejected'))} rej" if s.get("rejected") is not None else ""),
