@@ -84,7 +84,8 @@ def test_project_api(tmp_path):
     prj, ex, c2 = _project(tmp_path)
     c = TestClient(create(str(tmp_path / "web"), project_dir=prj.root))
     t = {x["type"]: x for x in c.get("/api/project/jobtypes").json()}
-    assert set(t) == set(REG) | {"Import", "MotionCtf", "Pick", "Extract"} and t["Refine3D"]["inputs"][2]["optional"]
+    assert set(t) == set(REG) | {"Import", "MotionCtf", "Pick", "ManualPick", "Extract"}
+    assert t["Refine3D"]["inputs"][2]["optional"]
     lst = c.get("/api/project").json()["jobs"]
     assert [x["key"] for x in lst] == ["10 ptcls · 64 px", "10 ptcls · K50"]
     r = c.post("/api/project/new", json={"type": "InitialModel", "inputs": {"class2d": ex.id}})

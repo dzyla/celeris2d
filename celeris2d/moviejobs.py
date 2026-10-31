@@ -1,6 +1,7 @@
-"""The movie jobs (Import, MotionCtf, Pick, Extract) as job types for the dashboard's New job form and the queue, so
-a project can be made from movies to a map in the dashboard alone. They run through pipeline.run (the scheduler
-runs a queued MotionCtf -> Pick -> Extract chain as one overlapped run); jobs.registry() keeps the particle jobs.
+"""The movie jobs (Import, MotionCtf, Pick, ManualPick, Extract) as job types for the dashboard's New job form and
+the queue, so a project can be made from movies to a map in the dashboard alone. They run through pipeline.run (the
+scheduler runs a queued MotionCtf -> Pick -> Extract chain as one overlapped run; ManualPick has its own run,
+manualpick.py); jobs.registry() keeps the particle jobs.
 """
 from __future__ import annotations
 
@@ -97,6 +98,8 @@ def movie_registry() -> dict[str, JobSpec]:
     def extract(project, picks, s, label=""):
         return pl.extract_job(project, project.job(picks), s, label)
 
+    from . import manualpick as mp
+
     specs = [
         JobSpec("Import", "register movies (they stay where they are)", ImportSettings, (),
                 lambda project, s, label="": import_job(project, s, label), lambda project, job, log=print: {},
@@ -106,8 +109,12 @@ def movie_registry() -> dict[str, JobSpec]:
         JobSpec("Pick", "particle picking: a blob, 2D class averages or map projections as templates",
                 pl.PickSettings, (Input("micrographs", ("MotionCtf",), doc="the micrographs"),), pick, _run_movies,
                 key=MOVIE_KEYS["Pick"]),
+        JobSpec("ManualPick", "pick by hand, train a template picker on your picks (2D classes of them), check its "
+                "suggestions on a few micrographs, then pick all micrographs with it", mp.ManualPickSettings,
+                (Input("micrographs", ("MotionCtf",), doc="the micrographs"),), mp.manualpick_job, mp.run_manualpick,
+                key=MOVIE_KEYS["ManualPick"], figures=("templates.png", "overview.png")),
         JobSpec("Extract", "particle images from the picks (box from the particle size and CTF delocalisation)",
-                pl.ExtractSettings, (Input("picks", ("Pick",), doc="the picks"),), extract, _run_movies,
+                pl.ExtractSettings, (Input("picks", ("Pick", "ManualPick"), doc="the picks"),), extract, _run_movies,
                 key=MOVIE_KEYS["Extract"]),
     ]
     return {sp.type: sp for sp in specs}

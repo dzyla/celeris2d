@@ -52,8 +52,8 @@ def family(project: Project, job) -> dict:
         c = [x for x in c if int(x.params.get(key, -1)) == parent.id and x.status not in ("cancelled", "deleted")]
         c.sort(key=lambda x: (x.status == "running", x.id))
         return c[-1] if c else None
-    out["pick"] = j if j.type == "Pick" else (project.job(j.params["picks"]) if j.type == "Extract"
-                                              else latest("Pick", "micrographs", mc))
+    out["pick"] = j if j.type in ("Pick", "ManualPick") else (
+        project.job(j.params["picks"]) if j.type == "Extract" else latest("Pick", "micrographs", mc))
     if out["pick"] is not None:
         out["extract"] = j if j.type == "Extract" else latest("Extract", "picks", out["pick"])
     return out
