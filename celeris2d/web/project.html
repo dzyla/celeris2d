@@ -357,6 +357,31 @@
   .methods { white-space: pre-wrap; background: var(--surface); padding: 12px 16px; border-radius: 8px; font-size: 13px; max-width: 980px; }
   .flow img { max-width: min(100%, 560px); background: #fff; border-radius: 8px; display: block; }
   @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; height: auto; } .rail { max-height: 50vh; } .v3 { grid-template-columns: 1fr; } }
+  /* project browser */
+  dialog.pdlg { width: min(860px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); }
+  dialog.pdlg::backdrop { background: rgba(0, 0, 0, .55); }
+  .pdlg .pdh { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+  .pdlg .pdh h2 { margin: 0; font-size: 17px; flex: 1; }
+  .pdlg .pdb { padding: 14px 18px; overflow: auto; max-height: calc(100vh - 190px); }
+  .pdlg .pdf { display: flex; gap: 10px; align-items: center; justify-content: flex-end; padding: 12px 18px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+  .pdlg h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink3); margin: 4px 0 8px; }
+  .plist { display: grid; gap: 6px; margin-bottom: 18px; }
+  .prow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--well); }
+  .prow.cur { border-color: var(--data); }
+  .prow .pn { font-weight: 600; } .prow .pp { color: var(--ink3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prow.gone { opacity: .55; }
+  .pathbar { display: flex; gap: 8px; margin-bottom: 8px; } .pathbar input { flex: 1; min-width: 0; }
+  .crumbs { display: flex; flex-wrap: wrap; gap: 2px; font-size: 13px; margin-bottom: 8px; color: var(--ink3); }
+  .crumbs a { padding: 1px 4px; border-radius: 4px; } .crumbs a:hover { background: var(--raise); text-decoration: none; }
+  .dirs { border: 1px solid var(--line); border-radius: 8px; max-height: 340px; overflow: auto; }
+  .dirs .dr { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .dirs .dr:last-child { border-bottom: 0; } .dirs .dr:hover { background: var(--raise); }
+  .dirs .dr .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge { font-size: 11px; padding: 1px 7px; border-radius: 99px; background: var(--data-dim); color: var(--data); white-space: nowrap; }
+  .here { display: flex; gap: 10px; align-items: center; padding: 8px 10px; margin-bottom: 8px; border-radius: 8px; background: var(--data-dim); }
+  .pnote { font-size: 12px; color: var(--serious); margin-bottom: 6px; }
+  .start { max-width: 760px; margin: 40px auto; padding: 0 16px; }
+  @media (max-width: 640px) { .prow { grid-template-columns: minmax(0, 1fr) auto; } .prow .when { display: none; } }
 </style>
 </head>
 <body>
@@ -384,6 +409,8 @@
 </div>
 <script src="/web/plots.js"></script>
 <script src="/web/volume.js"></script>
+<dialog class="pdlg" id="pdlg" aria-labelledby="pdlgt"><div class="pdh"><h2 id="pdlgt">Open a project</h2><button class="quiet" id="pdlgx" aria-label="close">✕</button></div>
+  <div class="pdb" id="pdlgb"></div><div class="pdf" id="pdlgf"></div></dialog>
 <script src="/web/dash.js"></script>
 <script src="/web/pages.js"></script>
 <script src="/web/picker.js" onerror="this.remove()"></script>

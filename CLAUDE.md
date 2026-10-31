@@ -109,6 +109,9 @@ Layers, bottom to top:
   process there, so an overrun is an out-of-memory error instead of WSL spilling GPU memory into system RAM (many
   times slower). Big 3D intermediates: free what the next phase does not need (accumulators after the solve,
   references before back-projection), work in slabs, build projection-only volumes on the band's box.
+  `refine_particles` shares the particles among `clf.devs` (`abinitio.on_devices`: local search, rescue searches,
+  back-projection into per-GPU accumulators added on the master); inside those threads `_free` never releases the
+  cache (an unmapped block another GPU's kernels still use: illegal memory access).
 - **Job times**: a "(N s)" progress time in a run log is `clock.since(t0)`: seconds since the job started (`project.run_log`
   starts the clock at the scheduler's run_started), not since the phase began; a finished job's summary `seconds` is
   start to finish (`set_status`). Durations of one step ("loaded in", "s each") stay `time.time() - t0`.
