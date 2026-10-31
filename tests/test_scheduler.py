@@ -119,3 +119,15 @@ def test_light_jobs_beside_a_running_gpu_job(tmp_path):
     assert "Sharpen" in LIGHT_JOBS
     assert next_job(p, light_only=True).id == sh.id
     assert next_job(p).type == "Class3D"            # the GPU queue itself is unchanged
+
+
+def test_reap_leaves_a_job_that_finished_meanwhile(tmp_path, monkeypatch):
+    """reap_stale reads the list, then each job: one that finished in between (a Select job written in the
+    dashboard's process) is not marked failed."""
+    p = Project(str(tmp_path / "p"))
+    j = _job(p, "Select", label="sel")                # finished
+    rows = p.jobs()
+    rows.loc[rows["id"] == j.id, "status"] = "running"  # the list as read just before it finished
+    monkeypatch.setattr(p, "jobs", lambda *a, **k: rows)
+    assert p.reap_stale() == []
+    assert p.job(j.id).status == "finished"

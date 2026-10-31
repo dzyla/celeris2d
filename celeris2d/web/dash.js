@@ -94,6 +94,7 @@ const GLYPH = {        // 16 x 16, stroked
   Curate: 'M2 3h12l-4.5 5.5V13l-3 1.2V8.5z',
   Pick: 'M8 8m-4.5 0a4.5 4.5 0 1 0 9 0a4.5 4.5 0 1 0-9 0M8 1v3M8 12v3M1 8h3M12 8h3',
   ManualPick: 'M3 2l9 5-4 1.2L6.4 12z M8.2 8.4l3.6 4.4',
+  SelectValues: 'M2 13h12M4 13V8M7 13V4M10 13V6M13 13V10',
   Extract: 'M2 5V2h3M11 2h3v3M14 11v3h-3M5 14H2v-3M6 6h4v4H6z',
   ImportParticles: 'M8 1.5v6M5.5 5 8 7.5 10.5 5M4 11.5a1 1 0 1 0 .01 0M8 12.5a1 1 0 1 0 .01 0M12 11.5a1 1 0 1 0 .01 0',
   Class2D: 'M2 2h5v5H2zM9 2h5v5H9zM2 9h5v5H2zM9 9h5v5H9z',
@@ -1308,7 +1309,14 @@ async function followLog(name, offset) {
 }
 
 // ------------------------------------------------------------------ new job, report, open
-async function loadTypes() { try { types = Object.fromEntries((await api('/api/project/jobtypes')).map(t => [t.type, t])); } catch (e) {} }
+async function loadTypes() {
+  try { types = Object.fromEntries((await api('/api/project/jobtypes')).map(t => [t.type, t])); } catch (e) {}
+  // a page of its own (valuesPage), listed with the jobs
+  const c2 = types.Class2D || {};
+  types.SelectValues = {type: 'SelectValues', name: 'Select particles by their values', group: c2.group || '2D', order: (c2.order ?? 7) + 0.5,
+    blurb: 'Keep the particles whose pick score, defocus, CTF fit, class probability, … are in the ranges you set',
+    needs: 'Particles', inputs: [{name: 'source', types: VALUE_SOURCES}]};
+}
 // New job: every job type by processing stage (uimeta.py: plain names, what each needs), then its form - the
 // inputs, the few settings most runs change, and the rest folded away by topic
 const usableJobs = () => jobs.filter(x => ['finished', 'queued', 'waiting', 'running'].includes(x.status));
@@ -1337,8 +1345,132 @@ function jobPicker() {
   };
   $('#jtq').focus();
 }
+// Select particles by their values (filtersel.py): any particle job's numbers as histograms, ranges dragged on them
+const VALUE_SOURCES = ['Extract', 'Polish', 'CtfRefine', 'Subtract', 'Select', 'Class2D', 'ImportParticles'];
+async function valuesPage(source) {
+  current = null; renderList();
+  const srcs = jobs.filter(x => x.status === 'finished' && VALUE_SOURCES.includes(x.type)).sort((a, b) => b.id - a.id);
+  if (!srcs.length) { $('#main').innerHTML = '<div class="empty"><h1>No particles yet</h1><p>Extract particles first.</p></div>'; return; }
+  source = source || srcs[0].name;
+  $('#main').innerHTML = `<div class="jhead"><div class="title"><h1>Select particles by their values</h1>
+      <div class="sub muted">drag across a histogram (or type the limits) to keep that range; every range applies</div></div></div>
+    <div class="vbar"><label>Particles of <select id="vsrc">${srcs.map(x => `<option value="${esc(x.name)}" ${x.name === source ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
+      <span id="vcount" class="vcount">loading…</span><span class="vtrack"><span id="vfill"></span></span>
+      <input id="vlabel" placeholder="label (optional)" style="width:180px"><button id="vclear">Clear ranges</button><button class="go" id="vsave" disabled>Save selection</button></div>
+    <div id="vgrid" class="vgrid2"></div>`;
+  $('#vsrc').onchange = e => valuesPage(e.target.value);
+  let d;
+  try { d = await api('/api/project/values?job=' + encodeURIComponent(source)); }
+  catch (e) { $('#vgrid').innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
+  const rules = {};                                          // col -> {min, max}
+  const fmtv = (c, v) => v == null ? '' : c.integer ? String(Math.round(v)) : String(+(+v).toPrecision(4));
+  $('#vgrid').innerHTML = d.columns.map((c, i) => `<div class="vcard vcol" data-i="${i}"><div class="vch"><b>${esc(c.label)}</b>
+      <span class="muted">${fmtv(c, c.min)} – ${fmtv(c, c.max)}</span></div>
+      <svg class="vh" viewBox="0 0 400 90" preserveAspectRatio="none" data-i="${i}" aria-label="histogram of ${esc(c.label)}"></svg>
+      <div class="vlim"><input type="number" step="any" data-i="${i}" data-b="min" placeholder="min"><span class="muted">to</span>
+        <input type="number" step="any" data-i="${i}" data-b="max" placeholder="max"><button class="vx" data-i="${i}" title="no limit on this value">×</button></div></div>`).join('');
+  const draw = i => {
+    const c = d.columns[i], r = rules[c.name] || {}, m = Math.max(...c.counts, 1), w = 400 / c.counts.length;
+    const inR = k => { const x0 = c.lo + (c.hi - c.lo) * k / c.counts.length, x1 = x0 + (c.hi - c.lo) / c.counts.length;
+      return (r.min == null || x1 > r.min) && (r.max == null || x0 < r.max); };
+    $(`svg.vh[data-i="${i}"]`).innerHTML = c.counts.map((n, k) => `<rect x="${(k * w + 0.5).toFixed(1)}" y="${(88 - 86 * Math.sqrt(n / m)).toFixed(1)}" width="${(w - 1).toFixed(1)}" height="${(86 * Math.sqrt(n / m)).toFixed(1)}" fill="${(r.min == null && r.max == null) || inR(k) ? css('--data') : css('--axis')}"/>`).join('');
+    document.querySelectorAll(`.vlim input[data-i="${i}"]`).forEach(inp => { if (document.activeElement !== inp) inp.value = fmtv(c, r[inp.dataset.b]); });
+    $(`.vcol[data-i="${i}"]`).classList.toggle('on', r.min != null || r.max != null);
+  };
+  let timer = null;
+  const recount = () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const rs = Object.entries(rules).filter(([, r]) => r.min != null || r.max != null).map(([col, r]) => ({col, min: r.min ?? null, max: r.max ?? null}));
+      $('#vsave').disabled = !rs.length;
+      try {
+        const q = await api('/api/project/filter', {job: source, rules: rs});
+        $('#vcount').innerHTML = `<b>${q.kept.toLocaleString()}</b> of ${q.total.toLocaleString()} particles kept (${(100 * q.kept / Math.max(q.total, 1)).toFixed(1)}%)`;
+        $('#vfill').style.width = (100 * q.kept / Math.max(q.total, 1)).toFixed(1) + '%';
+      } catch (e) { $('#vcount').textContent = e.message; }
+    }, 200);
+  };
+  d.columns.forEach((c, i) => {
+    draw(i);
+    const svg = $(`svg.vh[data-i="${i}"]`);
+    // position along the histogram (0-1); within 2 % of an edge: open on that side (the bins span 0.1-99.9 %)
+    const frac = ev => { const b = svg.getBoundingClientRect(); return Math.min(1, Math.max(0, (ev.clientX - b.left) / b.width)); };
+    const val = f => c.lo + (c.hi - c.lo) * f;
+    let x0 = null;
+    svg.onpointerdown = ev => { x0 = frac(ev); svg.setPointerCapture(ev.pointerId); };
+    svg.onpointermove = ev => {
+      if (x0 == null) return;
+      const a = Math.min(x0, frac(ev)), z = Math.max(x0, frac(ev));
+      rules[c.name] = {min: a <= 0.02 ? null : val(a), max: z >= 0.98 ? null : val(z)};
+      draw(i);
+    };
+    svg.onpointerup = ev => {                                // a click without a drag: no limit on this value
+      if (x0 == null) return;
+      if (Math.abs(frac(ev) - x0) < 0.005) delete rules[c.name];
+      x0 = null; draw(i); recount();
+    };
+  });
+  document.querySelectorAll('.vlim input').forEach(inp => inp.onchange = () => {
+    const c = d.columns[+inp.dataset.i], r = rules[c.name] = rules[c.name] || {};
+    r[inp.dataset.b] = inp.value === '' ? null : +inp.value;
+    draw(+inp.dataset.i); recount();
+  });
+  document.querySelectorAll('.vx').forEach(b => b.onclick = () => { delete rules[d.columns[+b.dataset.i].name]; draw(+b.dataset.i); recount(); });
+  $('#vclear').onclick = () => { Object.keys(rules).forEach(k => delete rules[k]); d.columns.forEach((c, i) => draw(i)); recount(); };
+  $('#vsave').onclick = async () => {
+    const rs = Object.entries(rules).filter(([, r]) => r.min != null || r.max != null).map(([col, r]) => ({col, min: r.min ?? null, max: r.max ?? null}));
+    $('#vsave').disabled = true;
+    try { const q = await api('/api/project/filter', {job: source, rules: rs, save: true, label: $('#vlabel').value.trim()}); await load(); showJob(q.job); }
+    catch (e) { alert(e.message); $('#vsave').disabled = false; }
+  };
+  recount();
+}
+// the Extract form: the box its settings give, drawn on a dozen picked particles (pipeline.extract_preview), and
+// FFT-friendly box sizes near it; follows the fields as they change
+function extractPreview() {
+  const host = document.createElement('section');
+  host.innerHTML = `<h3>Box on picked particles</h3><div class="xprev"><div class="xinfo" id="xinfo">…</div>
+    <div class="xtiles" id="xtiles"></div><div class="muted" style="font-size:12px">white square: the box · blue circle: the particle size · the
+    view is 1.5 × the box, so the margin shows what the box leaves out</div></div>`;
+  $('.form2 > section:last-of-type').before(host);
+  const val = id => { const e = $('#f_' + id); return e && e.value !== '' ? +e.value : 0; };
+  let timer = null, seq = 0;
+  const run = () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const picks = $('#in_picks').value;
+      if (!picks) { $('#xinfo').textContent = 'Choose a Pick job with picks.'; return; }
+      const my = ++seq;
+      $('#xinfo').textContent = 'cutting particles…';
+      const q = new URLSearchParams({picks, particle_a: val('particle_a'), box_a: val('box_a'), box_px: val('box_px'),
+                                     particle_apix: val('particle_apix'), box_res_a: val('box_res_a') || 5});
+      let d;
+      try { d = await api('/api/project/extract_preview?' + q); } catch (e) { if (my === seq) $('#xinfo').innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
+      if (my !== seq) return;
+      if (!d.box) { $('#xinfo').textContent = 'No particle size yet: the box is set when the Pick job has one (or type a particle size).'; }
+      else $('#xinfo').innerHTML = `Box <b>${d.box} px</b> at <b>${(+d.out_apix).toFixed(3)} Å/px</b> = <b>${d.box_a_used} Å</b> · particle ${(+d.particle_a).toFixed(0)} Å
+        <span class="muted">· FFT-friendly boxes near it: </span>${(d.nice || []).map(b => `<button class="chipb ${b === d.box ? 'on' : ''}" data-b="${b}" title="use ${b} px (the pixel size follows)">${b}</button>`).join('')}`;
+      document.querySelectorAll('.chipb[data-b]').forEach(c => c.onclick = () => { $('#f_box_px').value = c.dataset.b; run(); });
+      $('#xtiles').innerHTML = (d.crops || []).map((c, i) => `<canvas width="128" height="128" data-i="${i}" title="${esc(c.micrograph)}"></canvas>`).join('');
+      (d.crops || []).forEach((c, i) => {
+        const cv = $(`#xtiles canvas[data-i="${i}"]`), g = cv.getContext('2d'), im = new Image();
+        im.onload = () => {
+          g.drawImage(im, 0, 0, 128, 128);
+          const s = 128 / d.fov_a;
+          if (d.box_a_used) { g.strokeStyle = 'rgba(255,255,255,.9)'; g.lineWidth = 1.5; const w = d.box_a_used * s; g.strokeRect(64 - w / 2, 64 - w / 2, w, w); }
+          if (d.particle_a) { g.strokeStyle = css('--data'); g.lineWidth = 1.5; g.beginPath(); g.arc(64, 64, d.particle_a * s / 2, 0, 2 * Math.PI); g.stroke(); }
+        };
+        im.src = c.src;
+      });
+    }, 350);
+  };
+  ['particle_a', 'box_a', 'box_px', 'particle_apix', 'box_res_a'].forEach(id => { const e = $('#f_' + id); if (e) e.addEventListener('input', run); });
+  $('#in_picks').addEventListener('change', run);
+  run();
+}
 // edit: the name of a queued / waiting job whose own settings the form changes (its inputs stay)
 function jobForm(type, params = {}, edit = null) {
+  if (type === 'SelectValues') return valuesPage();
   current = null; renderList();
   const t = types[type];
   if (!t) return jobPicker();
@@ -1390,6 +1522,8 @@ function jobForm(type, params = {}, edit = null) {
   }
   const pa = type === 'Extract' && $('#f_particle_a');
   if (pa) { pa.placeholder = 'empty: 1.3 × the pick diameter'; if (!(+pa.value > 0)) pa.value = ''; }
+  if (type === 'Extract' && $('#f_box_px')) { if (!(+$('#f_box_px').value > 0)) $('#f_box_px').value = ''; $('#f_box_px').placeholder = 'empty: from the pixel size'; }
+  if (type === 'Extract' && $('#in_picks')) extractPreview();
   document.querySelectorAll('.sw input').forEach(c => c.onchange = () => c.nextElementSibling.textContent = c.checked ? 'on' : 'off');
   $('#fback').onclick = edit ? () => showJob(edit) : jobPicker;
   // a multi-class job as the reference: its class maps to click (reference_class), or, for references lists

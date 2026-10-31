@@ -472,8 +472,8 @@ class Project:
         out = []
         for r in self.jobs().itertuples():
             if r.status == "running":
-                j = self.job(int(r.id))
-                if not self.is_running(j):
+                j = self.job(int(r.id))         # read again: it may have finished since the list was read (a Select
+                if j.status == "running" and not self.is_running(j):     # job finishing meanwhile was marked failed)
                     summ = dict(self.summary_of(j), error="the process ended without finishing (crashed or killed)")
                     self.set_status(j, "failed", summ)
                     out.append(j.name)

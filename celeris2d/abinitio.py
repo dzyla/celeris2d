@@ -791,18 +791,24 @@ def _free(dev) -> float:
     return float(gpu_free(dev))                 # CELERIS2D_VRAM_GB caps it
 
 
-def working_box(clf, n_acc: int, n_ft: int, log=print) -> int:
-    """Largest even box <= the loaded working box whose 3D volumes fit on the GPU. Per b^3: a padded volume
-    with accumulators 160 bytes (n_acc of them), a spectrum-only volume 64 bytes (n_ft), FFT transients ~320;
-    plus 1.5 GB for particle batches. Data that would not fit is never pushed to (WSL: swapped) host memory."""
+def working_box(clf, n_acc: int, n_ft: int, log=print, max_box: int = 0) -> int:
+    """Largest even box <= the loaded working box (and <= max_box, if set) whose 3D volumes fit on the GPU. Per
+    b^3: a padded volume with accumulators 160 bytes (n_acc of them), a spectrum-only volume 64 bytes (n_ft), FFT
+    transients ~320; plus 1.5 GB for particle batches. Data that would not fit is never pushed to (WSL: swapped)
+    host memory."""
     free = _free(clf.dev)
     per = n_acc * 160 + n_ft * 64 + 320
     b = clf.bmax
+    if max_box and max_box < b:                      # the user's cap (memory, speed): Nyquist coarser accordingly
+        b = max(32, int(max_box) // 2 * 2)
+        log(f"[3d] maps at most {b} px (max_box): Nyquist {2 * clf.box_a / b:.1f} A instead of "
+            f"{2 * clf.box_a / clf.bmax:.1f} A")
+    bmax = b
     while b > 32 and per * b ** 3 + 1.5e9 > 0.85 * free:
         b -= 2
-    if b < clf.bmax:
-        log(f"[3d] GPU memory: {free / 1e9:.1f} GB free -> 3D working box {b} px instead of {clf.bmax} "
-            f"(Nyquist {2 * clf.box_a / b:.1f} A instead of {2 * clf.box_a / clf.bmax:.1f} A)")
+    if b < bmax:
+        log(f"[3d] GPU memory: {free / 1e9:.1f} GB free -> 3D working box {b} px instead of {bmax} "
+            f"(Nyquist {2 * clf.box_a / b:.1f} A instead of {2 * clf.box_a / bmax:.1f} A)")
     return b
 
 
@@ -2072,6 +2078,16 @@ class AbinitioParams:
     solvent_mask: str = "auto"      # particle refinement: dynamic solvent mask once better than 15 A ("auto", as Refine3D),
                                     # or the particle sphere only ("sphere")
     n_models: int = 1               # 3D classes: >1 adds a 3D classification of the particles at the consensus poses
+    max_box: int = 0                # largest 3D map (px) - less GPU memory, faster; 0: the 2D run's working box
+    seed_rounds: int = 2            # seeds "independent": rounds of (SGD per map on its particles, every particle
+                                    # searched against every map). Simulated mixtures (box 64, 4000 particles, noise 3),
+                                    # particles sorted right, seeds 0 / 1 / 2: 2 structures consensus 55 / 52 / 55 %,
+                                    # independent 94 / 56 / 59 % (1 round: 81 % at seed 0); 3 structures consensus
+                                    # 46 / 75 / 60 %, independent 72 / 58 / 61 % (3 rounds: 60 % at seed 0). Large
+                                    # spread from the class stage's split of the classes: best-of-n attempts would help
+    seeds: str = "consensus"        # ... n_models > 1: "consensus" (one map, then classified at its poses) or
+                                    # "independent" (every model from its own share of the 2D classes, then the
+                                    # particles refined against all of them: heterogeneous data)
     class3d_res: float = 10.0       # ... with every class filtered to this resolution (A) (or the consensus one if worse)
     class3d_iter: int = 20          # ... for at most this many iterations
     seed: int = 0
@@ -2103,7 +2119,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
     dev = clf.dev
     box_a, diam = clf.box_a, clf.p.diameter_a
     M = max(1, int(prm.n_models))
-    b = working_box(clf, n_acc=max(2, 2 * M), n_ft=max(2, M), log=log)
+    b = working_box(clf, n_acc=max(2, 2 * M), n_ft=max(2, M), log=log, max_box=prm.max_box)
     pops = torch.as_tensor(np.asarray(result.pops), device=dev, dtype=torch.float32)
     keep = pops > 0
     if classes is not None:
@@ -2201,10 +2217,73 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
         timing["particles"] += time.time() - t0
         return vols_cls, Ak, cc, out
 
+    def independent_models(sym: str):
+        """n_models > 1, seeds "independent": every model is built by the class stage from its own share of the 2D
+        classes (a random balanced split, its own random orientations; the start whose models explain the classes
+        best kept) - not one consensus map split afterwards, which starts every class from the same structure. Then
+        the particles refine against all models, each weighted by its posterior over them (soft)."""
+        t0 = time.time()
+        vols0, Ak_m, cc_, zk_, _ = classes_to_volume(cls_ft[keep], pops[keep], box_a, diam, sym=sym,
+                                                     n_starts=prm.n_starts, res_start=prm.class_res_start,
+                                                     res_end=prm.class_res_end, n_iter=prm.class_iter, seed=prm.seed,
+                                                     n_models=M, keep_top=1, log=log)
+        gpu.synchronize()
+        timing["classes"] += time.time() - t0
+        clf._wait_loaded(clf.N)
+        clf.ensure_polarity()
+        t0 = time.time()
+        A0 = torch.stack([particle_poses(Ak_m[m], kp, psi_p) for m in range(M)], 1)        # (n, M, 3, 3)
+        z0 = zk_.to(kp.device)[kp]
+        log(f"[3d] {M} independent starting maps from {int(keep.sum())} classes: particles per map "
+            f"{torch.bincount(z0, minlength=M).tolist()}")
+        # each map refined by particle SGD on its own particles (first those of its classes), then every particle
+        # searched against every map and moved to the one it fits best; twice, so the maps and the split improve
+        # together (the class stage alone left the maps at ~25 A and the refinement never got going: 2 different
+        # structures 72 % sorted right, 3 of them 43 %)
+        Vm = list(vols0)
+        g_res = max(prm.global_res, prm.sgd_res)
+        step = global_step(g_res, diam)
+        zero = torch.zeros(len(idx), dtype=torch.long)
+        for rnd in range(prm.seed_rounds):
+            t0 = time.time()
+            for m in range(M):
+                sel = torch.nonzero(z0 == m).squeeze(1)
+                if prm.sgd_iter > 0 and len(sel) >= 200:
+                    Vm[m], _ = particle_sgd(clf, idx[sel], off_p[sel], Vm[m], sym=sym,
+                                            n_iter=prm.sgd_iter if rnd == 0 else max(4, prm.sgd_iter // 2),
+                                            res_end=prm.sgd_res, batch=min(prm.sgd_batch, max(500, len(sel) // 4)),
+                                            seed=prm.seed + 7 * rnd + m, topk=prm.sgd_topk, log=log)
+            timing["sgd"] += time.time() - t0
+            t0 = time.time()
+            lls = []
+            for m in range(M):
+                Ag, llg, _ = global_search(clf, idx, A0[:, m], off_p, [Vm[m], Vm[m]], zero, g_res, step, box=Vm[m].b,
+                                           log=lambda *a: None)
+                A0[:, m] = Ag.to(A0.device)
+                lls.append(llg.to(A0.device))
+            z_new = torch.stack(lls, 1).argmax(1).to(z0.device)
+            moved = float((z_new != z0).float().mean())
+            z0 = z_new
+            timing["particles"] += time.time() - t0
+            log(f"[3d] round {rnd + 1}: every particle against every map: per map {torch.bincount(z0, minlength=M).tolist()}, "
+                f"{moved * 100:.0f}% changed map")
+        t0 = time.time()
+        out = refine_particles(clf, idx, A0, off_p, Vm, z=z0, sym=sym, n_iter=prm.n_iter, res_start=prm.res_start,
+                               n_local=prm.n_local, box=b, soft=True, drop_frac=prm.drop_frac, rebalance=prm.rebalance,
+                               solvent_mask=None if prm.solvent_mask == "sphere" else prm.solvent_mask, log=log)
+        gpu.synchronize()
+        timing["particles"] += time.time() - t0
+        return vols0, _class_poses(out[1], kp, psi_p, int(keep.sum())), cc_, zk_, out
+
     relaxed_from = prm.relax_from.upper() if prm.relax_from and prm.sym.upper() == "C1" else None
     if relaxed_from == "C1":
         relaxed_from = None
-    vols_cls, Ak, cc, (maps, A, t, z, fs, res, vols) = consensus(relaxed_from or prm.sym)
+    independent = M > 1 and prm.seeds == "independent" and not relaxed_from
+    zk_ind = None
+    if independent:
+        vols_cls, Ak, cc, zk_ind, (maps, A, t, z, fs, res, vols) = independent_models(prm.sym)
+    else:
+        vols_cls, Ak, cc, (maps, A, t, z, fs, res, vols) = consensus(relaxed_from or prm.sym)
     if relaxed_from:
         # pseudo-symmetric particle (the user's choice): C1 matching has several near-equivalent wrong answers.
         # Solved with the symmetry imposed (well constrained), then refined without it; the first relax_iters
@@ -2232,17 +2311,17 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
         f"{cov['top10_share'] * 100:.0f}% of particles" + (" -- WARNING: narrow range of views, the map is smeared "
         "along the missing directions; include classes with other views if there are any" if cov["warning"] else ""))
     unmasked_res = resolution_from_fsc(fsc(vols[0][0], vols[0][1]), box_a)   # comparable to RELION's "without masking"
-    zk = torch.zeros(len(Ak), dtype=torch.long, device=dev)
+    zk = zk_ind.to(dev) if zk_ind is not None else torch.zeros(len(Ak), dtype=torch.long, device=dev)
     t0 = time.time()
     consensus = None
-    if M > 1:   # the consensus's own numbers, before its halves make way for the classes'
+    if M > 1 and not independent:   # the consensus's own numbers, before its halves make way for the classes'
         dm0 = getattr(refine_particles, "last_masks", None)
         cmask0 = dm0[0] if dm0 is not None and dm0[0] is not None else solvent_mask(consensus_map, box_a / b)
         consensus = dict(resolution_a=round(res[0], 2), resolution_unmasked_a=round(unmasked_res, 2),
                          resolution_solvent_mask_a=round(resolution_from_fsc(corrected_masked_fsc(
                              vols[0][0].real(), vols[0][1].real(), cmask0), box_a), 2),
                          particles_used=int(used.sum()))
-    if M > 1:   # heterogeneity: 3D classification at the consensus poses, all classes filtered alike
+    if M > 1 and not independent:   # heterogeneity: 3D classification at the consensus poses, all classes alike
         # a (pseudo-)symmetric particle sits in one of its symmetry-related poses at random, so a difference that
         # breaks the symmetry lands in a different place per particle: classify over the group's poses (the
         # relaxed consensus is in the symmetry frame, so the group's standard operators apply)
@@ -2328,7 +2407,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
                           resolution_a=round(resolution_from_fsc(fsc_solvent, box_a), 3), title=tag)
     reproj_cc = _figures(outdir, clf, result, keep, Ak, [maps[m] for m in order], curves, rot, tilt, box_a, b, tag,
                          vstats)
-    if M > 1:   # the consensus before the classification: unmasked (consensus.mrc), masked, and its mask
+    if consensus is not None:   # the consensus before the classification: unmasked (consensus.mrc), masked, its mask
         _save_mrc(os.path.join(outdir, "consensus.mrc"), consensus_map, apix)
         _save_mrc(os.path.join(outdir, "consensus_map.mrc"), consensus_map * cmask0, apix)
         _save_mrc(os.path.join(outdir, "consensus_mask.mrc"), cmask0, apix)
@@ -2351,7 +2430,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
                                 **({"resolution_solvent_mask_a": round(res_solv[m], 2) if m in res_solv else None}
                                    if M > 1 else {}))
                            for r, m in enumerate(order)])
-    if M > 1:   # model 1 = most particles: the classification's history in that numbering
+    if M > 1 and not independent:   # model 1 = most particles: the classification's history in that numbering
         summary["consensus"] = consensus
         summary["class_history"] = [dict(h, **{k: [h[k][m] for m in order] for k in ("pops", "weights", "res")
                                                if k in h}) for h in getattr(classify3d, "last_history", [])]

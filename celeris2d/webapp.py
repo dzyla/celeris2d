@@ -1502,6 +1502,60 @@ def create(workdir, project_dir=None, password: str = ""):
         _kick()
         return dict(job=j.name)
 
+    @app.get("/api/project/extract_preview")
+    def project_extract_preview(picks: str, particle_a: float = 0.0, box_a: float = 0.0, box_px: int = 0,
+                                particle_apix: float = 0.0, box_res_a: float = 5.0):
+        """The box these Extract settings give and a dozen picked particles to judge it on (pipeline.extract_preview)."""
+        from . import pipeline as pl
+        prj = _prj()
+        try:
+            s = pl.ExtractSettings(particle_a=particle_a, box_a=box_a, box_px=int(box_px), particle_apix=particle_apix,
+                                   box_res_a=box_res_a)
+            return pl.extract_preview(prj, prj.job(picks), s)
+        except (ValueError, KeyError) as e:
+            raise HTTPException(400, str(e))
+
+    values_cache = {}
+
+    def _values(prj, job):
+        """filtersel.values of a job, kept while the job is unchanged (the page asks for counts as sliders move)."""
+        from .filtersel import values
+        j = prj.job(job)
+        key = (prj.root, j.id)
+        hit = values_cache.get(key)
+        stamp = os.path.getmtime(os.path.join(j.path, "job.json")) if os.path.exists(os.path.join(j.path, "job.json")) else 0
+        if hit is None or hit[0] != stamp:
+            values_cache.clear()                     # one job at a time: a particle table can be large
+            hit = values_cache[key] = (stamp, values(prj, j))
+        return j, hit[1]
+
+    @app.get("/api/project/values")
+    def project_values(job: str):
+        """Histograms of every numeric value of a particle job's particles (filtersel): the Select by values page."""
+        from .filtersel import histograms
+        try:
+            j, df = _values(_prj(), job)
+        except (ValueError, KeyError) as e:
+            raise HTTPException(400, str(e))
+        return dict(job=j.name, n=int(len(df)), columns=histograms(df))
+
+    @app.post("/api/project/filter")
+    def project_filter(body: dict = Body(...)):
+        """{job, rules: [{col, min, max}], save: bool, label}: how many particles are inside the ranges; save makes
+        the Select job."""
+        from .filtersel import mask, select_by_values
+        prj = _prj()
+        try:
+            j, df = _values(prj, body["job"])
+            rules = [r for r in body.get("rules") or [] if r.get("col") in df.columns]
+            kept = int(mask(df, rules).sum())
+            if body.get("save"):
+                sj = select_by_values(prj, j, rules, body.get("label", ""))
+                return dict(kept=kept, total=int(len(df)), job=sj.name)
+        except (ValueError, KeyError) as e:
+            raise HTTPException(400, str(e))
+        return dict(kept=kept, total=int(len(df)))
+
     @app.get("/api/project/mics")
     def project_mics(job: str):
         """The micrographs of a movie job done so far (micview.mic_rows: CTF, motion, picks / particles), and how

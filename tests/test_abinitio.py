@@ -350,3 +350,16 @@ def test_polyhedral_symmetrize_is_as_accurate_as_insertion(sym):
         ab._regularise_solve(R, 0.02)
         err.append(float((R.real() - vol).norm() / vol.norm()))
     assert err[1] < 1.2 * err[0] + 0.01, err
+
+
+def test_independent_seeds_make_every_map(tmp_path, particles):
+    """n_models > 1, seeds "independent": every map from its own share of the classes, particles in all of them."""
+    import json
+    path, _ = particles
+    s = Session(str(tmp_path / "work"), log=lambda *a: None)
+    s.load(path, diameter=200, max_res=12, gpus="0")
+    s.classify("k12", K=12, n_iter=15)
+    summ = s.abinitio("k12_ind", "k12", n_starts=4, sgd_iter=8, n_iter=4, drop_frac=0.0, n_models=2,
+                      seeds="independent", seed_rounds=1, max_box=48)
+    assert len(summ["models"]) == 2 and all(m["particles"] > 0 for m in summ["models"]), summ["models"]
+    assert summ["box"] <= 48 and "consensus" not in summ

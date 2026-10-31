@@ -434,6 +434,11 @@ class InitialModelSettings:
     sym: str = "C1"                 # the user's choice; never detected
     classes: tuple = ()             # 1-based classes of the Class2D job (empty: all populated classes)
     n_models: int = 1               # > 1: that many maps, particles classified among them (3D classes)
+    seeds: str = "independent"      # n_models > 1: "independent" - every map from its own share of the 2D classes,
+                                    # then the particles refined against all (heterogeneous data); "consensus" - one map,
+                                    # then a 3D classification at its poses (every class starts from the same structure;
+                                    # 2 different simulated structures: 54 % sorted right vs 70 %, abinitio.seed_rounds)
+    max_box: int = 0                # largest map (px): less GPU memory, faster, Nyquist coarser; 0: the 2D run's box
     mask: str = "auto"              # solvent mask of the particle refinement: "auto" (dynamic, below 15 A) or "none"
                                     # (the particle sphere only)
     seed: int = 0                   # random seed
@@ -512,7 +517,7 @@ def run_initial_model(project: Project, job, log=print) -> dict:
         r.labels[np.flatnonzero(covered)[~keep]] = -1
     if str(s.mask).lower() not in ("auto", "dynamic", "none", "sphere"):
         raise ValueError(f"InitialModel mask {s.mask!r}: 'auto' or 'none' (there is no starting map for a static mask)")
-    prm = ab.AbinitioParams(sym=s.sym, n_models=s.n_models, seed=s.seed,
+    prm = ab.AbinitioParams(sym=s.sym, n_models=s.n_models, seed=s.seed, seeds=s.seeds, max_box=s.max_box,
                             solvent_mask="auto" if str(s.mask).lower() in ("auto", "dynamic") else "sphere")
     summ = ab.run(ses.clf, r, job.path, prm, classes=mask, log=log, src=None)
     with np.load(os.path.join(job.path, "poses.npz")) as f_:

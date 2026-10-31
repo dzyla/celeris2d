@@ -173,6 +173,21 @@
   .pane { padding: 20px 28px 70px; }
   .pane[hidden] { display: none; }
   .numcard { margin: 0 0 12px; }
+  .xprev { display: flex; flex-direction: column; gap: 8px; }
+  .xinfo { font-size: 13.5px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .xtiles { display: grid; grid-template-columns: repeat(auto-fill, 128px); gap: 6px; }
+  .xtiles canvas { width: 128px; height: 128px; border-radius: 6px; background: #000; }
+  .chipb { padding: 1px 8px; font-size: 12px; } .chipb.on { border-color: var(--data); color: var(--ink); }
+  .vbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 0 28px 14px; position: sticky; top: 0; background: var(--plane); z-index: 3; }
+  .vbar .vcount { font-size: 13.5px; color: var(--ink2); } .vbar .vcount b { color: var(--ink); font-size: 16px; }
+  .vtrack { flex: 1; min-width: 120px; height: 6px; background: var(--well); border-radius: 3px; overflow: hidden; }
+  .vtrack span { display: block; height: 100%; width: 100%; background: var(--data); transition: width .2s; }
+  .vgrid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; padding: 0 28px 40px; }
+  .vcol.on { border-color: var(--data); }
+  .vch { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; margin-bottom: 4px; }
+  svg.vh { width: 100%; height: 90px; display: block; cursor: crosshair; touch-action: none; }
+  .vlim { display: flex; gap: 6px; align-items: center; margin-top: 6px; font-size: 12.5px; }
+  .vlim input { width: 100%; min-width: 0; } .vlim .vx { padding: 1px 8px; }
   .cmpbar { display: flex; gap: 6px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--well); font-size: 13px; }
   .cmpbar span { margin-right: auto; color: var(--ink2); }
   .job.cmp { box-shadow: inset 3px 0 0 var(--you); }

@@ -97,6 +97,9 @@ class ExtractSettings:
     box_a: float = 0.0                  # box edge in A; 0: particle + CTF delocalisation at 2 um defocus and box_res_a
     box_res_a: float = 5.0              # (picking.box_for; T20S, 160 A: 318 A -> 250 px at 1.315 A)
     particle_apix: float = 0.0          # Fourier-bin particles to this pixel size (0: the micrograph's)
+    box_px: int = 0                     # or the final box (px) after Fourier cropping: the pixel size follows (box /
+                                        # box_px, not finer than the micrograph's); moved to the nearest FFT-friendly
+                                        # size (2^a 3^b 5^c). 0: from particle_apix
     dtype: str = "float16"
     dark: bool = True
     select: int = 0                     # a Select job: extract only its particles (by uid)
@@ -203,9 +206,66 @@ def extract_box(project: Project, picks: Job, s: ExtractSettings) -> dict:
     out_apix = max(s.particle_apix, mic_apix) if s.particle_apix else mic_apix
     box_a = s.box_a or pk.box_for(particle_a, 20000.0, max(s.box_res_a, 2 * out_apix),
                                   optics_of(project, mic_job).wavelength)
-    box = pk.suggest_box(box_a, out_apix)
+    if s.box_px:                                   # the final box chosen: the pixel size follows from it
+        box = nice_box(s.box_px)
+        out_apix = max(mic_apix, box_a / box)
+        if out_apix == mic_apix:                   # no upsampling: the box at the micrograph's pixel size
+            box = pk.suggest_box(box_a, mic_apix)
+    else:
+        box = pk.suggest_box(box_a, out_apix)
     out_apix = pk.binned_apix(box, mic_apix, out_apix)          # exact (the source box is an even number of pixels)
     return dict(particle_a=particle_a, box=box, out_apix=out_apix, box_a_used=round(box * out_apix, 1))
+
+
+def nice_box(n: int) -> int:
+    """The FFT-friendly even box (2^a 3^b 5^c) nearest to n px."""
+    return min((b for b in pk.NICE if b % 2 == 0), key=lambda b: (abs(b - n), -b))
+
+
+def extract_preview(project: Project, picks: Job, s: ExtractSettings, n_mics: int = 4, per_mic: int = 3,
+                    out_px: int = 128, seed: int = 0) -> dict:
+    """A few picked particles cut from their micrographs with room around the box, for judging particle and box size
+    before extracting: the box the settings give (extract_box), FFT-friendly box sizes near it, and the crops (PNG
+    data URLs, out_px across a field of view fov_a, centred on the pick)."""
+    import base64
+    import io
+    import mrcfile
+    from PIL import Image
+    from scipy.ndimage import gaussian_filter
+    b = extract_box(project, picks, s)
+    size_a = max(b.get("box_a_used", 0.0), b.get("particle_a", 0.0), float(picks.params.get("diameter_a") or 0)) or 300.0
+    fov_a = 1.5 * size_a
+    mics = project.micrographs(picks.params["micrographs"]).set_index("movie_id")
+    have = [int(m) for m in project.pick_table(picks)["movie_id"] if int(m) in mics.index]
+    rng = np.random.default_rng(seed)
+    crops = []
+    for mid in rng.permutation(have)[:n_mics]:
+        z = project.picks(picks, int(mid))
+        xy = z["xy_a"][np.asarray(z["keep"], bool)] if "keep" in z else z["xy_a"]
+        if not len(xy):
+            continue
+        row = mics.loc[int(mid)]
+        apix = float(row["apix"])
+        with mrcfile.mmap(project.abs(row["path"]) if not os.path.isabs(row["path"]) else row["path"], permissive=True) as f:
+            mic = f.data
+            h = int(round(fov_a / 2 / apix))
+            for k in rng.permutation(len(xy))[:per_mic]:
+                x, y = int(round(xy[k, 0] / apix)), int(round(xy[k, 1] / apix))
+                y0, y1, x0, x1 = max(0, y - h), min(mic.shape[0], y + h), max(0, x - h), min(mic.shape[1], x + h)
+                part = np.asarray(mic[y0:y1, x0:x1], np.float32)
+                c = np.full((2 * h, 2 * h), float(part.mean()) if part.size else 0.0, np.float32)   # off the edge: grey
+                c[y0 - (y - h):y1 - (y - h), x0 - (x - h):x1 - (x - h)] = part
+                c = gaussian_filter(c, max(2.0 * h / out_px / 2, 6.0 / apix))   # ~6 A: the particle, not the noise
+                lo, hi = np.percentile(c, [1, 99])
+                g = np.clip((c - lo) / max(hi - lo, 1e-9) * 255, 0, 255).astype(np.uint8)
+                im = Image.fromarray(g).resize((out_px, out_px), Image.LANCZOS)
+                buf = io.BytesIO()
+                im.save(buf, "PNG")
+                crops.append(dict(src="data:image/png;base64," + base64.b64encode(buf.getvalue()).decode(),
+                                  micrograph=str(row["stem"])))
+    box = b.get("box")
+    near = sorted({nb for nb in pk.NICE if nb % 2 == 0 and box and 0.75 * box <= nb <= 1.33 * box})
+    return dict(b, fov_a=round(fov_a, 1), crops=crops, nice=near[:12])
 
 
 def extract_label(s: ExtractSettings, b: dict) -> str:

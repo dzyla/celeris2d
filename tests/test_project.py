@@ -173,6 +173,30 @@ def test_jobs_picking_extraction_exports(tmp_path):
     ew = scheduler.change_settings(prj, ew, dict(particle_a=2 * DIAM))
     assert ew.params["particle_a"] == 2 * DIAM and ew.params["box_a_used"] >= 2 * DIAM
 
+    # Select by values (filtersel): any particle job's numbers; a Select of a Select keeps narrowing
+    from celeris2d import filtersel
+    from celeris2d.jobs import particle_source
+    v = filtersel.values(prj, ex)
+    assert {"score", "x_a"} <= set(v.columns) and len(v) == len(prj.particles(ex))   # (constant values left out)
+    cut = float(v["score"].median())
+    s1 = filtersel.select_by_values(prj, ex, [dict(col="score", min=cut, max=None)])
+    assert set(prj.selected_uids(s1)) == set(v["uid"][v["score"] >= cut])
+    s2 = filtersel.select_by_values(prj, s1, [dict(col="x_a", min=None, max=float(v["x_a"].median()))])
+    assert 0 < len(prj.selected_uids(s2)) < len(prj.selected_uids(s1))
+    assert set(prj.selected_uids(s2)) <= set(prj.selected_uids(s1))
+    assert particle_source(prj, s2).N == len(prj.selected_uids(s2))
+    with pytest.raises(ValueError, match="at least one"):
+        filtersel.select_by_values(prj, ex, [])
+
+    # Extract: a final box in px (the pixel size follows, FFT-friendly), and the preview of the box on picks
+    assert pl.nice_box(127) == 128 and pl.nice_box(250) == 256 and pl.nice_box(100) == 100
+    b0 = pl.extract_box(prj, pj, pl.ExtractSettings(particle_a=DIAM, box_a=1.5 * DIAM))
+    b1 = pl.extract_box(prj, pj, pl.ExtractSettings(particle_a=DIAM, box_a=1.5 * DIAM, box_px=b0["box"] // 2 + 3))
+    assert b1["box"] in pl.pk.NICE and b1["box"] < b0["box"] and b1["out_apix"] > b0["out_apix"]
+    assert abs(b1["box_a_used"] - 1.5 * DIAM) < 0.1 * DIAM
+    pv = pl.extract_preview(prj, pj, pl.ExtractSettings(particle_a=DIAM), n_mics=2, per_mic=2)
+    assert pv["box"] and 0 < len(pv["crops"]) <= 4 and pv["crops"][0]["src"].startswith("data:image/png")
+
 
 def _synthetic_project(tmp_path, rng):
     movies = []

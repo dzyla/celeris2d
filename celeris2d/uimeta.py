@@ -296,6 +296,9 @@ TYPES["Extract"] = dict(
                                    "at 2 µm defocus."),
         "particle_apix": B("Pixel size after binning (Å)", "Fourier-bin the particles to this pixel size (smaller "
                                                          "files, faster jobs). 0: keep the micrograph pixel size."),
+        "box_px": B("Box after binning (px)", "Or choose the final box in pixels: the pixel size follows (box Å / "
+                                              "px). Rounded to the nearest FFT-friendly size (2ᵃ3ᵇ5ᶜ). Empty: from "
+                                              "the pixel size above."),
         "select": B("Only selected particles", "A Select job: extract only its particles. 0: all picks.",
                     job_types=("Select",)),
         "recenter": B("Re-centre on aligned particles", "A 2D classification or 3D job: extract its particles, each "
@@ -410,6 +413,14 @@ TYPES["InitialModel"] = dict(
                                           "Empty: all populated classes."),
         "n_models": B("Number of maps", "More than 1: that many maps, with the particles sorted among them (ab "
                                         "initio 3D classes)."),
+        "seeds": F("How the maps start", "With several maps. Independent: every map is built from its own share of "
+                                         "the 2D classes, so different structures each get a start (heterogeneous "
+                                         "data). Consensus: one map first, then the particles are classified at its "
+                                         "poses (every class starts from the same structure).",
+                   section="3D classes", choices=[["independent", "Independent (one per map)"],
+                                                  ["consensus", "One consensus map, then split"]]),
+        "max_box": F("Largest map size (px)", "Caps the map box to save GPU memory and time (Nyquist gets coarser). "
+                                              "Empty or 0: the 2D classification's working box.", section="Memory"),
         "mask": F("Solvent mask", "Automatic: a mask made from the map every iteration once below 15 Å. None: the "
                                   "soft particle sphere only.", section="Masking",
                   choices=[["auto", "Automatic"], ["none", "None (soft sphere only)"]]),
