@@ -390,6 +390,23 @@ class Volume:
         self.den.zero_()
         self._open = False
 
+    def add_acc(self, other: "Volume"):
+        """Add another volume's accumulators (same grid, any device: another GPU's share of a back-projection)."""
+        if other.num is None:
+            return
+        self._acc()
+        self.num += other.num.to(self.dev)
+        self.den += other.den.to(self.dev)
+        self._open = self._open or other._open
+
+    def on(self, dev) -> "Volume":
+        """This spectrum on device dev (itself when it is there already): projections on another GPU."""
+        if torch.device(dev) == torch.device(self.dev):
+            return self
+        v = Volume(self.b, dev, pad=self.pad, ft=self.ft.to(dev), pre=self.pre, grid_correct=self.grid_correct)
+        v.mag = None if self.mag is None else self.mag.to(dev)
+        return v
+
     def free_acc(self):
         self.num = self.den = None
 
@@ -713,10 +730,17 @@ def _to_box(init, b: int, dev) -> torch.Tensor:
     return torch.fft.fftshift(torch.fft.ifftn(torch.fft.ifftshift(vb)).real)
 
 
+_PARALLEL = [0]      # shares running on several GPUs at once (on_devices)
+
+
 def _free(dev) -> float:
-    """Free memory on dev (bytes) after releasing PyTorch's cached blocks."""
+    """Free memory on dev (bytes) after releasing PyTorch's cached blocks. While on_devices runs shares concurrently
+    nothing is released (another thread's kernels may still use blocks its tensors just returned to the cache: unmapped,
+    an illegal memory access); the cached blocks count as free instead."""
     if torch.device(dev).type != "cuda":
         return 8e9
+    if _PARALLEL[0]:
+        return float(gpu_free(dev) + torch.cuda.memory_reserved(dev) - torch.cuda.memory_allocated(dev))
     release_cache()
     return float(gpu_free(dev))                 # CELERIS2D_VRAM_GB caps it
 
@@ -736,9 +760,70 @@ def working_box(clf, n_acc: int, n_ft: int, log=print) -> int:
     return b
 
 
+def _devices(clf) -> list:
+    return list(getattr(clf, "devs", None) or [clf.dev])
+
+
+def on_devices(clf, n: int, work, min_share: int = 2000) -> list:
+    """Run work(lo, hi, dev) over contiguous shares of range(n), one thread per GPU of clf (clf.devs; one share when
+    there is one GPU or few items). Returns the results in share order. CUDA work from several threads runs
+    concurrently; each share uses its own device's memory."""
+    devs = _devices(clf)
+    k = max(1, min(len(devs), n // max(1, min_share)))
+    if k == 1:
+        return [work(0, n, devs[0])]
+    cuts = [round(n * i / k) for i in range(k + 1)]
+    out, errs = [None] * k, []
+
+    def run(i):
+        try:
+            with torch.cuda.device(devs[i]):
+                out[i] = work(cuts[i], cuts[i + 1], devs[i])
+                torch.cuda.synchronize(devs[i])
+        except BaseException as e:      # noqa: BLE001 - re-raised in the caller's thread
+            errs.append(e)
+
+    import threading
+    th = [threading.Thread(target=run, args=(i,)) for i in range(k)]
+    _PARALLEL[0] += 1
+    try:
+        for x in th:
+            x.start()
+        for x in th:
+            x.join()
+    finally:
+        _PARALLEL[0] -= 1
+    if errs:
+        raise errs[0]
+    return out
+
+
+def _cat_to(parts: list, dev):
+    """Concatenate per-share results (tensors or tuples of tensors, first axis = items) on dev."""
+    if isinstance(parts[0], torch.Tensor):
+        return torch.cat([p.to(dev) for p in parts])
+    return tuple(torch.cat([p[i].to(dev) for p in parts]) for i in range(len(parts[0])))
+
+
+def global_search_multi(clf, idx, A, t, refs, half, res_a, step_deg, sigma2=None, **kw):
+    """global_search with the particles shared among clf's GPUs (refs copied to each); results on clf.dev."""
+    def work(lo, hi, d):
+        return global_search(clf, idx[lo:hi], A[lo:hi], t[lo:hi], [r.on(d) for r in refs], half[lo:hi], res_a, step_deg,
+                             None if sigma2 is None else sigma2.to(d), dev=d, **kw)
+    return _cat_to(on_devices(clf, len(idx), work), clf.dev)
+
+
+def score_poses_multi(clf, idx, A, t, refs, half, res_a, sigma2=None, **kw):
+    """score_poses with the particles shared among clf's GPUs; results on clf.dev."""
+    def work(lo, hi, d):
+        return score_poses(clf, idx[lo:hi], A[lo:hi], t[lo:hi], [r.on(d) for r in refs], half[lo:hi], res_a,
+                           sigma2=None if sigma2 is None else sigma2.to(d), dev=d, **kw)
+    return _cat_to(on_devices(clf, len(idx), work), clf.dev)
+
+
 def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs, half: torch.Tensor, res_a: float,
                   step_deg: float, sigma2: torch.Tensor | None = None, box: int | None = None, log=print,
-                  topk: int = 1, shifts: torch.Tensor | None = None, scaled: bool = False):
+                  topk: int = 1, shifts: torch.Tensor | None = None, scaled: bool = False, dev=None):
     """Exhaustive orientation search (whole sphere x all in-plane angles, shift kept) of particles against the
     half-set references refs = [ref_half0, ref_half1], as two GEMMs per chunk of orientations:
     ll = Re<ctf conj(x) e_t, P> / sigma2 - 0.5 <ctf^2 / sigma2, |P|^2>. Returns (best A (n, 3, 3), best ll (n,),
@@ -748,8 +833,9 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
     hypotheses (n, topk, 2).
     scaled: each hypothesis with its best contrast scale a >= 0 (cryoSPARC's per-particle scale): max_a a c - a^2 p / 2 =
     c^2 / 2p for c = Re<ctf conj(x) e_t, P> / sigma2 > 0, p = <ctf^2 / sigma2, |P|^2>; without it a faint particle
-    scores views with weak projections higher (the -p / 2 term), whatever its true view."""
-    dev = clf.dev
+    scores views with weak projections higher (the -p / 2 term), whatever its true view. dev: the GPU to work on (refs
+    must be there; default clf.dev)."""
+    dev = dev or clf.dev
     box_a, b = clf.box_a, box or clf.bmax
     n = len(idx)
     fy, fx = freqs(b, dev)
@@ -784,7 +870,7 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
     # than a 24 GB card had
     npc = int(max(256, min(n, 0.1 * free / (Fb * 12 + b * (b // 2 + 1) * 40))))
     npc = max(64, npc // S) if S > 1 else npc       # each offset's spectra and scores
-    hc = int(max(256, min(H, 0.15 * free / (npc * 20 + Fb * 24))))   # orientations per chunk (scores + projections)
+    hc = int(max(256, min(H, 0.15 * free / (npc * S * 20 + Fb * 24))))   # orientations per chunk (scores + projections)
     for h in (0, 1):
         sel_h = torch.nonzero(half.to(dev) == h).squeeze(1)
         for p0 in range(0, len(sel_h), npc):
@@ -800,28 +886,33 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
             P = refs[h].project(A[sel], band)
             c_, p_ = (X * P).real.sum(1), (C2 * P.abs() ** 2).sum(1)
             cur_ll[sel] = c_.clamp_min(0) ** 2 / (2 * p_.clamp_min(1e-30)) if scaled else c_ - 0.5 * p_
-            Xs = [X] if shifts is None else [X * e for e in Es]      # the spectra moved by each offset
-            Xr = [x_.real.contiguous() for x_ in Xs]
-            Xi = [x_.imag.contiguous() for x_ in Xs]
+            # the spectra moved by each offset, stacked: one GEMM per chunk for all offsets
+            Xs = X if shifts is None else (X[None] * Es[:, None]).reshape(S * len(sel), -1)
+            Xr = [Xs.real.contiguous()]
+            Xi = [Xs.imag.contiguous()]
             del X, Xs
             for c in range(0, H, hc):
                 P = refs[h].project(Ah[c:c + hc], band)                           # (Hc, F)
                 Pr, Pi, pw = P.real.T.contiguous(), P.imag.T.contiguous(), 0.5 * (C2 @ (P.abs() ** 2).T)
                 if S > 1:
-                    for si in range(S):
-                        c_ = Xr[si] @ Pr - Xi[si] @ Pi
-                        ll = c_.clamp_min(0) ** 2 / (4 * pw.clamp_min(1e-30)) if scaled else c_ - pw
-                        if topk > 1:
-                            v, k = torch.topk(torch.cat([top_ll[sel], ll], 1), topk, dim=1)
-                            hh = torch.cat([top_h[sel], torch.arange(c, c + ll.shape[1], device=dev).expand(len(sel), -1)], 1)
-                            ss = torch.cat([top_s[sel], torch.full_like(ll, si, dtype=torch.long)], 1)
-                            top_ll[sel], top_h[sel], top_s[sel] = v, hh.gather(1, k), ss.gather(1, k)
-                            continue
-                        v, k = ll.max(1)
-                        upd = v > best_ll[sel]
-                        best_ll[sel[upd]] = v[upd]
-                        best_h[sel[upd]] = k[upd] + c
-                        best_s[sel[upd]] = si
+                    # each orientation with its best offset, then one selection per chunk: a top-k over the
+                    # (orientation, offset) pairs per offset took 2/3 of a rescue (J20, 49 offsets: 334 s of 533)
+                    # and filled the list with one orientation at neighbouring offsets
+                    c_ = (Xr[0] @ Pr - Xi[0] @ Pi).view(S, len(sel), -1)                 # (S, m, Hc)
+                    ll = c_.clamp_min(0) ** 2 / (4 * pw[None].clamp_min(1e-30)) if scaled else c_ - pw[None]
+                    del c_
+                    ll, sb = ll.max(0)                                                   # (m, Hc)
+                    if topk > 1:
+                        v, k = torch.topk(torch.cat([top_ll[sel], ll], 1), topk, dim=1)
+                        hh = torch.cat([top_h[sel], torch.arange(c, c + ll.shape[1], device=dev).expand(len(sel), -1)], 1)
+                        ss = torch.cat([top_s[sel], sb], 1)
+                        top_ll[sel], top_h[sel], top_s[sel] = v, hh.gather(1, k), ss.gather(1, k)
+                        continue
+                    v, k = ll.max(1)
+                    upd = v > best_ll[sel]
+                    best_ll[sel[upd]] = v[upd]
+                    best_h[sel[upd]] = k[upd] + c
+                    best_s[sel[upd]] = sb.gather(1, k[:, None])[:, 0][upd]
                     continue
                 ll = Xr[0] @ Pr - Xi[0] @ Pi                                       # (n_chunk, Hc)
                 ll = ll.clamp_min(0) ** 2 / (4 * pw.clamp_min(1e-30)) if scaled else ll - pw
@@ -844,11 +935,12 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
 
 
 def score_poses(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs, half: torch.Tensor, res_a: float,
-                sigma2: torch.Tensor | None = None, box: int | None = None, shifts: torch.Tensor | None = None):
+                sigma2: torch.Tensor | None = None, box: int | None = None, shifts: torch.Tensor | None = None,
+                dev=None):
     """Log-likelihood of given candidate orientations per particle (same objective as global_search), each with the
     best of a grid of shift offsets. A: (n, J, 3, 3); t: (n, 2) shifts (A), or (n, J, 2) one per candidate; shifts: (S, 2)
-    offsets (A) added to t (None: t only). Returns ll (n, J) and the best shift (n, J, 2) (A)."""
-    dev = clf.dev
+    offsets (A) added to t (None: t only). Returns ll (n, J) and the best shift (n, J, 2) (A). dev: as global_search."""
+    dev = dev or clf.dev
     box_a, b = clf.box_a, box or clf.bmax
     n, J = A.shape[:2]
     fy, fx = freqs(b, dev)
@@ -1175,7 +1267,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     refine_particles.last_nu = refine_particles.last_nu_map = None
     n = len(idx)
     inits = inits if isinstance(inits, (list, tuple)) else [inits]
-    bp = int(max(64, min(2048, 2e8 // (b * (b // 2 + 1) * 8))))   # particles per back-projection batch
+    bp_n = int(max(64, min(2048, 2e8 // (b * (b // 2 + 1) * 8))))   # particles per back-projection batch
     M = len(inits)
     z = torch.zeros(n, dtype=torch.long, device=dev) if z is None else z.clone().to(dev).long()
     ops = symmetry_ops(sym).to(dev)
@@ -1241,61 +1333,86 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
         for vm in vols:
             for v in vm:
                 v.clear()
-        for i in range(0, n, bp):
-            j = idx[i:i + bp]
-            x = clf._fetch(j, dev, b)
-            ctf = ctf_2d(clf.ctf_p[j].to(dev), clf.optics, fy, fx, box_a)
-            zz = z[i:i + bp]
-            sl = ar_n[i:i + bp]
-            hh = half[i:i + bp].to(dev)
-            wp = wpart[i:i + bp]
-            ps = pscale[i:i + bp][:, None, None]
-            pp = post[i:i + bp]
-            if not soft:
-                tt, AA = t[sl, zz], A[sl, zz]
-                xs = x * torch.exp(1j * ph * (fx[None, None, :] * tt[:, 0, None, None] + fy[None, :, None] * tt[:, 1, None, None]))
-            for m in range(M):
-                kmax = min(b / 2 - 1, 1.3 * box_a / res[m] + 6)   # beyond the current resolution, so FSC can grow
-                kmax_used[m] = kmax
-                if soft:     # every particle at its pose in this model, weighted by its posterior
-                    tt, AA = t[sl, m], A[sl, m]
-                    xs = x * torch.exp(1j * ph * (fx[None, None, :] * tt[:, 0, None, None] + fy[None, :, None] * tt[:, 1, None, None]))
-                for h in (0, 1):
-                    sel = (hh == h) & (wp > 0) & ((pp[:, m] > 1e-3) if soft else (zz == m))
-                    if not sel.any():
-                        continue
-                    if marg_w is not None:     # every particle at its K best poses, weighted by their posterior
-                        for k in range(marg):
-                            wk = marg_w[sl, k]
-                            sk = sel & (wk > 1e-3)
-                            if not sk.any():
-                                continue
-                            Ak = marg_D[sl, k] @ AA
-                            tk = tt + marg_dt[sl, k]
-                            xk = x * torch.exp(1j * ph * (fx[None, None, :] * tk[:, 0, None, None] + fy[None, :, None] * tk[:, 1, None, None]))
-                            w3 = (wp[sk] * wk[sk])[:, None, None]
-                            vols[m][h].insert((xk * ctf)[sk] * (w3 * ps[sk]), (ctf * ctf)[sk] * (w3 * ps[sk] ** 2), Ak[sk],
-                                              kmax=kmax, ops=None if sym_after else ops)
-                        continue
-                    w3 = (wp[sel] * (pp[sel, m] if soft else 1.0))[:, None, None]
-                    vols[m][h].insert((xs * ctf)[sel] * (w3 * ps[sel]), (ctf * ctf)[sel] * (w3 * ps[sel] ** 2), AA[sel],
-                                      kmax=kmax,
-                                      ops=None if sym_after else ops)
-            if subvols is not None:                  # the folds, on their small box
-                bs_ = subvols[0][0].b
-                fys, fxs = subvols[0][0].fy, subvols[0][0].fx
-                x_s = ft_resize(x, bs_)                     # the batch already fetched, cropped (not read again)
-                c_s = ctf_2d(clf.ctf_p[j].to(dev), clf.optics, fys, fxs, box_a)
-                tt, AA = t[sl, zz], A[sl, zz]
-                xs_s = x_s * torch.exp(1j * ph * (fxs[None, None, :] * tt[:, 0, None, None] + fys[None, :, None] * tt[:, 1, None, None]))
-                ff = fold[i:i + bp].to(dev)
-                for h in (0, 1):
-                    for f_ in (0, 1):
-                        sel = (hh == h) & (ff == f_) & (wp > 0)
-                        if sel.any():
-                            w3 = wp[sel][:, None, None]
-                            subvols[h][f_].insert((xs_s * c_s)[sel] * (w3 * ps[sel]), (c_s * c_s)[sel] * (w3 * ps[sel] ** 2),
-                                                  AA[sel], kmax=bs_ / 2 - 1)
+
+        def bp(lo, hi, d):
+            """Particles lo..hi inserted on GPU d: into vols / subvols on the master, else into this GPU's own
+            accumulators (added to the master's afterwards)."""
+            if torch.device(d) == torch.device(dev):
+                vd, sd = vols, subvols
+            else:
+                vd = [[Volume(b, d, pad=pad, grid_correct=gc) for _ in (0, 1)] for _ in range(M)]
+                sd = None if subvols is None else [[Volume(subvols[0][0].b, d, pad=1, grid_correct=True)
+                                                    for _ in (0, 1)] for _ in (0, 1)]
+            fy_d, fx_d = fy.to(d), fx.to(d)
+            ops_d = None if sym_after else ops.to(d)
+            for i in range(lo, hi, bp_n):
+                i2 = min(i + bp_n, hi)
+                j = idx[i:i2]
+                x = clf._fetch(j, d, b)
+                ctf = ctf_2d(clf.ctf_p[j].to(d), clf.optics, fy_d, fx_d, box_a)
+                zz = z[i:i2].to(d)
+                hh = half[i:i2].to(d)
+                wp = wpart[i:i2].to(d)
+                ps = pscale[i:i2].to(d)[:, None, None]
+                pp = post[i:i2].to(d)
+                At, tt_all = A[i:i2].to(d), t[i:i2].to(d)
+                arl = torch.arange(i2 - i, device=d)
+                if not soft:
+                    tt, AA = tt_all[arl, zz], At[arl, zz]
+                    xs = x * torch.exp(1j * ph * (fx_d[None, None, :] * tt[:, 0, None, None] + fy_d[None, :, None] * tt[:, 1, None, None]))
+                for m in range(M):
+                    kmax = min(b / 2 - 1, 1.3 * box_a / res[m] + 6)   # beyond the current resolution, so FSC can grow
+                    kmax_used[m] = kmax
+                    if soft:     # every particle at its pose in this model, weighted by its posterior
+                        tt, AA = tt_all[:, m], At[:, m]
+                        xs = x * torch.exp(1j * ph * (fx_d[None, None, :] * tt[:, 0, None, None] + fy_d[None, :, None] * tt[:, 1, None, None]))
+                    for h in (0, 1):
+                        sel = (hh == h) & (wp > 0) & ((pp[:, m] > 1e-3) if soft else (zz == m))
+                        if not sel.any():
+                            continue
+                        if marg_w is not None:     # every particle at its K best poses, weighted by their posterior
+                            mw, mD, mdt = marg_w[i:i2].to(d), marg_D[i:i2].to(d), marg_dt[i:i2].to(d)
+                            for k in range(marg):
+                                wk = mw[:, k]
+                                sk = sel & (wk > 1e-3)
+                                if not sk.any():
+                                    continue
+                                Ak = mD[:, k] @ AA
+                                tk = tt + mdt[:, k]
+                                xk = x * torch.exp(1j * ph * (fx_d[None, None, :] * tk[:, 0, None, None] + fy_d[None, :, None] * tk[:, 1, None, None]))
+                                w3 = (wp[sk] * wk[sk])[:, None, None]
+                                vd[m][h].insert((xk * ctf)[sk] * (w3 * ps[sk]), (ctf * ctf)[sk] * (w3 * ps[sk] ** 2), Ak[sk],
+                                                kmax=kmax, ops=ops_d)
+                            continue
+                        w3 = (wp[sel] * (pp[sel, m] if soft else 1.0))[:, None, None]
+                        vd[m][h].insert((xs * ctf)[sel] * (w3 * ps[sel]), (ctf * ctf)[sel] * (w3 * ps[sel] ** 2), AA[sel],
+                                        kmax=kmax, ops=ops_d)
+                if sd is not None:                  # the folds, on their small box
+                    bs_ = sd[0][0].b
+                    fys, fxs = sd[0][0].fy, sd[0][0].fx
+                    x_s = ft_resize(x, bs_)                     # the batch already fetched, cropped (not read again)
+                    c_s = ctf_2d(clf.ctf_p[j].to(d), clf.optics, fys, fxs, box_a)
+                    tt, AA = tt_all[arl, zz], At[arl, zz]
+                    xs_s = x_s * torch.exp(1j * ph * (fxs[None, None, :] * tt[:, 0, None, None] + fys[None, :, None] * tt[:, 1, None, None]))
+                    ff = fold[i:i2].to(d)
+                    for h in (0, 1):
+                        for f_ in (0, 1):
+                            sel = (hh == h) & (ff == f_) & (wp > 0)
+                            if sel.any():
+                                w3 = wp[sel][:, None, None]
+                                sd[h][f_].insert((xs_s * c_s)[sel] * (w3 * ps[sel]), (c_s * c_s)[sel] * (w3 * ps[sel] ** 2),
+                                                 AA[sel], kmax=bs_ / 2 - 1)
+            return vd, sd
+
+        for vd, sd in on_devices(clf, n, bp):
+            if vd is not vols:                       # another GPU's share
+                for m in range(M):
+                    for h in (0, 1):
+                        vols[m][h].add_acc(vd[m][h])
+                if sd is not None:
+                    for h in (0, 1):
+                        for f_ in (0, 1):
+                            subvols[h][f_].add_acc(sd[h][f_])
         for vm in (vols if sym_after else []) + (subvols or []):   # the folds only choose cutoffs: resampled at pad 1 too
             for v in vm:
                 v.symmetrize(ops)
@@ -1343,7 +1460,10 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                     else:                   # the masked average and half difference, once each (box 512: memory)
                         cur_masks[m] = None
                         avg_ = (h1_ + h2_).mul_(0.5).mul_(mask)
-                        dif_ = (h1_ - h2_).mul_(0.5).mul_(mask)
+                        # the noise from the whole box: masked to the sphere, the low-passed difference is ~0 over
+                        # most of it, its MAD ~0, and the threshold fell to the 3 % of peak floor (J341 mask 1.21 vs
+                        # 1.12 M A^3 with the noise measured; cryoSPARC's 1.04)
+                        dif_ = (h1_ - h2_).mul_(0.5)
                         try:
                             cur_masks[m] = auto_mask(avg_, box_a / b, res_a=res[m], k_sigma=5.0, halves=(dif_, None),
                                                      diameter_a=diam)
@@ -1428,7 +1548,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             g_res = max(global_res, al_res)
             g_step = global_step(g_res, diam)
             tg = time.time()
-            Ag, llg, llc = global_search(clf, idx, A[:, 0], t[:, 0], refs[0], half, g_res, g_step, sigma2, box=b,
+            Ag, llg, llc = global_search_multi(clf, idx, A[:, 0], t[:, 0], refs[0], half, g_res, g_step, sigma2, box=b,
                                          log=log)
             # adopt the global pose only if it is clearly better (a few units of log-likelihood): grid noise
             # between equivalent poses must not move particles around
@@ -1468,7 +1588,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                 g1_ = max(3.0, r_res / 3)       # r_res / 5: same poses and maps, the search 2x slower (HCN1, J341)
                 gg_ = torch.arange(-rescue_shift, rescue_shift + 0.01, g1_)
                 wide_ = torch.stack(torch.meshgrid(gg_, gg_, indexing="xy"), -1).reshape(-1, 2)
-                Ak_, _, _, tk_ = global_search(clf, idx[w_], A[w_, 0], t[w_, 0], refs[0], half[w_], r_res, s1_, sigma2,
+                Ak_, _, _, tk_ = global_search_multi(clf, idx[w_], A[w_, 0], t[w_, 0], refs[0], half[w_], r_res, s1_, sigma2,
                                                box=b, log=log, shifts=wide_, topk=4 * rescue_topk)
                 ts_ = [time.time() - tr_]
                 # neighbours of one basin crowd the top of the list: keep rescue_topk distinct ones
@@ -1485,7 +1605,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                 nK_, nR_ = Ac_.shape[1], len(R1_)
                 nb_ = (R1_[None, None] @ Ac_[:, :, None]).reshape(len(w_), nK_ * nR_, 3, 3)
                 tb_ = tc_[:, :, None].expand(-1, -1, nR_, -1).reshape(len(w_), nK_ * nR_, 2)
-                ll1_, ts1_ = score_poses(clf, idx[w_], nb_, tb_, refs[0], half[w_], m_res, sigma2=sigma2, box=b, shifts=off1_)
+                ll1_, ts1_ = score_poses_multi(clf, idx[w_], nb_, tb_, refs[0], half[w_], m_res, sigma2=sigma2, box=b, shifts=off1_)
                 ll1_, ts1_ = ll1_.reshape(len(w_), nK_, nR_).cpu(), ts1_.reshape(len(w_), nK_, nR_, 2).cpu()
                 ts_.append(time.time() - tr_)
                 v1_, k1_ = ll1_.max(2)                                                  # best neighbour per candidate
@@ -1497,7 +1617,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                 tg = t1_[ar_, top3]
                 nb_ = (Rp_[None, None] @ Ag[:, :, None]).reshape(len(w_), -1, 3, 3)
                 tb_ = tg[:, :, None].expand(-1, -1, len(Rp_), -1).reshape(len(w_), -1, 2)
-                ll2_, ts2_ = score_poses(clf, idx[w_], nb_, tb_, refs[0], half[w_], p_res, sigma2=sigma2, box=b, shifts=fine_)
+                ll2_, ts2_ = score_poses_multi(clf, idx[w_], nb_, tb_, refs[0], half[w_], p_res, sigma2=sigma2, box=b, shifts=fine_)
                 k2_ = ll2_.argmax(1).cpu()
                 ar1_ = torch.arange(len(w_))
                 found = (ll2_.max(1).values.cpu(), nb_[ar1_, k2_], ts2_.cpu()[ar1_, k2_])
@@ -1505,7 +1625,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             else:
                 gg_ = torch.arange(-rescue_shift, rescue_shift + 0.01, 3.0)
                 wide_ = torch.stack(torch.meshgrid(gg_, gg_, indexing="xy"), -1).reshape(-1, 2)
-                Ag, _, _, tg = global_search(clf, idx[w_], A[w_, 0], t[w_, 0], refs[0], half[w_], r_res,
+                Ag, _, _, tg = global_search_multi(clf, idx[w_], A[w_, 0], t[w_, 0], refs[0], half[w_], r_res,
                                              max(6.0, global_step(r_res, diam)), sigma2, box=b, log=log, shifts=wide_)
                 found = None
                 ts_ = []
@@ -1514,7 +1634,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             pol = []
             for Ac_, tc_ in ((A[w_, 0].cpu(), t[w_, 0].cpu()),) + ((((Ag.cpu(), tg.cpu())),) if found is None else ()):
                 nb_ = Rp_[None] @ Ac_[:, None]
-                ll_, tb_ = score_poses(clf, idx[w_], nb_, tc_, refs[0], half[w_], p_res, sigma2=sigma2, box=b, shifts=fine_)
+                ll_, tb_ = score_poses_multi(clf, idx[w_], nb_, tc_, refs[0], half[w_], p_res, sigma2=sigma2, box=b, shifts=fine_)
                 k_ = ll_.argmax(1).cpu()
                 ar_ = torch.arange(len(w_))
                 pol.append((ll_.max(1).values.cpu(), nb_[ar_, k_], tb_.cpu()[ar_, k_]))
@@ -1556,97 +1676,117 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             sigma2 = torch.ones(int(kr.max()) + 2, device=dev)
         shb = torch.round(kr[band]).long()
         isig = 1.0 / sigma2[shb]
-        res_pow = torch.zeros_like(sigma2)
-        res_cnt = torch.zeros_like(sigma2)
-        changed, switched = 0.0, 0
-        # particles per search batch: projections, CTF-weighted copies and products (~4 complex arrays of
-        # M x J x F per particle) must fit in a third of the free memory
         Fb = int(band.sum())
-        bt = int(max(8, min(batch, _free(dev) / 4 / (M * J * Fb * 8 * 4 + M * J * Sh * 8))))
         llm_all = torch.zeros((n, M), device=dev)
         if marg:
             marg_D = torch.eye(3, device=dev).repeat(n, marg, 1, 1)
             marg_dt = torch.zeros((n, marg, 2), device=dev)
             marg_w = torch.zeros((n, marg), device=dev)
-        for i in range(0, n, bt):
-            j = idx[i:i + bt]
-            nb = len(j)
-            hh = half[i:i + bt].to(dev)
-            x = clf._fetch_align(j, dev, b)[:, band]                    # (nb, F)
-            ctf = ctf_2d(clf.ctf_p[j].to(dev), clf.optics, fy, fx, box_a)[:, band]
-            if xo:   # around every symmetry-related copy of the pose: (nb, M, J0 * S, 3, 3)
-                Ac = (Rc[None, None, :, None] @ (A[i:i + bt][:, :, None, None] @ ops_x[None, None, None])).reshape(
-                    nb, M, J, 3, 3)
-            else:
-                Ac = Rc[None, None] @ A[i:i + bt][:, :, None]     # (nb, M, J, 3, 3): around the pose in each model
-            P = torch.empty((nb, M, J, x.shape[1]), dtype=torch.complex64, device=dev)
-            for m in range(M):
-                for h in (0, 1):
-                    sel = torch.nonzero(hh == h).squeeze(1)
-                    if len(sel):
-                        P[sel, m] = refs[m][h].project(Ac[sel, m].reshape(-1, 3, 3), band).reshape(len(sel), J, -1)
-            CP = P * ctf[:, None, None]
-            tt = t[i:i + bt]                                                                            # (nb, M, 2)
-            # shift hypotheses t + sg: model = exp(-i ph f.(t+s)) CP
-            e_t = torch.exp(-1j * ph * (fxb * tt[..., 0, None] + fyb * tt[..., 1, None]))             # (nb, M, F)
-            Z = (x.conj()[:, None] * e_t)[:, :, None] * CP * isig                                       # (nb, M, J, F)
-            cross = (Z @ E.T).real                                                                      # (nb, M, J, Sh)
-            pw = (CP.abs() ** 2 * isig).sum(-1)                                                         # (nb, M, J)
-            aa = pscale[i:i + bt][:, None, None, None]                                                  # contrast scale
-            ll = (aa * cross - 0.5 * aa * aa * pw[..., None])                                           # (nb, M, J, Sh)
-            if limited:     # hypotheses beyond the angular / shift limits around the starting pose are not searched
-                okm = torch.ones(ll.shape, dtype=torch.bool, device=dev)
-                if max_angle is not None:      # trace(Ac limit_A^T) = 1 + 2 cos(angle between them)
-                    tr = (Ac * limit_A[i:i + bt][:, None, None]).sum((-1, -2))                         # (nb, M, J)
-                    okm &= (tr >= cos_lim)[..., None]
-                if max_shift is not None:
-                    dsh = tt[:, :, None, :] + sg[None, None] - limit_t[i:i + bt][:, None, None]           # (nb, M, Sh, 2)
-                    okm &= (dsh.norm(dim=-1) <= max_shift + 1e-3)[:, :, None, :]
-                ll = ll.masked_fill(~okm, -float("inf"))
-                okm = None
-            ll = ll.reshape(nb, M, -1)
-            llm, bjs = ll.max(-1)                                                                       # best pose per model
-            if not all(alive):
-                llm[:, [m for m in range(M) if not alive[m]]] = -float("inf")
-            bj, bs = bjs // Sh, bjs % Sh                                                                # (nb, M)
-            bm = llm.argmax(1)
-            llm_all[i:i + bt] = llm
-            ar = torch.arange(nb, device=dev)
-            arm = torch.arange(M, device=dev)
-            if marg:                      # the K best hypotheses (the first is the best), relative to the best
-                lk, ik = ll[:, 0].topk(marg, dim=1)
-                Ak_ = Ac[ar[:, None], 0, ik // Sh]                                                     # (nb, K, 3, 3)
-                tk_ = tt[:, 0, None] + sg[ik % Sh]                                                     # (nb, K, 2)
-                marg_D[i:i + bt] = Ak_ @ Ak_[:, :1].transpose(-1, -2)
-                marg_dt[i:i + bt] = tk_ - tk_[:, :1]
-                marg_w[i:i + bt] = torch.softmax(lk, dim=1)
-            A[i:i + bt] = Ac[ar[:, None], arm[None], bj]
-            t[i:i + bt] = tt + sg[bs]
-            if subpixel and Sh == 9:       # parabola through the 3 shift log-likelihoods along x and along y
-                lg = ll.reshape(nb, M, J, 3, 3)[ar[:, None], arm[None], bj]                                # (nb, M, y, x)
-                iy, ix = bs // 3, bs % 3
-                ds = float(ts[2] - ts[1])
-                for ax, ic in ((0, ix), (1, iy)):            # t[..., 0] is x (grid columns), t[..., 1] is y (rows)
-                    line = lg[ar[:, None], arm[None], iy, :] if ax == 0 else lg[ar[:, None], arm[None], :, ix]
-                    l0, l1, l2 = line[..., 0], line[..., 1], line[..., 2]
-                    curv = l0 - 2 * l1 + l2
-                    off = (0.5 * (l0 - l2) / curv.clamp(max=-1e-9)).clamp(-0.5, 0.5)
-                    ok = (ic == 1) & (curv < 0) & torch.isfinite(off)
-                    t[i:i + bt, :, ax] += torch.where(ok, off, torch.zeros_like(off)) * ds
-            switched += int((bm != z[i:i + bt]).sum())
-            z[i:i + bt] = bm
-            bj, bs = bj[ar, bm], bs[ar, bm]
-            changed += float((bj != jc).float().sum() + (bs != Sh // 2).float().sum()) / 2
-            # residual power for the noise model
-            pscale_new[i:i + bt] = cross[ar, bm, bj, bs] / pw[ar, bm, bj].clamp_min(1e-30)          # LS scale at the pose
-            mdl = CP[ar, bm, bj] * e_t[ar, bm] * E[bs] * pscale[i:i + bt][:, None]
-            score[i:i + bt] = ((x.conj() * mdl).real.sum(1)
-                               / ((x.abs() ** 2).sum(1) * (mdl.abs() ** 2).sum(1)).sqrt().clamp_min(1e-12))
-            r2 = (x - mdl).abs() ** 2
-            res_pow.index_add_(0, shb, r2.sum(0))
-            res_cnt.index_add_(0, shb, torch.full_like(shb, nb, dtype=torch.float32))
-        # the last batch's arrays (sized from free memory: gigabytes) are not needed through the back-projection
-        P = CP = Z = cross = pw = ll = e_t = mdl = r2 = x = ctf = Ac = None
+
+        def estep(lo, hi, d):
+            """The local search of particles lo..hi on GPU d (references copied there); poses, scores and model
+            choices written into the master arrays. Returns (moved, switched, residual power, counts) of the share."""
+            refs_d = [[r.on(d) for r in rm] for rm in refs]
+            band_d, fy_d, fx_d = band.to(d), fy.to(d), fx.to(d)
+            fyb_d, fxb_d, E_d, isig_d, shb_d, Rc_d, sg_d = (v_.to(d) for v_ in (fyb, fxb, E, isig, shb, Rc, sg))
+            ops_d = ops_x.to(d) if xo else None
+            rp, rc = torch.zeros(len(sigma2), device=d), torch.zeros(len(sigma2), device=d)
+            ch_, sw_ = 0.0, 0
+            ar_m = torch.arange(M, device=d)
+            # particles per search batch: projections, CTF-weighted copies and products (~4 complex arrays of
+            # M x J x F per particle) must fit in a third of the free memory
+            bt = int(max(8, min(batch, _free(d) / 4 / (M * J * Fb * 8 * 4 + M * J * Sh * 8))))
+            for i in range(lo, hi, bt):
+                i2 = min(i + bt, hi)
+                j = idx[i:i2]
+                nb = len(j)
+                hh = half[i:i2].to(d)
+                x = clf._fetch_align(j, d, b)[:, band_d]                    # (nb, F)
+                ctf = ctf_2d(clf.ctf_p[j].to(d), clf.optics, fy_d, fx_d, box_a)[:, band_d]
+                Ai = A[i:i2].to(d)
+                if xo:   # around every symmetry-related copy of the pose: (nb, M, J0 * S, 3, 3)
+                    Ac = (Rc_d[None, None, :, None] @ (Ai[:, :, None, None] @ ops_d[None, None, None])).reshape(
+                        nb, M, J, 3, 3)
+                else:
+                    Ac = Rc_d[None, None] @ Ai[:, :, None]     # (nb, M, J, 3, 3): around the pose in each model
+                P = torch.empty((nb, M, J, x.shape[1]), dtype=torch.complex64, device=d)
+                for m in range(M):
+                    for h in (0, 1):
+                        sel = torch.nonzero(hh == h).squeeze(1)
+                        if len(sel):
+                            P[sel, m] = refs_d[m][h].project(Ac[sel, m].reshape(-1, 3, 3), band_d).reshape(len(sel), J, -1)
+                CP = P * ctf[:, None, None]
+                del P
+                tt = t[i:i2].to(d)                                                                          # (nb, M, 2)
+                # shift hypotheses t + sg: model = exp(-i ph f.(t+s)) CP
+                e_t = torch.exp(-1j * ph * (fxb_d * tt[..., 0, None] + fyb_d * tt[..., 1, None]))         # (nb, M, F)
+                Z = (x.conj()[:, None] * e_t)[:, :, None] * CP * isig_d                                     # (nb, M, J, F)
+                cross = (Z @ E_d.T).real                                                                    # (nb, M, J, Sh)
+                del Z
+                pw = (CP.abs() ** 2 * isig_d).sum(-1)                                                       # (nb, M, J)
+                ps_i = pscale[i:i2].to(d)
+                aa = ps_i[:, None, None, None]                                                              # contrast scale
+                ll = (aa * cross - 0.5 * aa * aa * pw[..., None])                                           # (nb, M, J, Sh)
+                if limited:     # hypotheses beyond the angular / shift limits around the starting pose are not searched
+                    okm = torch.ones(ll.shape, dtype=torch.bool, device=d)
+                    if max_angle is not None:      # trace(Ac limit_A^T) = 1 + 2 cos(angle between them)
+                        tr = (Ac * limit_A[i:i2].to(d)[:, None, None]).sum((-1, -2))                       # (nb, M, J)
+                        okm &= (tr >= cos_lim)[..., None]
+                    if max_shift is not None:
+                        dsh = tt[:, :, None, :] + sg_d[None, None] - limit_t[i:i2].to(d)[:, None, None]     # (nb, M, Sh, 2)
+                        okm &= (dsh.norm(dim=-1) <= max_shift + 1e-3)[:, :, None, :]
+                    ll = ll.masked_fill(~okm, -float("inf"))
+                    okm = None
+                ll = ll.reshape(nb, M, -1)
+                llm, bjs = ll.max(-1)                                                                       # best pose per model
+                if not all(alive):
+                    llm[:, [m for m in range(M) if not alive[m]]] = -float("inf")
+                bj, bs = bjs // Sh, bjs % Sh                                                                # (nb, M)
+                bm = llm.argmax(1)
+                llm_all[i:i2] = llm.to(dev)
+                ar = torch.arange(nb, device=d)
+                if marg:                      # the K best hypotheses (the first is the best), relative to the best
+                    lk, ik = ll[:, 0].topk(marg, dim=1)
+                    Ak_ = Ac[ar[:, None], 0, ik // Sh]                                                     # (nb, K, 3, 3)
+                    tk_ = tt[:, 0, None] + sg_d[ik % Sh]                                                   # (nb, K, 2)
+                    marg_D[i:i2] = (Ak_ @ Ak_[:, :1].transpose(-1, -2)).to(dev)
+                    marg_dt[i:i2] = (tk_ - tk_[:, :1]).to(dev)
+                    marg_w[i:i2] = torch.softmax(lk, dim=1).to(dev)
+                A[i:i2] = Ac[ar[:, None], ar_m[None], bj].to(dev)
+                t_new = tt + sg_d[bs]
+                if subpixel and Sh == 9:       # parabola through the 3 shift log-likelihoods along x and along y
+                    lg = ll.reshape(nb, M, J, 3, 3)[ar[:, None], ar_m[None], bj]                            # (nb, M, y, x)
+                    iy, ix = bs // 3, bs % 3
+                    ds = float(ts[2] - ts[1])
+                    for ax, ic in ((0, ix), (1, iy)):            # t[..., 0] is x (grid columns), t[..., 1] is y (rows)
+                        line = lg[ar[:, None], ar_m[None], iy, :] if ax == 0 else lg[ar[:, None], ar_m[None], :, ix]
+                        l0, l1, l2 = line[..., 0], line[..., 1], line[..., 2]
+                        curv = l0 - 2 * l1 + l2
+                        off = (0.5 * (l0 - l2) / curv.clamp(max=-1e-9)).clamp(-0.5, 0.5)
+                        ok = (ic == 1) & (curv < 0) & torch.isfinite(off)
+                        t_new[:, :, ax] += torch.where(ok, off, torch.zeros_like(off)) * ds
+                t[i:i2] = t_new.to(dev)
+                sw_ += int((bm != z[i:i2].to(d)).sum())
+                z[i:i2] = bm.to(dev)
+                bj, bs = bj[ar, bm], bs[ar, bm]
+                ch_ += float((bj != jc).float().sum() + (bs != Sh // 2).float().sum()) / 2
+                # residual power for the noise model
+                pscale_new[i:i2] = (cross[ar, bm, bj, bs] / pw[ar, bm, bj].clamp_min(1e-30)).to(dev)   # LS scale at the pose
+                mdl = CP[ar, bm, bj] * e_t[ar, bm] * E_d[bs] * ps_i[:, None]
+                score[i:i2] = ((x.conj() * mdl).real.sum(1)
+                               / ((x.abs() ** 2).sum(1) * (mdl.abs() ** 2).sum(1)).sqrt().clamp_min(1e-12)).to(dev)
+                r2 = (x - mdl).abs() ** 2
+                rp.index_add_(0, shb_d, r2.sum(0))
+                rc.index_add_(0, shb_d, torch.full_like(shb_d, nb, dtype=torch.float32))
+                CP = cross = pw = ll = e_t = mdl = r2 = x = ctf = Ac = None
+            return ch_, sw_, rp, rc
+
+        parts_ = on_devices(clf, n, estep)
+        changed = sum(p_[0] for p_ in parts_)
+        switched = sum(p_[1] for p_ in parts_)
+        res_pow = sum(p_[2].to(dev) for p_ in parts_)
+        res_cnt = sum(p_[3].to(dev) for p_ in parts_)
+        parts_ = None
         if marg:
             q_ = torch.quantile(marg_w[torch.randperm(n, device=dev)[:100000], 0], torch.tensor([0.1, 0.5, 0.9], device=dev))
             log(f"[3d] marginalisation: weight of the best of {marg} poses 10 / 50 / 90 % {float(q_[0]):.2f} / "

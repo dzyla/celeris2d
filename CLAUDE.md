@@ -109,6 +109,9 @@ Layers, bottom to top:
   process there, so an overrun is an out-of-memory error instead of WSL spilling GPU memory into system RAM (many
   times slower). Big 3D intermediates: free what the next phase does not need (accumulators after the solve,
   references before back-projection), work in slabs, build projection-only volumes on the band's box.
+  `refine_particles` shares the particles among `clf.devs` (`abinitio.on_devices`: local search, rescue searches,
+  back-projection into per-GPU accumulators added on the master); inside those threads `_free` never releases the
+  cache (an unmapped block another GPU's kernels still use: illegal memory access).
 - **3D volumes** (`abinitio.Volume`): 2x-padded full complex grids, 64 b^3 bytes each; `refine_particles` picks
   pad 1 (gridding-corrected) when pad 2 does not fit (box 512 in 16 GB), `Volume.real` / `set_real` work in slabs.
   Symmetry in `refine_particles` (pad 2): each image inserted once, then `Volume.symmetrize` resamples the
