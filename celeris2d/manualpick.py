@@ -13,8 +13,13 @@ user reviewed keep exactly their picks. The output is a Pick job's: a "picks" ta
 
 Interactive state (dashboard process): jobs/NNN/data/jNNN_manualpick.json - per micrograph (movie id) the user's
 picks [x_a, y_a, src] (src 0: clicked, 1: an accepted suggestion), the rejected suggestions [x_a, y_a], and its state
-("suggested": suggestions not yet checked, "reviewed": picks final); the score range (threshold, threshold_hi: an
-upper limit - dark contamination scores high against dark templates); templates switched off ("off": their candidates
+("suggested": suggestions not yet checked, "reviewed": picks final) and its painted zones ([x_a, y_a, r_a, +1 excluded /
+-1 not], in order); the lowest template score (threshold) and the power range (power_lo / power_hi: cryoSPARC's
+Inspect Picks power score - the local standard deviation of the band-passed micrograph over its median; high:
+carbon edges, ice, contamination, aggregates; low: empty ice); excluded zones found by themselves (zone_maps: cells
+of half a diameter denser than ~8 diameters around them by more than zone_dark robust standard deviations - ethane /
+ice balls, carbon edges - or over ~4 diameters denser than the micrograph's median by more than zone_mean - carbon,
+thick ice); templates switched off ("off": their candidates
 are never picked, and the picks that made them - data/jNNN_members.json, each training pick's template - are "junk":
 left out of the next trainings and scored as negatives, until put back); the templates' version and training numbers. Every pick trains (clicked and accepted, on any
 micrograph), whatever the micrograph's state. Templates: maps/jNNN_templates.mrcs (white protein at the picker's working pixel size, diameter/20).
@@ -53,7 +58,9 @@ class ManualPickSettings:
     min_dist_frac: float = 0.5          # x diameter: the closest two picks may be (template picker and Pick all)
 
 
-MAX_STD, MAX_MEAN = 2.0, 3.0            # contamination filters of picking.select (the Pick job's defaults)
+MAX_STD, MAX_MEAN = 2.0, 3.0            # contamination filters of picking.select (the Pick job's defaults); MAX_STD is
+                                        # the default power_hi here
+ZONE_DARK, ZONE_MEAN = 6.0, 5.0         # default zones (robust sd): contamination, carbon / thick ice - see zone_maps
 MATCH = 0.3                             # x diameter: a pick and a candidate this close are the same particle
 MAX_TRAIN = 3000                        # picks used for templates at most (random subset beyond)
 
@@ -96,8 +103,9 @@ def _state_path(job: Job) -> str:
 
 def load_state(job: Job) -> dict:
     p = _state_path(job)
-    st = dict(mics={}, threshold=None, threshold_hi=None, off=[], junk={}, junk_base={}, version=0, train=None,
-              t_edit=0.0)
+    st = dict(mics={}, threshold=None, power_lo=None, power_hi=MAX_STD, zone_dark=ZONE_DARK, zone_mean=ZONE_MEAN,
+              off=[], junk={},
+              junk_base={}, version=0, train=None, t_edit=0.0)
     if os.path.exists(p):
         with open(p) as fh:
             st.update(json.load(fh))
@@ -134,8 +142,10 @@ def _editable(job: Job):
         raise ValueError(f"{job.name} is {job.status}: picks can change when it has finished (or stop it)")
 
 
-def set_picks(project: Project, job, stem: str, picks=None, rejected=None, state: str | None = None) -> dict:
-    """Store one micrograph's picks ([x_a, y_a, src]), rejected suggestions ([x_a, y_a]) and state."""
+def set_picks(project: Project, job, stem: str, picks=None, rejected=None, state: str | None = None,
+              zones=None) -> dict:
+    """Store one micrograph's picks ([x_a, y_a, src]), rejected suggestions ([x_a, y_a]), state and painted zones
+    ([x_a, y_a, r_a, +1 / -1])."""
     job = project.job(job)
     _editable(job)
     mid = str(movie_of(project, job, stem))
@@ -146,12 +156,15 @@ def set_picks(project: Project, job, stem: str, picks=None, rejected=None, state
             m["picks"] = [[round(float(p[0]), 1), round(float(p[1]), 1), int(p[2]) if len(p) > 2 else 0] for p in picks]
         if rejected is not None:
             m["rejected"] = [[round(float(p[0]), 1), round(float(p[1]), 1)] for p in rejected]
+        if zones is not None:
+            m["zones"] = [[round(float(z[0]), 1), round(float(z[1]), 1), round(float(z[2]), 1), 1 if z[3] > 0 else -1]
+                          for z in zones]
         if state is not None:
             if state not in ("", "suggested", "reviewed"):
                 raise ValueError(f"state {state!r}: '', suggested or reviewed")
             m["state"] = state
         m["t"] = st["t_edit"] = time.time()
-        if not m["picks"] and not m["rejected"] and not m["state"]:
+        if not m["picks"] and not m["rejected"] and not m["state"] and not m.get("zones"):
             st["mics"].pop(mid)
         save_state(job, st)
     return m
@@ -160,18 +173,19 @@ def set_picks(project: Project, job, stem: str, picks=None, rejected=None, state
 _KEEP = object()
 
 
-def set_threshold(project: Project, job, threshold=_KEEP, upper=_KEEP) -> tuple:
-    """The score range of the template picks: lower (threshold) and upper (threshold_hi; None: no upper limit)."""
+def set_threshold(project: Project, job, threshold=_KEEP, power_lo=_KEEP, power_hi=_KEEP, zone_dark=_KEEP,
+                  zone_mean=_KEEP) -> dict:
+    """The filters of the template picks: lowest score, power range, zones by density (None: no limit / off)."""
     job = project.job(job)
     with lock(job):
         st = load_state(job)
-        if threshold is not _KEEP:
-            st["threshold"] = None if threshold is None else float(threshold)
-        if upper is not _KEEP:
-            st["threshold_hi"] = None if upper is None else float(upper)
+        for k, v in (("threshold", threshold), ("power_lo", power_lo), ("power_hi", power_hi),
+                     ("zone_dark", zone_dark), ("zone_mean", zone_mean)):
+            if v is not _KEEP:
+                st[k] = None if v is None else float(v)
         st["t_edit"] = time.time()
         save_state(job, st)
-    return st["threshold"], st["threshold_hi"]
+    return {k: st.get(k) for k in ("threshold", "power_lo", "power_hi", "zone_dark", "zone_mean")}
 
 
 def _members(job: Job) -> dict:
@@ -254,7 +268,7 @@ def set_settings(project: Project, job, diameter_a=None, templates=None) -> Manu
                 if p:
                     os.remove(p)
             st = load_state(job)
-            st.update(train=None, threshold=None, threshold_hi=None, off=[], junk_base=st.get("junk") or {},
+            st.update(train=None, threshold=None, off=[], junk_base=st.get("junk") or {},
                       t_edit=time.time())
             save_state(job, st)
         job = project.job(job.id)
@@ -503,8 +517,81 @@ def _candidates(img, apix, ctf, optics, s: ManualPickSettings, tm: np.ndarray, t
     x0, x1, y0, y1 = pk.valid_bounds(img)
     x, y = c.xy_a[:, 0] / apix, c.xy_a[:, 1] / apix
     inside = (x >= x0) & (x < x1) & (y >= y0) & (y < y1)
-    ok = inside & (c.local_std <= MAX_STD) & (np.abs(c.local_mean) <= MAX_MEAN)
+    ok = inside & (np.abs(c.local_mean) <= MAX_MEAN)                 # the power range is the user's (auto_keep)
     return c, ok, inside
+
+
+def zone_maps(img: torch.Tensor, apix: float, s: ManualPickSettings) -> dict:
+    """Density maps of a micrograph on cells of half a diameter, in robust standard deviations (more density: higher;
+    padded edges 0), that find zones to leave out. dark_z: each cell over the mean of ~8 diameters around it -
+    contamination (ethane / ice balls), carbon edges; the band-passed power did not find these (a ball's inside is
+    flat). mean_z: over ~4 diameters, against the micrograph's median - carbon, thick ice (one-sided: where carbon
+    covers most of a micrograph the median is carbon's and nothing is left out)."""
+    D = s.diameter_a
+    cell = D / 2
+    ny, nx = img.shape
+    gy, gx = max(1, int(round(ny * apix / cell))), max(1, int(round(nx * apix / cell)))
+    m = torch.nn.functional.adaptive_avg_pool2d(img[None, None].float(), (gy, gx))[0, 0] * (-1.0 if s.dark else 1.0)
+
+    def smooth(a, h):
+        h = max(1, min(h, (min(gy, gx) - 1) // 2))
+        return torch.nn.functional.avg_pool2d(torch.nn.functional.pad(a[None, None], (h, h, h, h), mode="replicate"),
+                                              2 * h + 1, 1)[0, 0]
+
+    def robust_z(a):
+        med = a.median()
+        mad = (a - med).abs().median() * 1.4826
+        return ((a - med) / mad.clamp_min(1e-9 * float(a.abs().max()) + 1e-12)).cpu().numpy().astype(np.float32)
+
+    out = dict(cell_a=float(cell), dark_z=robust_z(m - smooth(m, int(round(4 * D / cell)))),
+               mean_z=robust_z(smooth(m, int(round(2 * D / cell)))))
+    x0, x1, y0, y1 = pk.valid_bounds(img)                             # padded edges: not a zone of their own
+    ys, xs = (np.arange(gy) + 0.5) * cell / apix, (np.arange(gx) + 0.5) * cell / apix
+    edge = ~(((ys >= y0) & (ys < y1))[:, None] & ((xs >= x0) & (xs < x1))[None, :])
+    out["dark_z"][edge], out["mean_z"][edge] = 0.0, 0.0
+    return out
+
+
+def zone_floor(zm: dict, xy_a: np.ndarray) -> float:
+    """The lowest contamination limit of a micrograph: twice the 90th percentile of dark_z at its particles (the
+    candidates picked) - contamination is far denser than particles. Real cryo particles sit near 0 (dz_2021_08_18:
+    median 0), high-contrast ones (negative stain, the synthetic test's: median 6) would be zones of their own."""
+    xy = np.asarray(xy_a, np.float64).reshape(-1, 2)
+    if len(xy) < 10:
+        return 0.0
+    d, c = zm["dark_z"], zm["cell_a"]
+    v = d[np.clip((xy[:, 1] / c).astype(int), 0, d.shape[0] - 1), np.clip((xy[:, 0] / c).astype(int), 0, d.shape[1] - 1)]
+    return float(max(0.0, 2 * np.quantile(v, 0.9)))
+
+
+def zone_mask(zm: dict, zone_dark, zone_mean, floor: float = 0.0) -> np.ndarray:
+    """Cells left out: dark_z above zone_dark (at least floor: zone_floor) or mean_z above zone_mean (None: that test
+    off), grown by one cell."""
+    bad = np.zeros(zm["mean_z"].shape, bool)
+    if zone_dark is not None:
+        bad |= zm["dark_z"] > max(zone_dark, floor)
+    if zone_mean is not None:
+        bad |= zm["mean_z"] > zone_mean
+    if bad.any():
+        from scipy.ndimage import binary_dilation
+        bad = binary_dilation(bad, np.ones((3, 3), bool))
+    return bad
+
+
+def in_zones(xy_a: np.ndarray, zm: dict | None, bad: np.ndarray | None, painted=()) -> np.ndarray:
+    """Which points lie in an excluded zone: the cells found by themselves, then the painted strokes in order (+1
+    excludes, -1 frees - also a cell found by itself)."""
+    xy = np.asarray(xy_a, np.float64).reshape(-1, 2)
+    out = np.zeros(len(xy), bool)
+    if zm is not None and bad is not None and len(xy):
+        c = zm["cell_a"]
+        i = np.clip((xy[:, 1] / c).astype(int), 0, bad.shape[0] - 1)
+        j = np.clip((xy[:, 0] / c).astype(int), 0, bad.shape[1] - 1)
+        out = bad[i, j].copy()
+    for x, y, r, sg in painted or ():
+        hit = (xy[:, 0] - x) ** 2 + (xy[:, 1] - y) ** 2 < r * r
+        out[hit] = sg > 0
+    return out
 
 
 def templates_of(job: Job):
@@ -617,8 +704,6 @@ def train(project: Project, job, log=print) -> dict:
         st["junk_base"] = st.get("junk") or {}                        # junk stays junk until put back
         if th is not None:
             st["threshold"] = th
-            if st.get("threshold_hi") is not None and st["threshold_hi"] <= th:
-                st["threshold_hi"] = None
         info = dict(version=st["version"], n=len(tm), counts=counts.tolist(), apix=round(wa, 4), box=int(tm.shape[-1]),
                     picks=int(sum(u.sum() for u in use.values())), accepted=n_accepted, junk=n_junk,
                     micrographs=len(xy),
@@ -651,6 +736,8 @@ def suggest(project: Project, job, stems=None, after: str = "", n: int | None = 
     with lock(job):
         st = load_state(job)
     ver = int(st.get("version", 0))
+    th0 = st.get("threshold") if st.get("threshold") is not None else 0.0
+    prange = (st.get("power_lo"), st.get("power_hi", MAX_STD))
     if stems:
         rows = mi[mi["stem"].isin(list(stems))]
     else:
@@ -673,12 +760,17 @@ def suggest(project: Project, job, stems=None, after: str = "", n: int | None = 
         for r in rows.itertuples():
             img, apix, ctf = load_mic(project, mc, r, dev)
             c, ok, _ = _candidates(img, apix, ctf, optics, s, tm, ta, batch=32)
+            zm = zone_maps(img, apix, s)
+            floor = zone_floor(zm, c.xy_a[auto_keep(c, ok, th0, st.get("off") or [], prange)])
             del img
             path = job.per_movie("Suggest", project.movie(r.movie_id), ".npz")
             tmp = path + ".tmp"
             with open(tmp, "wb") as fh:
                 np.savez(fh, xy_a=c.xy_a.astype(np.float32), score=c.score.astype(np.float32), ok=ok,
-                         template=c.template.astype(np.int16), version=np.int32(ver))
+                         template=c.template.astype(np.int16), version=np.int32(ver),
+                         power=c.local_std.astype(np.float32), zone_dark=zm["dark_z"].astype(np.float16),
+                         zone_mean=zm["mean_z"].astype(np.float16), zone_cell=np.float32(zm["cell_a"]),
+                         zone_floor=np.float32(floor))
             os.replace(tmp, path)
             done.append(r)
     t0 = time.time()
@@ -715,18 +807,30 @@ def suggestions(project: Project, job: Job, row) -> dict | None:
     if not os.path.exists(p):
         return None
     with np.load(p) as z:
-        return dict(xy=np.round(z["xy_a"], 1).tolist(), score=np.round(z["score"], 4).tolist(),
-                    ok=z["ok"].astype(int).tolist(), version=int(z["version"]),
-                    template=z["template"].astype(int).tolist() if "template" in z else None)
+        out = dict(xy=np.round(z["xy_a"], 1).tolist(), score=np.round(z["score"], 4).tolist(),
+                   ok=z["ok"].astype(int).tolist(), version=int(z["version"]),
+                   template=z["template"].astype(int).tolist() if "template" in z else None,
+                   power=np.round(z["power"], 3).tolist() if "power" in z else None, zones=None)
+        if "zone_dark" in z:                      # files of older versions: no zones, the power cut was in "ok"
+            out["zones"] = dict(cell_a=float(z["zone_cell"]), shape=list(z["zone_dark"].shape),
+                                floor=round(float(z["zone_floor"]), 2),
+                                dark_z=np.round(z["zone_dark"].astype(np.float32), 2).ravel().tolist(),
+                                mean_z=np.round(z["zone_mean"].astype(np.float32), 2).ravel().tolist())
+        return out
 
 
-def auto_keep(c, ok, lo: float, hi, off) -> np.ndarray:
-    """Template candidates picked: past the contamination filters, within the score range, not of a template off."""
+def auto_keep(c, ok, lo: float, off, power=(None, None), zone=None) -> np.ndarray:
+    """Template candidates picked: past the filters, score >= lo, power (local_std) within the range, not of a
+    template switched off, not in an excluded zone (zone: bool per candidate)."""
     keep = ok & (c.score >= lo)
-    if hi is not None:
-        keep &= c.score <= hi
+    if power[0] is not None:
+        keep &= c.local_std >= power[0]
+    if power[1] is not None:
+        keep &= c.local_std <= power[1]
     if off:
         keep &= ~np.isin(c.template, np.asarray(off, int))
+    if zone is not None:
+        keep &= ~zone
     return keep
 
 
@@ -764,7 +868,9 @@ def run_manualpick(project: Project, job, log=print) -> dict:
     st = load_state(job)
     tm, ta = templates_of(job)
     th = st.get("threshold")
-    th_hi, off = st.get("threshold_hi"), st.get("off") or []
+    off = st.get("off") or []
+    prange = (st.get("power_lo"), st.get("power_hi", MAX_STD))
+    zdark, zmean = st.get("zone_dark", ZONE_DARK), st.get("zone_mean", ZONE_MEAN)
     rev = {int(k): v for k, v in st["mics"].items() if v.get("state") == "reviewed"}
     # micrographs not reviewed with some picks or removals of the user's (suggestions not checked, or a Pick all
     # since): those, plus the template picks around them
@@ -779,8 +885,8 @@ def run_manualpick(project: Project, job, log=print) -> dict:
     mi = micrographs(project, job)
     dev = _device()
     log(f"{len(mi)} micrographs: {len(rev)} reviewed (kept as picked), "
-        + (f"the others with {len(tm) - len(off)} of {len(tm)} templates at scores {th:.3f} - "
-           + ("" if th_hi is None else f"{th_hi:.3f}") if tm is not None else "the others left empty"))
+        + (f"the others with {len(tm) - len(off)} of {len(tm)} templates, score >= {th:.3f}, power "
+           f"{prange[0]} - {prange[1]}, zones at contamination > {zdark} / carbon > {zmean}" if tm is not None else "the others left empty"))
     t0, n_manual, n_auto = time.time(), 0, 0
     rows = list(mi.itertuples())
     need = rows if tm is not None else []                         # without templates no micrograph is read
@@ -797,8 +903,10 @@ def run_manualpick(project: Project, job, log=print) -> dict:
                 img, apix, ctf = fut.result()
                 k += 1
                 fut = ex.submit(read, need[k]) if k < len(need) else None
-                c, ok, inside = _candidates(img.to(dev), apix, ctf, optics, s, tm, ta)
-                del img
+                gi = img.to(dev)
+                c, ok, inside = _candidates(gi, apix, ctf, optics, s, tm, ta)
+                zm = zone_maps(gi, apix, s)
+                del img, gi
             elif m is None:                                           # nothing to pick it with
                 cols = dict(xy_a=np.zeros((0, 2)), score=[], local_std=[], local_mean=[], inside=[], template=[],
                             manual=[])
@@ -823,7 +931,10 @@ def run_manualpick(project: Project, job, log=print) -> dict:
                 n_manual += len(xy)
                 thr = np.nan if tm is None else th
             else:
-                keep = auto_keep(c, ok, th, th_hi, off)
+                painted = (st["mics"].get(str(mid)) or {}).get("zones")
+                floor = zone_floor(zm, c.xy_a[auto_keep(c, ok, th, off, prange)])
+                zone = in_zones(c.xy_a, zm, zone_mask(zm, zdark, zmean, floor), painted)
+                keep = auto_keep(c, ok, th, off, prange, zone)
                 manual = np.zeros(len(c.score))
                 cols = dict(xy_a=c.xy_a, score=c.score, local_std=c.local_std, local_mean=c.local_mean,
                             inside=inside, template=c.template, manual=manual)
@@ -866,7 +977,7 @@ def run_manualpick(project: Project, job, log=print) -> dict:
                 picks_per_micrograph=round(float(t["n_kept"].mean()), 1) if len(t) else 0, reviewed=len(rev),
                 manual_picks=n_manual, template_picks=n_auto, templates=0 if tm is None else len(tm),
                 threshold=None if tm is None else round(float(th), 4),
-                threshold_hi=None if tm is None or th_hi is None else round(float(th_hi), 4),
+                power_range=list(prange), zone_dark=zdark, zone_mean=zmean,
                 templates_off=len(off), seconds=round(time.time() - t0, 1),
                 t_run=time.time())
     try:                                                              # a figure never fails a job

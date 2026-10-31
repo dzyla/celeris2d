@@ -40,7 +40,10 @@ const STYLE = `
 .pk-btns button { flex: 1 1 auto; }
 .pk-note { color: var(--ink2); font-size: 12px; margin-top: 6px; line-height: 1.4; }
 .pk-err { color: var(--bad); font-size: 12px; margin-top: 6px; }
-.pk-tm { display: flex; gap: 4px; margin-top: 8px; overflow-x: auto; }
+.pk-tm { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
+.pk-scat { width: 100%; height: 150px; display: block; margin-top: 4px; }
+.pk-sub { margin: 10px 0 4px; font-size: 12px; color: var(--ink); font-weight: 600; }
+.pk-zone-on { border-color: var(--serious) !important; color: var(--serious) !important; }
 .pk-tm figure { margin: 0; text-align: center; font-size: 11px; color: var(--ink3); }
 .pk-tm img { width: 64px; height: 64px; display: block; border-radius: 4px; background: #000; image-rendering: auto; }
 .pk-hist { width: 100%; height: 56px; display: block; margin-top: 4px; }
@@ -100,7 +103,8 @@ function mount(el, ctx) {
         <div class="pk-bar">
           <div class="pk-legend"><span><i style="border-color:var(--you)"></i>your picks</span><span><i style="border-color:var(--data)"></i>suggested</span>
             <span><i style="border-color:var(--good)"></i>Pick all result</span><span style="color:var(--bad)">✕ removed suggestion</span></div>
-          <button id="pk-brush" style="margin-left:auto" title="eraser: drag over picks and suggestions to remove them all at once (E); Shift + wheel: its size">Eraser (E)</button>
+          <button id="pk-zone" style="margin-left:auto" title="zone pen: paint regions where nothing is picked (Z); Alt-drag frees a region; Shift + wheel: its size">Zone pen (Z)</button>
+          <button id="pk-brush" title="eraser: drag over picks and suggestions to remove them all at once (E); Shift + wheel: its size">Eraser (E)</button>
           <label class="tog" style="margin:0" title="eraser size, in particle diameters">size <input type="range" id="pk-brs" min="0.5" max="8" step="0.25" style="width:70px"></label>
           <label class="tog" style="margin:0" title="display only: slow grey-level changes (ice thickness) taken out"><input type="checkbox" id="pk-flat"> Flatten</label>
           <label class="tog" style="margin:0"><input type="checkbox" id="pk-show" checked> Show picks (H)</label>
@@ -124,9 +128,17 @@ function mount(el, ctx) {
           <div id="pk-tm"></div>
           <div id="pk-thr" style="display:none;margin-top:8px">
             <div class="pk-th"><label for="pk-ths">Lowest score</label><input type="range" id="pk-ths" min="0" max="1" step="0.002"><span id="pk-thv"></span></div>
-            <div class="pk-th"><label for="pk-thh" title="candidates scoring above this are left out: dark contamination often scores higher than particles">Highest score</label><input type="range" id="pk-thh" min="0" max="1" step="0.002"><span id="pk-thhv"></span></div>
             <canvas class="pk-hist" id="pk-hist" width="600" height="112" aria-label="score distribution"></canvas>
             <div class="pk-note" id="pk-thn"></div>
+            <div class="pk-sub" title="cryoSPARC's power score: the local signal power around a pick (the local standard deviation of the band-passed micrograph over its median). High: carbon edges, ice, contamination, aggregates. Low: empty ice.">Power (as cryoSPARC's Inspect Picks)</div>
+            <div class="pk-th"><label for="pk-pl">Lowest power</label><input type="range" id="pk-pl" min="0" max="4" step="0.02"><span id="pk-plv"></span></div>
+            <div class="pk-th"><label for="pk-ph">Highest power</label><input type="range" id="pk-ph" min="0" max="4" step="0.02"><span id="pk-phv"></span></div>
+            <canvas class="pk-scat" id="pk-scat" width="600" height="300" aria-label="candidates of this micrograph: score against power"></canvas>
+            <div class="pk-note" id="pk-scn"></div>
+            <div class="pk-sub">Zones left out</div>
+            <div class="pk-th"><label for="pk-zp" title="regions half a particle wide denser than the ice around them (about 8 diameters) by this many robust standard deviations: ethane and ice balls, carbon edges">Contamination</label><input type="range" id="pk-zp" min="2" max="12" step="0.1"><span id="pk-zpv"></span></div>
+            <div class="pk-th"><label for="pk-zm" title="regions (about 4 particle diameters across) denser than the micrograph's median by this many robust standard deviations: carbon, thick ice">Carbon / thick ice</label><input type="range" id="pk-zm" min="1" max="10" step="0.1"><span id="pk-zmv"></span></div>
+            <div class="pk-note">Shaded red on the micrograph: regions much denser than the ice around them (contamination, carbon edges) or than the micrograph (carbon, thick ice); a slider at its right end is off, and what you paint with the zone pen (<kbd>Z</kbd>; <kbd>Alt</kbd>-drag frees). Nothing is suggested or picked there.</div>
           </div>
           <div class="pk-err" id="pk-err"></div>
         </div>
@@ -141,7 +153,8 @@ function mount(el, ctx) {
           <span><kbd>Enter</kbd></span><span>accept the suggestions, next to check</span>
           <span><kbd>T</kbd> <kbd>S</kbd> <kbd>P</kbd></span><span>train &amp; suggest · suggest more · this one</span>
           <span><kbd>[</kbd> <kbd>]</kbd></span><span>lowest score down / up (sizing: circle smaller / larger)</span>
-          <span><kbd>{</kbd> <kbd>}</kbd></span><span>highest score down / up</span>
+          <span><kbd>{</kbd> <kbd>}</kbd></span><span>highest power down / up</span>
+          <span><kbd>Z</kbd></span><span>zone pen: paint regions to leave out (<kbd>Alt</kbd>-drag frees)</span>
           <span><kbd>E</kbd></span><span>eraser: drag to remove many picks / suggestions (<kbd>Shift</kbd> + wheel: size)</span>
           <span><kbd>U</kbd> <kbd>Ctrl Z</kbd></span><span>undo on this micrograph</span>
           <span><kbd>H</kbd></span><span>hide / show picks</span></div></div>
@@ -154,7 +167,9 @@ function mount(el, ctx) {
   let idx = 0, filter = 'all', th = null, show = true, dirty = false, saveTimer = null, alive = true, pollTimer = null;
   let undo = [];
   // sizing the particle (no diameter yet, or "change size"): a circle the user places and resizes, d in A
-  let sizing = null, resizeReq = false, thHi = null;
+  let sizing = null, resizeReq = false;
+  let pLo = null, pHi = 2.0, zPow = 6.0, zMean = 5.0;     // power range, zones: contamination / carbon (null: off)
+  let zonePen = false, zoneLast = null;
   // the eraser: a brush (diameter in particle diameters) that removes every pick / suggestion it passes over
   let brush = false, brushAt = null, brushing = false, brushN = 0;
   const editable0 = () => S && !['queued', 'running'].includes(S.status);
@@ -173,13 +188,42 @@ function mount(el, ctx) {
   const rImg = () => 0.5 * S.settings.diameter_a / (M.apix * M.bin);
   const near = (a, b, d) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 < d * d;
 
+  // zones left out (manualpick.in_zones): cells over the highest power or off in density, grown by one cell, then
+  // the painted strokes in order (+1 excludes, -1 frees)
+  let zcache = null;
+  const zoneCells = () => {
+    const z = M && M.suggest && M.suggest.zones;
+    if (!z) return null;
+    const key = `${M.stem}|${zPow}|${zMean}`;
+    if (zcache && zcache.key === key) return zcache;
+    const [h, w] = z.shape, raw = new Uint8Array(h * w), bad = new Uint8Array(h * w);
+    for (let i = 0; i < h * w; i++) raw[i] = (zPow !== null && z.dark_z[i] > Math.max(zPow, z.floor || 0)) || (zMean !== null && z.mean_z[i] > zMean) ? 1 : 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let b = 0;
+      for (let dy = -1; dy <= 1 && !b; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const yy = y + dy, xx = x + dx;
+        if (yy >= 0 && yy < h && xx >= 0 && xx < w && raw[yy * w + xx]) { b = 1; break; }
+      }
+      bad[y * w + x] = b;
+    }
+    return (zcache = {key, h, w, cell: z.cell_a, bad});
+  };
+  const inZone = q => {
+    let out = false;
+    const zc = zoneCells();
+    if (zc) out = !!zc.bad[Math.min(zc.h - 1, Math.max(0, Math.floor(q[1] / zc.cell))) * zc.w + Math.min(zc.w - 1, Math.max(0, Math.floor(q[0] / zc.cell)))];
+    for (const z of (M.zones || [])) if ((q[0] - z[0]) ** 2 + (q[1] - z[1]) ** 2 < z[2] * z[2]) out = z[3] > 0;
+    return out;
+  };
   // the suggestions shown: above the threshold, past the contamination filters, not removed, not on one of your picks
   const visibleSuggestions = () => {
     if (!M || M.state !== 'suggested' || !M.suggest) return [];
     const D = S.settings.diameter_a, rej = M.rejected, pk = M.picks, md = S.settings.min_dist_frac * D, out = [];
     const g = M.suggest, off = new Set(S.off || []);
     for (let i = 0; i < g.xy.length; i++) {
-      if (!g.ok[i] || g.score[i] < th || (thHi !== null && g.score[i] > thHi) || (g.template && off.has(g.template[i]))) continue;
+      if (!g.ok[i] || g.score[i] < th || (g.template && off.has(g.template[i]))) continue;
+      if (g.power && ((pLo !== null && g.power[i] < pLo) || (pHi !== null && g.power[i] > pHi))) continue;
+      if (inZone(g.xy[i])) continue;
       const q = g.xy[i];
       if (rej.some(r => near(r, q, 0.3 * D)) || pk.some(p => near(p, q, md))) continue;
       out.push(q);
@@ -254,6 +298,7 @@ function mount(el, ctx) {
     drawLoupe();
     if (!show || !sized()) return;
     const r = rImg();
+    drawZones(s);
     const ring = (pts, col, w = lw, dash = null) => {
       if (!pts.length) return;
       g.strokeStyle = col; g.lineWidth = w; g.setLineDash(dash ? dash.map(x => x / s) : []); g.beginPath();
@@ -270,14 +315,30 @@ function mount(el, ctx) {
       M.rejected.forEach(q => { const x = toImg(q[0]), y = toImg(q[1]); g.moveTo(x - c, y - c); g.lineTo(x + c, y + c); g.moveTo(x + c, y - c); g.lineTo(x - c, y + c); });
       g.stroke();
     }
-    if (hover && !brush) { g.strokeStyle = '#fff'; g.lineWidth = lw * 2; g.beginPath(); g.arc(toImg(hover[0]), toImg(hover[1]), r * 1.12, 0, 2 * Math.PI); g.stroke(); }
-    if (brush && brushAt) {
-      g.strokeStyle = css('--bad'); g.lineWidth = lw * 1.5; g.setLineDash([6 / s, 4 / s]); g.beginPath();
+    if (hover && !brush && !zonePen) { g.strokeStyle = '#fff'; g.lineWidth = lw * 2; g.beginPath(); g.arc(toImg(hover[0]), toImg(hover[1]), r * 1.12, 0, 2 * Math.PI); g.stroke(); }
+    if ((brush || zonePen) && brushAt) {
+      g.strokeStyle = zonePen ? css('--serious') : css('--bad'); g.lineWidth = lw * 1.5; g.setLineDash([6 / s, 4 / s]); g.beginPath();
       g.arc(brushAt[0], brushAt[1], brushR(), 0, 2 * Math.PI); g.stroke(); g.setLineDash([]);
       g.fillStyle = 'rgba(255,80,80,.10)'; g.fill();
     }
   };
 
+  const zoneCanvas = document.createElement('canvas');
+  const drawZones = s => {                                  // zones: red shade over the micrograph
+    const zc = zoneCells(), zs = M.zones || [];
+    if (!zc && !zs.length) return;
+    zoneCanvas.width = view.W; zoneCanvas.height = view.H;
+    const z = zoneCanvas.getContext('2d'), k = 1 / (M.apix * M.bin);
+    z.clearRect(0, 0, view.W, view.H); z.fillStyle = '#ff3b3b';
+    if (zc) for (let y = 0; y < zc.h; y++) for (let x = 0; x < zc.w; x++)
+      if (zc.bad[y * zc.w + x]) z.fillRect(x * zc.cell * k, y * zc.cell * k, zc.cell * k + 0.5, zc.cell * k + 0.5);
+    zs.forEach(q => {
+      z.globalCompositeOperation = q[3] > 0 ? 'source-over' : 'destination-out';
+      z.beginPath(); z.arc(toImg(q[0]), toImg(q[1]), q[2] * k, 0, 2 * Math.PI); z.fill();
+    });
+    z.globalCompositeOperation = 'source-over';
+    g.globalAlpha = 0.22; g.drawImage(zoneCanvas, 0, 0); g.globalAlpha = 1;
+  };
   // ------------------------------------------------------------------ pointer: click to pick / remove, drag to pan, wheel to zoom
   const imgAt = ev => {
     const b = cv.getBoundingClientRect(), dpr = cv.width / b.width;
@@ -292,7 +353,7 @@ function mount(el, ctx) {
     cand.forEach(c => { const d = (toImg(c[2][0]) - u) ** 2 + (toImg(c[2][1]) - v) ** 2; if (d < bd) { bd = d; best = c; } });
     return best;
   };
-  const snapshot = () => { undo.push(JSON.stringify({picks: M.picks, rejected: M.rejected, state: M.state})); if (undo.length > 200) undo.shift(); };
+  const snapshot = () => { undo.push(JSON.stringify({picks: M.picks, rejected: M.rejected, state: M.state, zones: M.zones || []})); if (undo.length > 200) undo.shift(); };
   const edited = () => { dirty = true; Q('#pk-saved').textContent = 'saving…'; clearTimeout(saveTimer); saveTimer = setTimeout(save, 350); refreshCounts(); draw(); };
   const onClick = (u, v) => {
     if (!editable()) return err('Pick all is running: the picks can change when it has finished.');
@@ -329,7 +390,18 @@ function mount(el, ctx) {
     sug.forEach(q => { M.rejected.push([q[0], q[1]]); n++; });      // removed suggestions: negatives for the threshold
     return n;
   };
+  const paintZone = (p, sign) => {                          // a stroke: circles a third of the brush apart
+    const R = brushR() * M.apix * M.bin, q = [toA(p[0]), toA(p[1])];
+    if (zoneLast && zoneLast[2] === sign && (q[0] - zoneLast[0]) ** 2 + (q[1] - zoneLast[1]) ** 2 < (R / 3) ** 2) return;
+    M.zones = (M.zones || []).concat([[q[0], q[1], Math.round(R * 10) / 10, sign]]);
+    zoneLast = [q[0], q[1], sign]; brushN++;
+  };
+  const setZonePen = on => {
+    zonePen = on; brushAt = null; if (on && brush) setBrush(false);
+    Q('#pk-zone').classList.toggle('pk-zone-on', zonePen); Q('#pk-zone').textContent = zonePen ? 'Zone pen on (Z)' : 'Zone pen (Z)'; draw();
+  };
   const setBrush = on => {
+    if (on && zonePen) setZonePen(false);
     brush = on; brushAt = null; Q('#pk-brush').classList.toggle('pk-brush-on', brush);
     Q('#pk-brush').textContent = brush ? 'Eraser on (E)' : 'Eraser (E)'; draw();
   };
@@ -350,6 +422,12 @@ function mount(el, ctx) {
         if (dd < r) { sizing.mode = 'move'; sizing.off = [p[0] - sizing.c[0], p[1] - sizing.c[1]]; return; }
       }
       sizing.c = p; sizing.p0 = p; sizing.mode = 'new'; draw(); renderSize();
+      return;
+    }
+    if (zonePen && M && sized() && (ev.button === 0 || ev.button === 2)) {
+      if (!editable()) return err('Pick all is running: the zones can change when it has finished.');
+      snapshot(); brushing = true; brushN = 0; zoneLast = null;
+      const p = imgAt(ev); brushAt = p; paintZone(p, ev.altKey || ev.button === 2 ? -1 : 1); draw();
       return;
     }
     if (brush && ev.button === 0 && M && sized()) {
@@ -375,6 +453,11 @@ function mount(el, ctx) {
       return;
     }
     cv.style.cursor = '';
+    if (zonePen && !down) {
+      brushAt = imgAt(ev);
+      if (brushing) paintZone(brushAt, ev.altKey || (ev.buttons & 2) ? -1 : 1);
+      draw(); return;
+    }
     if (brush && !down) {
       brushAt = imgAt(ev);
       if (brushing) brushN += eraseAt(...brushAt);
@@ -403,14 +486,14 @@ function mount(el, ctx) {
   cv.addEventListener('wheel', ev => {
     if (!view) return;
     ev.preventDefault();
-    if (brush && ev.shiftKey) {                             // Shift + wheel: the eraser's size
+    if ((brush || zonePen) && ev.shiftKey) {                // Shift + wheel: the eraser's / zone pen's size
       brushD = Math.min(8, Math.max(0.5, brushD * (ev.deltaY < 0 ? 1.15 : 0.87)));
       Q('#pk-brs').value = brushD; ls('celeris-mp-brush', brushD.toFixed(2)); draw(); return;
     }
     const [u, v] = imgAt(ev), z = Math.min(8, Math.max(1, view.z * (ev.deltaY < 0 ? 1.25 : 0.8)));
     view.ox = u - (u - view.ox) * view.z / z; view.oy = v - (v - view.oy) * view.z / z; view.z = z; clampView(); draw();
   }, {passive: false});
-  cv.addEventListener('contextmenu', ev => ev.preventDefault());
+  cv.addEventListener('contextmenu', ev => ev.preventDefault());       // right-drag with the zone pen frees
   const onResize = () => { fit(); draw(); };
   window.addEventListener('resize', onResize);
 
@@ -474,19 +557,19 @@ function mount(el, ctx) {
     dirty = false;
     const m = M;
     try {
-      await api(BASE + '/picks', {job, stem: m.stem, picks: m.picks, rejected: m.rejected, state: m.state});
+      await api(BASE + '/picks', {job, stem: m.stem, picks: m.picks, rejected: m.rejected, state: m.state, zones: m.zones || []});
       if (M === m) Q('#pk-saved').textContent = 'saved';
       if (S) S.edited_after_run = S.status === 'finished';
     } catch (e) { dirty = true; Q('#pk-saved').textContent = 'not saved: ' + e.message; }
   };
   const flushBeacon = () => {                              // the page goes away: the last edits still reach the server
     if (!dirty || !M) return;
-    try { navigator.sendBeacon(BASE + '/picks', new Blob([JSON.stringify({job, stem: M.stem, picks: M.picks, rejected: M.rejected, state: M.state})], {type: 'application/json'})); dirty = false; } catch (e) {}
+    try { navigator.sendBeacon(BASE + '/picks', new Blob([JSON.stringify({job, stem: M.stem, picks: M.picks, rejected: M.rejected, state: M.state, zones: M.zones || []})], {type: 'application/json'})); dirty = false; } catch (e) {}
   };
   const loadState = async () => {
     S = await api(`${BASE}/state?job=${enc(job)}`);
     if (th === null || S.threshold !== null && Math.abs((S.threshold ?? 0) - (th ?? 0)) > 1e-6 && !thDragging) th = S.threshold;
-    if (!thDragging) thHi = S.threshold_hi ?? null;
+    if (!thDragging) { pLo = S.power_lo ?? null; pHi = S.power_hi ?? null; zPow = S.zone_dark ?? null; zMean = S.zone_mean ?? null; }
     return S;
   };
   let loadSeq = 0;
@@ -570,30 +653,40 @@ function mount(el, ctx) {
     }
     if (idx + 1 < n) open(idx + 1);
   };
-  // the score range of the suggestions: lowest (th) and highest (thHi, null: none); undefined keeps one
-  const setRange = async (lo, hi, persist) => {
-    if (lo !== undefined) th = +lo;
-    if (hi !== undefined) thHi = hi === null ? null : +hi;
-    if (thHi !== null && th !== null && thHi <= th) { if (hi !== undefined) th = thHi - 0.002; else thHi = th + 0.002; }
+  // the filters of the suggestions: lowest score (th), power range (pLo, pHi), carbon / thick-ice zones (zMean);
+  // undefined keeps one, null: no limit
+  const setRange = async (v, persist) => {
+    if (v.th !== undefined) th = +v.th;
+    if (v.pLo !== undefined) pLo = v.pLo;
+    if (v.pHi !== undefined) pHi = v.pHi;
+    if (v.zMean !== undefined) zMean = v.zMean;
+    if (v.zPow !== undefined) zPow = v.zPow;
+    if (pLo !== null && pHi !== null && pLo >= pHi) { if (v.pHi !== undefined) pLo = Math.max(0, pHi - 0.02); else pHi = pLo + 0.02; }
     rangeText(); renderHist(); draw(); renderInfo();
     if (persist && editable()) {
-      const b = {job, threshold: th, upper: thHi};
-      try { const d = await api(BASE + '/threshold', b); S.threshold = d.threshold; S.threshold_hi = d.threshold_hi; } catch (e) { err(e.message); }
+      try { const d = await api(BASE + '/threshold', {job, threshold: th, power_lo: pLo, power_hi: pHi, zone_dark: zPow, zone_mean: zMean}); Object.assign(S, d); }
+      catch (e) { err(e.message); }
     }
   };
-  const setThreshold = (v, persist) => setRange(+v, undefined, persist);
+  const setThreshold = (v, persist) => setRange({th: +v}, persist);
   const rangeText = () => {
     Q('#pk-thv').textContent = th === null ? '–' : (+th).toFixed(3);
-    Q('#pk-thhv').textContent = thHi === null ? 'none' : thHi.toFixed(3);
-    if (!thDragging) { if (th !== null) Q('#pk-ths').value = th; Q('#pk-thh').value = thHi === null ? Q('#pk-thh').max : thHi; }
+    Q('#pk-plv').textContent = pLo === null ? 'none' : pLo.toFixed(2);
+    Q('#pk-phv').textContent = pHi === null ? 'none' : pHi.toFixed(2);
+    Q('#pk-zmv').textContent = zMean === null ? 'off' : zMean.toFixed(1);
+    Q('#pk-zpv').textContent = zPow === null ? 'off' : zPow.toFixed(1);
+    if (!thDragging) {
+      if (th !== null) Q('#pk-ths').value = th;
+      Q('#pk-pl').value = pLo ?? 0; Q('#pk-ph').value = pHi ?? Q('#pk-ph').max; Q('#pk-zm').value = zMean ?? Q('#pk-zm').max; Q('#pk-zp').value = zPow ?? Q('#pk-zp').max;
+    }
   };
   const runAll = async () => {
     await save(); err('');
     const rev = S.mics.filter(r => r.state === 'reviewed').length, nOff = (S.off || []).length;
-    const msg = S.version ? `Pick all ${S.mics.length} micrographs: the ${rev} reviewed ones keep your picks exactly, the others are picked with the templates${nOff ? ` (${nOff} switched off)` : ''} at scores ${(th ?? 0).toFixed(3)}${thHi !== null ? ` to ${thHi.toFixed(3)}` : ' and above'}, keeping your picks and removals there. It runs through the queue.`
+    const msg = S.version ? `Pick all ${S.mics.length} micrographs: the ${rev} reviewed ones keep your picks exactly, the others are picked with the templates${nOff ? ` (${nOff} switched off)` : ''} at score ${(th ?? 0).toFixed(3)} and above, power ${pLo === null ? 'any' : pLo.toFixed(2)} to ${pHi === null ? 'any' : pHi.toFixed(2)}, outside the zones, keeping your picks, removals and painted zones there. It runs through the queue.`
       : `No templates: only the micrographs you picked get picks. Finish with your picks only?`;
     if (!confirm(msg)) return;
-    if (S.version && (th !== S.threshold || thHi !== (S.threshold_hi ?? null))) await setRange(th, thHi, true);
+    if (S.version) await setRange({}, true);
     try { await api(BASE + '/run', {job}); } catch (e) { return err(e.message); }
     await loadState(); render(); poll();
   };
@@ -708,9 +801,11 @@ function mount(el, ctx) {
     Q('#pk-thr').style.display = S.version ? '' : 'none';
     if (S.version) {
       const sg = M && M.suggest ? M.suggest.score.filter((_, i) => M.suggest.ok[i]) : [];
-      const vals = [...(tr ? tr.pos : []), ...(tr ? tr.neg : [])], top = Math.max(...vals, ...sg.slice(0, 5000), th ?? 0, thHi ?? 0);
+      let top = th ?? 0; [...(tr ? tr.pos : []), ...(tr ? tr.neg : []), ...sg].forEach(v => { if (v > top) top = v; });
+      const vals = [...(tr ? tr.pos : []), ...(tr ? tr.neg : [])];
       const lo = Math.max(0, Math.floor((Math.min(...vals, th ?? 1) - 0.08) * 20) / 20), hi = Math.min(1, Math.ceil((top + 0.03) * 20) / 20);
-      [Q('#pk-ths'), Q('#pk-thh')].forEach(s => { s.min = lo; s.max = Math.max(hi, lo + 0.1); s.disabled = !ed; });
+      const s0 = Q('#pk-ths'); s0.min = lo; s0.max = Math.max(hi, lo + 0.1);
+      ['#pk-ths', '#pk-pl', '#pk-ph', '#pk-zm', '#pk-zp'].forEach(k => { Q(k).disabled = !ed; });
       rangeText();
       renderHist();
     }
@@ -744,19 +839,41 @@ function mount(el, ctx) {
     });
     x.globalAlpha = 1;
     const X = v => (v - lo) / (hi - lo) * W;
-    x.fillStyle = 'rgba(0,0,0,.5)';                        // outside the range: shaded
+    x.fillStyle = 'rgba(0,0,0,.5)';                        // below the lowest score: shaded
     if (th !== null) x.fillRect(0, 0, Math.max(0, X(th)), H - 10);
-    if (thHi !== null) x.fillRect(X(thHi), 0, W - X(thHi), H - 10);
     if (th !== null) { x.fillStyle = '#fff'; x.fillRect(X(th) - 1.5, 0, 3, H - 10); }
-    if (thHi !== null) { x.fillStyle = css('--you'); x.fillRect(X(thHi) - 1.5, 0, 3, H - 10); }
     x.fillStyle = css('--ink3'); x.font = '20px sans-serif'; x.textBaseline = 'bottom';
     x.fillText(lo.toFixed(2), 2, H); const t = hi.toFixed(2); x.fillText(t, W - x.measureText(t).width - 2, H);
-    const inR = v => v >= th && (thHi === null || v <= thHi);
+    const inR = v => v >= th;
     const pos = tr.pos.length ? tr.pos.filter(inR).length / (tr.pos.length + tr.missing) : null;
-    const neg = tr.neg.filter(inR).length, above = thHi === null ? 0 : sg.filter(v => v > thHi).length;
+    const neg = tr.neg.filter(inR).length;
     Q('#pk-thn').innerHTML = `<span style="color:var(--you)">■</span> your picks (scored by templates from the other half) · <span style="color:var(--bad)">■</span> removed · <span style="color:var(--ink3)">■</span> candidates here<br>`
-      + (pos !== null ? `This range keeps <b style="color:var(--ink)">${Math.round(100 * pos)}%</b> of your picks` : '') + (tr.neg.length ? ` and ${neg} of the ${tr.neg.length} you removed.` : '.')
-      + (M && M.state === 'suggested' ? ` Here: ${visibleSuggestions().length} suggestions${above ? `, ${above} candidates above the highest score left out` : ''}.` : '');
+      + (pos !== null ? `This score keeps <b style="color:var(--ink)">${Math.round(100 * pos)}%</b> of your picks` : '') + (tr.neg.length ? ` and ${neg} of the ${tr.neg.length} you removed.` : '.');
+    renderScatter();
+  };
+  // this micrograph's candidates: score (x) against power (y); the box of what is kept, as cryoSPARC's Inspect Picks
+  const renderScatter = () => {
+    const c = Q('#pk-scat'), g_ = M && M.suggest;
+    if (!c) return;
+    const x = c.getContext('2d'), W = c.width, H = c.height, s = Q('#pk-ths'), lo = +s.min, hi = +s.max, P = +Q('#pk-ph').max;
+    x.clearRect(0, 0, W, H); x.fillStyle = css('--well'); x.fillRect(0, 0, W, H);
+    if (!g_ || !g_.power) { Q('#pk-scn').textContent = g_ ? 'Suggestions of an older version: Suggest this micrograph again (P) for its power and zones.' : 'Suggestions on this micrograph show here: score against power.'; return; }
+    const X = v => (v - lo) / (hi - lo) * W, Y = v => H - Math.min(v, P) / P * H, off = new Set(S.off || []);
+    let nk = 0, nz = 0, np_ = 0;
+    for (let i = 0; i < g_.xy.length; i++) {
+      if (!g_.ok[i]) continue;
+      const zone = inZone(g_.xy[i]), inP = (pLo === null || g_.power[i] >= pLo) && (pHi === null || g_.power[i] <= pHi);
+      const kept = g_.score[i] >= th && inP && !zone && !(g_.template && off.has(g_.template[i]));
+      if (kept) nk++; else if (zone && g_.score[i] >= th) nz++; else if (!inP && g_.score[i] >= th) np_++;
+      x.fillStyle = kept ? css('--data') : zone ? css('--bad') : css('--ink3');
+      x.globalAlpha = kept ? 0.9 : 0.55; x.fillRect(X(g_.score[i]) - 2.5, Y(g_.power[i]) - 2.5, 5, 5);
+    }
+    x.globalAlpha = 1; x.strokeStyle = '#fff'; x.lineWidth = 2;
+    const x0 = X(th ?? lo), y0 = Y(pHi ?? P), y1 = Y(pLo ?? 0);
+    x.strokeRect(x0, y0, W - x0 - 1, y1 - y0);
+    x.fillStyle = css('--ink3'); x.font = '20px sans-serif'; x.textBaseline = 'top';
+    x.fillText('power ↑', 4, 4); x.textBaseline = 'bottom'; const t = 'score →'; x.fillText(t, W - x.measureText(t).width - 4, H - 2);
+    Q('#pk-scn').innerHTML = `Here: <b style="color:var(--data)">${nk}</b> kept (white box)` + (np_ ? `, ${np_} out by power` : '') + (nz ? `, <span style="color:var(--bad)">${nz} in zones</span>` : '') + '.';
   };
   const render = () => { renderSide(); renderList(); renderInfo(); renderSize(); draw(); };
 
@@ -779,11 +896,17 @@ function mount(el, ctx) {
   lpText();
   Q('#pk-lp').oninput = e => { lp = +e.target.value; lpText(); ls('celeris-lowpass', lp); process(); draw(); };
   const ths = Q('#pk-ths');
-  ths.oninput = e => { thDragging = true; setRange(+e.target.value, undefined, false); };
-  ths.onchange = e => { thDragging = false; setRange(+e.target.value, undefined, true); };
-  const thh = Q('#pk-thh'), hiOf = v => v >= +thh.max - 1e-9 ? null : v;       // at the right end: no upper limit
-  thh.oninput = e => { thDragging = true; setRange(undefined, hiOf(+e.target.value), false); };
-  thh.onchange = e => { thDragging = false; setRange(undefined, hiOf(+e.target.value), true); };
+  ths.oninput = e => { thDragging = true; setRange({th: +e.target.value}, false); };
+  ths.onchange = e => { thDragging = false; setRange({th: +e.target.value}, true); };
+  const atEnd = (el, v) => v >= +el.max - 1e-9 ? null : v, atStart = (el, v) => v <= +el.min + 1e-9 ? null : v;
+  const slide = (id, f) => { const el = Q(id);                 // ends of the sliders: no limit
+    el.oninput = e => { thDragging = true; setRange(f(el, +e.target.value), false); };
+    el.onchange = e => { thDragging = false; setRange(f(el, +e.target.value), true); }; };
+  slide('#pk-pl', (el, v) => ({pLo: atStart(el, v)}));
+  slide('#pk-ph', (el, v) => ({pHi: atEnd(el, v)}));
+  slide('#pk-zm', (el, v) => ({zMean: atEnd(el, v)}));
+  slide('#pk-zp', (el, v) => ({zPow: atEnd(el, v)}));
+  Q('#pk-zone').onclick = () => setZonePen(!zonePen);
   Q('#pk-ntm').onchange = async e => {
     try { const d = await api(BASE + '/settings', {job, templates: +e.target.value}); S.settings.templates = d.templates; e.target.value = d.templates; err(''); }
     catch (er) { err(er.message); }
@@ -791,7 +914,7 @@ function mount(el, ctx) {
   Q('#pk-filt').querySelectorAll('button').forEach(b => b.onclick = () => { filter = b.dataset.f; renderList(); });
   const undoOne = () => {
     if (!undo.length || !editable()) return;
-    const u = JSON.parse(undo.pop()); M.picks = u.picks; M.rejected = u.rejected; M.state = u.state; edited();
+    const u = JSON.parse(undo.pop()); M.picks = u.picks; M.rejected = u.rejected; M.state = u.state; M.zones = u.zones || []; edited();
   };
   const onKey = ev => {
     if (!check()) return;
@@ -809,10 +932,11 @@ function mount(el, ctx) {
       ArrowLeft: () => open(idx - 1), ArrowRight: () => open(idx + 1), Enter: accept,
       t: train, s: () => suggestMore(), p: () => suggestMore([S.mics[idx].stem]),
       h: () => { show = !show; Q('#pk-show').checked = show; draw(); },
-      e: () => setBrush(!brush), Escape: () => brush && setBrush(false),
+      e: () => setBrush(!brush), Escape: () => { if (brush) setBrush(false); if (zonePen) setZonePen(false); },
       '[': () => S.version && setThreshold(Math.max(+ths.min, th - step_()), true), ']': () => S.version && setThreshold(Math.min(+ths.max, th + step_()), true),
-      '{': () => S.version && setRange(undefined, Math.max(+ths.min, (thHi ?? +thh.max) - step_()), true),
-      '}': () => S.version && setRange(undefined, hiOf(Math.min(+thh.max, (thHi ?? +thh.max) + step_())), true),
+      '{': () => S.version && setRange({pHi: Math.max(0, (pHi ?? 4) - 0.1)}, true),
+      '}': () => S.version && setRange({pHi: (pHi ?? 4) + 0.1 >= 4 ? null : (pHi ?? 4) + 0.1}, true),
+      z: () => setZonePen(!zonePen),
       u: undoOne, z: () => ev.ctrlKey && undoOne(), '0': () => { if (view) { view.z = 1; view.ox = view.oy = 0; draw(); } },
       '+': () => { if (view) { view.z = Math.min(8, view.z * 1.25); clampView(); draw(); } }, '-': () => { if (view) { view.z = Math.max(1, view.z / 1.25); clampView(); draw(); } },
     };
