@@ -455,6 +455,7 @@ def reconstruct_groups(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor,
             out.append(None)
             continue
         vols = [ab.Volume(b, dev, pad=pad, grid_correct=gc) for _ in (0, 1)]
+        ops_i = None if ops is not None and len(ops) > 1 and pad >= 2 and ab.SYM_RESAMPLE else ops
         for v in vols:
             v.clear()
         for i in range(0, len(sel), bp):
@@ -469,8 +470,10 @@ def reconstruct_groups(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor,
             for h in (0, 1):
                 m = hh == h
                 if m.any():
-                    vols[h].insert((xs * ctf)[m], (ctf * ctf)[m], AA[m], kmax=b / 2 - 1, ops=ops)
+                    vols[h].insert((xs * ctf)[m], (ctf * ctf)[m], AA[m], kmax=b / 2 - 1, ops=ops_i)
         for v in vols:
+            if ops_i is None:
+                v.symmetrize(ops)       # once, instead of inserting every image |S| times (refine_particles' way)
             ab._regularise_solve(v, 0.02)
             v.free_acc()
         h1, h2 = vols[0].real(), vols[1].real()

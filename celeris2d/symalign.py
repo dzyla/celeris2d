@@ -91,7 +91,9 @@ def _best_axis(v, mask, ang, axes, seed=0) -> tuple[torch.Tensor, float]:
 def parse(sym: str) -> tuple[str, int]:
     m = re.fullmatch(r"([CD])(\d+)", sym.strip().upper())
     if not m:
-        raise ValueError(f"symmetry frame: {sym!r} not supported (Cn, Dn)")
+        raise ValueError(f"symmetry frame: {sym!r} not found automatically (Cn, Dn only): start a {sym} refinement from a "
+                         f"map made with {sym} (Ab initio 3D with {sym}), or turn off align_symmetry if the map is already "
+                         f"in the {sym} frame")
     return m.group(1), int(m.group(2))
 
 

@@ -270,7 +270,9 @@ def test_local_refine_improves_domain_b(sim):
     print(f"\n[test] domain B: half-map resolution {summ['resolution_a']} A local vs {summ['consensus_region_resolution_a']} "
           f"A consensus (same mask); signal kept at 12-8 A {kept['local']:.2f} vs {kept['consensus']:.2f}; "
           f"pose error median {e_loc:.2f} vs {e_cons:.2f} deg, centre {d_loc:.2f} vs {d_cons:.2f} A; {summ['seconds']} s")
-    assert summ["resolution_a"] < summ["consensus_region_resolution_a"], summ
+    # <=: the consensus refinement reaches this simulation's floor too (6.67 A since the Refine3D step schedule of
+    # abinitio.FAST_STEPS; 7.06 A before); the signal kept and the pose error below show the local refinement's gain
+    assert summ["resolution_a"] <= summ["consensus_region_resolution_a"], summ
     assert kept["local"] > 1.3 * kept["consensus"], kept
     assert e_loc < 0.6 * e_cons, (e_loc, e_cons)
 

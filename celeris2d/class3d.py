@@ -48,7 +48,7 @@ import torch
 import torch.nn.functional as F
 
 from .clock import since
-from .abinitio import (Volume, _free, _live, _real_space_constraints, _regularise_solve, _to_box, auto_pad,
+from .abinitio import (SYM_RESAMPLE, Volume, _free, _live, _real_space_constraints, _regularise_solve, _to_box, auto_pad,
                        fsc_maps, lowpass, resolution_from_fsc, sphere_mask, symmetry_ops)
 from .engine import TWO_PI, ctf_2d, freqs, release_cache
 from .project import logged
@@ -181,9 +181,15 @@ def classify(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, n_classes
         inv = inv.to(dev)
         return x[inv], ctf[inv]
 
+    def ins_ops(pad):
+        """Operators to insert every image at; None: insert once and resample the accumulators (Volume.symmetrize, pad
+        2 only, as refine_particles: an |S| x shorter back-projection)."""
+        return None if len(ops) > 1 and pad >= 2 and SYM_RESAMPLE else ops
+
     def backproject(W, classes, b, kmax, pad, gc, first=False):
         """Half reconstructions (num / den accumulated, then solved) of these classes from weights W (R, K)."""
         vols = {k: [Volume(b, dev, pad=pad, grid_correct=gc), Volume(b, dev, pad=pad, grid_correct=gc)] for k in classes}
+        ops_i = ins_ops(pad)
         fyy, fxx = freqs(b, dev)
         bp = int(max(32, min(2048, 2e8 // (b * (b // 2 + 1) * 8))))
         if first and S > 1:
@@ -206,12 +212,14 @@ def classify(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, n_classes
                     if first and S > 1:     # every row at all its related poses, so no copy is favoured at the start
                         Ain = (A[sl][sel][:, None] @ X[None]).reshape(-1, 3, 3)
                         vols[k][h].insert((xc[sel] * ww / S).repeat_interleave(S, 0),
-                                          (c2[sel] * ww / S).repeat_interleave(S, 0), Ain, kmax=kmax, ops=ops)
+                                          (c2[sel] * ww / S).repeat_interleave(S, 0), Ain, kmax=kmax, ops=ops_i)
                     else:
                         Ain = A[sl][sel] if S == 1 else A[sl][sel] @ X[s_best[sl][sel, k]]
-                        vols[k][h].insert(xc[sel] * ww, c2[sel] * ww, Ain, kmax=kmax, ops=ops)
+                        vols[k][h].insert(xc[sel] * ww, c2[sel] * ww, Ain, kmax=kmax, ops=ops_i)
         for k in classes:
             for v in vols[k]:
+                if ops_i is None:
+                    v.symmetrize(ops)
                 _regularise_solve(v, 0.02)
                 v.free_acc()
         return vols
@@ -315,8 +323,11 @@ def classify(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, n_classes
                         continue
                     xf = torch.zeros((len(r), be, be // 2 + 1), dtype=torch.complex64, device=dev)
                     xf[:, band] = ci[:, None] * cb * e_t.conj() * r
-                    acc.insert(xf, (ci[:, None, None] ** 2) * ctf * ctf, A[sl], kmax=min(be / 2 - 1, kal + 2), ops=ops)
+                    acc.insert(xf, (ci[:, None, None] ** 2) * ctf * ctf, A[sl], kmax=min(be / 2 - 1, kal + 2),
+                               ops=ins_ops(acc.pad))
                 if it_ < n_it:
+                    if ins_ops(acc.pad) is None:
+                        acc.symmetrize(ops)
                     _regularise_solve(acc, 0.02)
                     acc.free_acc()
                     Dr = acc.real()

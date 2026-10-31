@@ -111,17 +111,61 @@ def local_rotations(step_deg: float, n: int = 1) -> torch.Tensor:
     return Rx @ Ry
 
 
+def _axis_rot(axis, deg: float) -> torch.Tensor:
+    """Rotation by deg about a unit axis (Rodrigues)."""
+    k = torch.tensor(axis, dtype=torch.float64)
+    k = k / k.norm()
+    K = torch.tensor([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]], dtype=torch.float64)
+    a = math.radians(deg)
+    return torch.eye(3, dtype=torch.float64) + math.sin(a) * K + (1 - math.cos(a)) * (K @ K)
+
+
+def _close_group(gens: list, order: int) -> torch.Tensor:
+    """Every product of the generators (the group they generate), identity first; checked against its order."""
+    ops = [torch.eye(3, dtype=torch.float64)]
+    i = 0
+    while i < len(ops):
+        for g in gens:
+            m = g @ ops[i]
+            if not any(torch.allclose(m, o, atol=1e-6) for o in ops):
+                ops.append(m)
+        i += 1
+        if len(ops) > order:
+            break
+    if len(ops) != order:
+        raise RuntimeError(f"point group closure gave {len(ops)} operators, expected {order}")
+    return torch.stack(ops).float()
+
+
+# T / O / I: generators in RELION's frames (its symmetry library): T a 3-fold on z and a 2-fold in the y-z plane,
+# O a 4-fold on z and a 3-fold on (1, 1, 1), I (= I2) a 2-fold on z and a 5-fold in the x-z plane
+_POLY = {"T": ([((0, 0, 1), 120), ((0, 0.816496581, 0.577350269), 180)], 12),
+         "O": ([((0, 0, 1), 90), ((1, 1, 1), 120)], 24),
+         "I": ([((0, 0, 1), 180), ((0.525731112, 0, 0.850650808), 72)], 60)}
+_POLY["I2"] = _POLY["I"]
+_POLY["I1"] = ([((1, 0, 0), 180), ((0.850650808, 0, 0.525731112), 72)], 60)        # Crowther: 2-fold on x
+
+
 def symmetry_ops(sym: str) -> torch.Tensor:
-    """Rotation matrices (S, 3, 3) of point group Cn / Dn (RELION axis convention: Cn about z, D 2-fold about x)."""
-    sym = sym.upper()
-    kind, n = sym[0], int(sym[1:] or 1)
+    """Rotation matrices (S, 3, 3) of point group Cn / Dn / T / O / I (RELION axis conventions: Cn about z, the D
+    2-fold about x; T, O, I (I2) and I1 as in _POLY)."""
+    sym = sym.upper().strip()
+    if sym in _POLY:
+        gens, order = _POLY[sym]
+        if sym not in _OPS_CACHE:
+            _OPS_CACHE[sym] = _close_group([_axis_rot(a, d) for a, d in gens], order)
+        return _OPS_CACHE[sym].clone()
+    kind, n = sym[0], int(sym[1:] or 1) if sym[1:].isdigit() or not sym[1:] else -1
     if kind not in "CD" or n < 1:
-        raise ValueError(f"symmetry {sym!r} not supported (Cn or Dn)")
+        raise ValueError(f"symmetry {sym!r} not supported (Cn, Dn, T, O, I)")
     ops = [rotz(torch.tensor([360.0 * i / n]))[0] for i in range(n)]
     if kind == "D":
         flip = torch.diag(torch.tensor([1.0, -1.0, -1.0]))  # 2-fold about x
         ops += [o @ flip for o in ops]
     return torch.stack(ops)
+
+
+_OPS_CACHE: dict = {}
 
 
 # --------------------------------------------------------------------------- Fourier volume
@@ -1033,28 +1077,27 @@ def _view_weights(A: torch.Tensor, cap: float) -> torch.Tensor:
 
 
 def view_coverage(A: torch.Tensor, sym: str = "C1") -> dict:
-    """How the viewing directions (third rows of A, folded by the symmetry group) spread over the sphere, in ~10 deg
-    bins: the fraction of bins with a real share of the particles (relative to the group's share of the sphere) and
-    the share of
-    particles in the busiest 10 % of bins. A map from a narrow range of views is smeared along the missing
-    directions, whatever its FSC says."""
-    ops = symmetry_ops(sym).to(A.device)
+    """How the viewing directions spread over the sphere, in ~10 deg bins: the fraction of bins with a real share of
+    the particles and the share of particles in the busiest 10 % of bins. Every particle counts at all its
+    symmetry-equivalent directions, so the histogram covers the whole sphere for any group (folding each to its
+    nearest copy put C8's uniform views at 0 % occupied and a top + side band at 100 %). A map from a narrow range of
+    views is smeared along the missing directions, whatever its FSC says."""
+    ops = symmetry_ops(sym).to(A.device).float()
     rot, tilt = sphere_directions(10.0)
     th, ph = torch.deg2rad(tilt), torch.deg2rad(rot)
     bins = torch.stack([th.sin() * ph.cos(), th.sin() * ph.sin(), th.cos()], -1).to(A.device)
-    d = A[:, 2, :]                                            # viewing direction in the map frame
-    best = (d @ bins.T)
-    for S in ops[1:]:                                         # fold symmetry-equivalent directions
-        best = torch.maximum(best, (d @ S) @ bins.T)
-    k = best.argmax(1)
-    cnt = torch.bincount(k, minlength=len(bins)).float()
-    # a direction counts if it holds at least a quarter of what a uniform spread over the group's share would give
-    # (with 10^5+ particles a few strays land everywhere)
-    expect = cnt.sum() * len(ops) / len(bins)
-    occ = float((cnt >= 0.25 * expect).float().mean()) * len(ops)
+    d = A[:, 2, :].float()                                    # viewing direction in the map frame
+    cnt = torch.zeros(len(bins), device=A.device)
+    for S in ops:                                             # the direction of A @ S is d @ S
+        for i in range(0, len(d), 65536):
+            cnt += torch.bincount(((d[i:i + 65536] @ S) @ bins.T).argmax(1), minlength=len(bins)).float()
+    # a direction counts if it holds at least a quarter of what a uniform spread would give (with 10^5+ particles a
+    # few strays land everywhere)
+    expect = cnt.sum() / len(bins)
+    occ = float((cnt >= 0.25 * expect).float().mean())
     top = torch.sort(cnt, descending=True).values
-    share = float(top[:max(1, len(bins) // (10 * len(ops)))].sum() / cnt.sum().clamp_min(1))
-    return dict(occupied=round(min(1.0, occ), 3), top10_share=round(share, 3))
+    share = float(top[:max(1, len(bins) // 10)].sum() / cnt.sum().clamp_min(1))
+    return dict(occupied=round(occ, 3), top10_share=round(share, 3))
 
 
 def solvent_mask(vmap: torch.Tensor, apix: float, lowpass_a: float = 15.0, dilate_a: float = 4.0,
@@ -1186,6 +1229,8 @@ def cross_fit(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, halves, 
 
 
 SYM_RESAMPLE = True      # refine_particles: symmetry by resampling the accumulators (False: insert at every operator)
+FAST_STEPS = True        # refine_particles (one model, no search limits): the step halves every iteration once the poses settle, and the
+                         # refinement stops at step_min when they no longer move (False: halve after < 30 % moved)
 
 
 def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, inits, z: torch.Tensor | None = None,
@@ -1422,6 +1467,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
 
     refs = None
     cur_masks = [None] * M          # per model: solvent mask in use (solvent_mask), else the particle sphere
+    settled = converged = False     # FAST_STEPS: the poses have settled at the starting step / at step_min
     for it in range(n_iter + 1):
         # ---- reconstruct halves, FSC, filter
         refs = r = rm = None        # the last alignment's references (also bound to the loop variables that built them)
@@ -1490,7 +1536,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             pops_ = torch.bincount(z, minlength=M).tolist() if M > 1 else None      # the particles in these maps
             _live("refine", it, n_iter, [vols[m] for m in range(M) if alive[m]], [res[m] for m in range(M) if alive[m]],
                   box_a / b, counts=None if pops_ is None else [pops_[m] for m in range(M) if alive[m]])
-        if it == n_iter:
+        if it == n_iter or converged:
             break
         A_prev, t_prev = A.clone(), t.clone()      # how far this iteration moves each pose (log, history)
         live = [m for m in range(M) if alive[m]]
@@ -1877,7 +1923,24 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             iters["angle"].append(d_ang.cpu().numpy().astype(np.float16))
             iters["shift"].append(d_sh.cpu().numpy().astype(np.float16))
             iters["fit"].append(score.cpu().numpy().astype(np.float16))
-        if step_scale is None and changed / n < 0.3:
+        if step_scale is None and FAST_STEPS and M == 1 and not limited:
+            # (not with search limits: a focused refinement's poses travel several steps at one step size - the
+            # domain of tests/test_subtract.py stayed at the consensus resolution when the step halved every time)
+            # once the poses settle (< 30 % off the grid centre), halve the step every iteration: after a halving most
+            # particles move to a neighbour of the finer grid (where they already were, to within the old step), and a
+            # second pass at the same step moved them ~0 (INX-6 C8: median 0.03 deg, 15-22 % moved, the resolution
+            # unchanged; one pass of 10 was 48 s). At step_min, a pass with < 15 % moved ends the refinement, unless
+            # a global / rescue / symmetry-relaxation iteration is still to come.
+            at_min = step <= step_min * 1.001
+            later = [a for a in tuple(global_at) + (tuple(rescue_at) if rescue_frac > 0 else ()) if a > it + 1]
+            if at_min and settled and changed / n < 0.15 and not later and it + 1 >= relax_iters and it + 1 < n_iter:
+                converged = True
+                log(f"[3d] poses converged at the finest step ({step_min:g} deg): no more iterations needed "
+                    f"({it + 1} of {n_iter})")
+            settled = settled or changed / n < 0.3
+            if settled:
+                step = max(step_min, step / 2)
+        elif step_scale is None and changed / n < 0.3:
             step = max(step_min, step / 2)
         wpart = torch.ones(n, device=dev)
         if drop_frac > 0:

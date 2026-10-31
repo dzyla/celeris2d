@@ -24,3 +24,21 @@ def test_angdist_bild(tmp_path):
     m[16, 16, 4:28] = 1
     assert abs(particle_radius(m, 2.0, 64.0) - 2.0 * np.sqrt(11.5 ** 2 + 0.5)) < 1e-3   # farthest voxel (centre 15.5)
     assert particle_radius(None, 2.0, 64.0) == 0.35 * 64.0
+
+
+def test_view_coverage_same_for_every_group():
+    """Uniform views cover the sphere for every symmetry group; a top + side band does not (C8 read 0 % for uniform
+    views and 100 % for the band when each direction was folded to its nearest copy)."""
+    import torch
+    from celeris2d.abinitio import view_coverage
+    g = torch.Generator().manual_seed(0)
+    q = torch.randn(40000, 4, generator=g)
+    w, x, y, z = (q / q.norm(dim=1, keepdim=True)).T
+    A = torch.stack([torch.stack([1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)], -1),
+                     torch.stack([2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)], -1),
+                     torch.stack([2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)], -1)], 1)
+    tilt = torch.rad2deg(torch.arccos(A[:, 2, 2].clamp(-1, 1)))
+    band = A[(tilt < 20) | ((tilt > 80) & (tilt < 100))]
+    for sym in ("C1", "C4", "C8", "D2", "D4"):
+        assert view_coverage(A, sym)["occupied"] > 0.95, sym
+        assert view_coverage(band, sym)["occupied"] < 0.45, sym

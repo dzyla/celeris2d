@@ -320,3 +320,33 @@ def test_model_fsc_not_cut_at_classification_resolution(tmp_path, particles):
         c = np.asarray(curves[k])
         cross = int(np.argmax(c < 0.143))
         assert cross > 0 and c[cross:].max() < 0.143, (k, c.round(2).tolist())
+
+
+@pytest.mark.parametrize("sym", ["T", "O", "I"])
+def test_polyhedral_symmetrize_is_as_accurate_as_insertion(sym):
+    """T / O / I: resampling the accumulators once recovers a map with the group's symmetry about as well as
+    inserting every image at all |G| poses (errors vs the truth, box 32, 300 images: T 0.130 vs 0.120, O equal - its
+    operators permute the grid axes - I 0.128 vs 0.174)."""
+    dev = gpu.default()
+    ops = ab.symmetry_ops(sym).double()
+    blobs = [tuple((S @ torch.tensor([x, y, z], dtype=torch.float64)).tolist()) + (s * 0.8, w)
+             for S in ops for x, y, z, s, w in BLOBS[:2]]
+    vol = _volume(blobs).to(dev)
+    ops = ops.float().to(dev)
+    g = torch.Generator().manual_seed(5)
+    n = 300
+    A = ab.euler_to_matrix(torch.rand(n, generator=g) * 360, torch.rand(n, generator=g) * 180,
+                           torch.rand(n, generator=g) * 360).to(dev)
+    V = ab.Volume(BOX, dev, pad=2)
+    V.set_real(vol)
+    x = V.project(A)
+    w = torch.ones(x.shape, device=dev)
+    err = []
+    for sym_after in (False, True):
+        R = ab.Volume(BOX, dev, pad=2, grid_correct=True)
+        R.insert(x, w, A, kmax=BOX / 2 - 1, ops=None if sym_after else ops)
+        if sym_after:
+            R.symmetrize(ops)
+        ab._regularise_solve(R, 0.02)
+        err.append(float((R.real() - vol).norm() / vol.norm()))
+    assert err[1] < 1.2 * err[0] + 0.01, err
