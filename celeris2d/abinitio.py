@@ -1201,7 +1201,8 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                      nu_weighted: bool = False, nu_awf: float = 0.0, nu_order: int = 0, marginalize: int = 0,
                      nu_ratio: float = 0.0, nu_shift: int = 0, noise_model: str = "residual",
                      rescue_frac: float = 0.0, rescue_at: tuple = (), rescue_shift: float = 24.0,
-                     rescue_res: float = 15.0, rescue_topk: int = 1, log=print):
+                     rescue_res: float = 15.0, rescue_topk: int = 1, coarse: float = 0.0, coarse_keep: int = 8,
+                     log=print):
     """Local refinement of particle orientations A and shifts t (A, model shift) against CTF-modulated projections,
     gold-standard halves (half: (n,) 0/1 per particle, e.g. the split of the refinement the poses come from - a
     particle must stay in the half it was aligned or polished against; default a random split, seed 1). inits:
@@ -1677,6 +1678,11 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
         shb = torch.round(kr[band]).long()
         isig = 1.0 / sigma2[shb]
         Fb = int(band.sum())
+        # two stages (coarse > 0): every hypothesis scored on the band's low frequencies (up to coarse x k_al), the
+        # coarse_keep best orientations on all of it
+        two = coarse > 0 and J > coarse_keep
+        band_lo = band & (kr <= coarse * k_al) if two else None
+        lo_sel = (kr[band] <= coarse * k_al) if two else None
         llm_all = torch.zeros((n, M), device=dev)
         if marg:
             marg_D = torch.eye(3, device=dev).repeat(n, marg, 1, 1)
@@ -1689,6 +1695,8 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             refs_d = [[r.on(d) for r in rm] for rm in refs]
             band_d, fy_d, fx_d = band.to(d), fy.to(d), fx.to(d)
             fyb_d, fxb_d, E_d, isig_d, shb_d, Rc_d, sg_d = (v_.to(d) for v_ in (fyb, fxb, E, isig, shb, Rc, sg))
+            if two:
+                blo_d, lo_d = band_lo.to(d), lo_sel.to(d)
             ops_d = ops_x.to(d) if xo else None
             rp, rc = torch.zeros(len(sigma2), device=d), torch.zeros(len(sigma2), device=d)
             ch_, sw_ = 0.0, 0
@@ -1709,34 +1717,56 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                         nb, M, J, 3, 3)
                 else:
                     Ac = Rc_d[None, None] @ Ai[:, :, None]     # (nb, M, J, 3, 3): around the pose in each model
-                P = torch.empty((nb, M, J, x.shape[1]), dtype=torch.complex64, device=d)
-                for m in range(M):
-                    for h in (0, 1):
-                        sel = torch.nonzero(hh == h).squeeze(1)
-                        if len(sel):
-                            P[sel, m] = refs_d[m][h].project(Ac[sel, m].reshape(-1, 3, 3), band_d).reshape(len(sel), J, -1)
-                CP = P * ctf[:, None, None]
-                del P
                 tt = t[i:i2].to(d)                                                                          # (nb, M, 2)
+                ps_i = pscale[i:i2].to(d)
+                aa = ps_i[:, None, None, None]                                                              # contrast scale
+
+                def outside(Ac_):
+                    """Hypotheses beyond the angular / shift limits around the starting pose (not searched)."""
+                    okm = torch.ones((nb, M, Ac_.shape[2], Sh), dtype=torch.bool, device=d)
+                    if max_angle is not None:      # trace(Ac limit_A^T) = 1 + 2 cos(angle between them)
+                        tr = (Ac_ * limit_A[i:i2].to(d)[:, None, None]).sum((-1, -2))                      # (nb, M, J)
+                        okm &= (tr >= cos_lim)[..., None]
+                    if max_shift is not None:
+                        dsh = tt[:, :, None, :] + sg_d[None, None] - limit_t[i:i2].to(d)[:, None, None]     # (nb, M, Sh, 2)
+                        okm &= (dsh.norm(dim=-1) <= max_shift + 1e-3)[:, :, None, :]
+                    return ~okm
+
+                def project(Ac_, bmask):
+                    J_ = Ac_.shape[2]
+                    P_ = torch.empty((nb, M, J_, int(bmask.sum())), dtype=torch.complex64, device=d)
+                    for m in range(M):
+                        for h in (0, 1):
+                            sel = torch.nonzero(hh == h).squeeze(1)
+                            if len(sel):
+                                P_[sel, m] = refs_d[m][h].project(Ac_[sel, m].reshape(-1, 3, 3), bmask).reshape(len(sel), J_, -1)
+                    return P_
+
+                jmap = None
+                if two:
+                    CP1 = project(Ac, blo_d) * ctf[:, lo_d][:, None, None]
+                    e1 = torch.exp(-1j * ph * (fxb_d[lo_d] * tt[..., 0, None] + fyb_d[lo_d] * tt[..., 1, None]))
+                    Z1 = (x[:, lo_d].conj()[:, None] * e1)[:, :, None] * CP1 * isig_d[lo_d]
+                    l1 = aa * (Z1 @ E_d[:, lo_d].T).real
+                    del Z1, e1
+                    l1 -= 0.5 * aa * aa * (CP1.abs() ** 2 * isig_d[lo_d]).sum(-1)[..., None]
+                    del CP1
+                    if limited:
+                        l1 = l1.masked_fill(outside(Ac), -float("inf"))
+                    jmap = l1.amax(-1).topk(coarse_keep, dim=-1).indices                                    # (nb, M, T)
+                    del l1
+                    Ac = Ac.gather(2, jmap[..., None, None].expand(-1, -1, -1, 3, 3))
+                Jx = Ac.shape[2]
+                CP = project(Ac, band_d) * ctf[:, None, None]
                 # shift hypotheses t + sg: model = exp(-i ph f.(t+s)) CP
                 e_t = torch.exp(-1j * ph * (fxb_d * tt[..., 0, None] + fyb_d * tt[..., 1, None]))         # (nb, M, F)
                 Z = (x.conj()[:, None] * e_t)[:, :, None] * CP * isig_d                                     # (nb, M, J, F)
                 cross = (Z @ E_d.T).real                                                                    # (nb, M, J, Sh)
                 del Z
                 pw = (CP.abs() ** 2 * isig_d).sum(-1)                                                       # (nb, M, J)
-                ps_i = pscale[i:i2].to(d)
-                aa = ps_i[:, None, None, None]                                                              # contrast scale
                 ll = (aa * cross - 0.5 * aa * aa * pw[..., None])                                           # (nb, M, J, Sh)
                 if limited:     # hypotheses beyond the angular / shift limits around the starting pose are not searched
-                    okm = torch.ones(ll.shape, dtype=torch.bool, device=d)
-                    if max_angle is not None:      # trace(Ac limit_A^T) = 1 + 2 cos(angle between them)
-                        tr = (Ac * limit_A[i:i2].to(d)[:, None, None]).sum((-1, -2))                       # (nb, M, J)
-                        okm &= (tr >= cos_lim)[..., None]
-                    if max_shift is not None:
-                        dsh = tt[:, :, None, :] + sg_d[None, None] - limit_t[i:i2].to(d)[:, None, None]     # (nb, M, Sh, 2)
-                        okm &= (dsh.norm(dim=-1) <= max_shift + 1e-3)[:, :, None, :]
-                    ll = ll.masked_fill(~okm, -float("inf"))
-                    okm = None
+                    ll = ll.masked_fill(outside(Ac), -float("inf"))
                 ll = ll.reshape(nb, M, -1)
                 llm, bjs = ll.max(-1)                                                                       # best pose per model
                 if not all(alive):
@@ -1755,7 +1785,7 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                 A[i:i2] = Ac[ar[:, None], ar_m[None], bj].to(dev)
                 t_new = tt + sg_d[bs]
                 if subpixel and Sh == 9:       # parabola through the 3 shift log-likelihoods along x and along y
-                    lg = ll.reshape(nb, M, J, 3, 3)[ar[:, None], ar_m[None], bj]                            # (nb, M, y, x)
+                    lg = ll.reshape(nb, M, Jx, 3, 3)[ar[:, None], ar_m[None], bj]                            # (nb, M, y, x)
                     iy, ix = bs // 3, bs % 3
                     ds = float(ts[2] - ts[1])
                     for ax, ic in ((0, ix), (1, iy)):            # t[..., 0] is x (grid columns), t[..., 1] is y (rows)
@@ -1769,7 +1799,8 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                 sw_ += int((bm != z[i:i2].to(d)).sum())
                 z[i:i2] = bm.to(dev)
                 bj, bs = bj[ar, bm], bs[ar, bm]
-                ch_ += float((bj != jc).float().sum() + (bs != Sh // 2).float().sum()) / 2
+                bjo = bj if jmap is None else jmap[ar, bm, bj]                  # index on the full local grid
+                ch_ += float((bjo != jc).float().sum() + (bs != Sh // 2).float().sum()) / 2
                 # residual power for the noise model
                 pscale_new[i:i2] = (cross[ar, bm, bj, bs] / pw[ar, bm, bj].clamp_min(1e-30)).to(dev)   # LS scale at the pose
                 mdl = CP[ar, bm, bj] * e_t[ar, bm] * E_d[bs] * ps_i[:, None]
