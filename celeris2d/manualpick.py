@@ -31,6 +31,7 @@ from dataclasses import asdict, dataclass
 import numpy as np
 import torch
 
+from . import gpu
 from . import picking as pk
 from .plotstyle import themed
 from .preprocess import _grid, _shift_phase
@@ -189,15 +190,15 @@ def load_mic(project: Project, mc: Job, row, dev) -> tuple[torch.Tensor, float, 
 
 
 def _device():
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    return gpu.default()
 
 
 def _gpu_or_cpu(fn):
     """fn(dev) on the GPU, or on the CPU when the GPU has no room (a job of the queue may hold it)."""
     try:
         return fn(_device())
-    except torch.cuda.OutOfMemoryError:
-        torch.cuda.empty_cache()
+    except gpu.OutOfMemoryError:
+        gpu.empty_cache()
         return fn("cpu")
 
 
@@ -264,7 +265,7 @@ def _align(X: torch.Tensor, refs: torch.Tensor, angles: torch.Tensor, mask: torc
     circ = (idx + b // 2) % b - b // 2                               # circular index -> signed shift
     allowed = (circ[:, None] ** 2 + circ[None, :] ** 2) <= smax * smax
     per = K * A * b * b * 4 * 4                                       # bytes per image (maps + spectra)
-    free = gpu_free(X.device) if X.device.type == "cuda" else 2 << 30
+    free = gpu_free(X.device) if gpu.is_gpu(X.device) else 2 << 30
     chunk = int(np.clip(free // 4 // per, 8, 512))
     out = []
     for i in range(0, len(X), chunk):

@@ -22,6 +22,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from . import gpu
+
 
 def _rotmat(axes: torch.Tensor, ang: float) -> torch.Tensor:
     """Rotations by ang about unit axes (n, 3) (x, y, z) -> (n, 3, 3)."""
@@ -97,7 +99,7 @@ def sym_frame(vol, apix: float, sym: str, res_a: float = 12.0, nb: int = 72, n_a
               log=print) -> tuple[torch.Tensor, dict]:
     """R (3, 3), columns = the map's directions of the symmetry frame's x, y, z axes; info with the scores."""
     kind, n = parse(sym)
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = gpu.default()
     vt = torch.as_tensor(np.asarray(vol) if not torch.is_tensor(vol) else vol, dtype=torch.float32).to(dev)
     b = vt.shape[0]
     w = vt.clamp_min(0)
@@ -170,6 +172,6 @@ def apply_frame(vol, A: torch.Tensor, R: torch.Tensor) -> tuple[torch.Tensor, to
     """The map in the symmetry frame (sampled at R r) and the poses that give the same images (A @ R)."""
     vt = torch.as_tensor(vol, dtype=torch.float32)
     dev = vt.device
-    out = _rotated(vt.to("cuda" if torch.cuda.is_available() else dev), R.float().to(
-        "cuda" if torch.cuda.is_available() else dev)).to(dev)
+    out = _rotated(vt.to(gpu.default() if gpu.available() else dev), R.float().to(
+        gpu.default() if gpu.available() else dev)).to(dev)
     return out, A.float() @ R.float().to(A.device)

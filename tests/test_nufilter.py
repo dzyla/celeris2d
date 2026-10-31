@@ -7,9 +7,10 @@ cutoffs and beat the best single global low-pass.
 import pytest
 import torch
 
+from celeris2d import gpu
 from celeris2d import nufilter as nu
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+pytestmark = pytest.mark.skipif(not gpu.count(), reason="needs a GPU (or CELERIS2D_DEVICE=cpu)")
 N, APIX = 64, 1.0
 
 
@@ -19,7 +20,7 @@ def _lp(x, res):
 
 
 def _data():
-    dev = "cuda"
+    dev = gpu.default()
     g = torch.Generator(device=dev).manual_seed(0)
     s = torch.randn(N, N, N, generator=g, device=dev)
     x = torch.arange(N, device=dev)[None, None, :].expand(N, N, N)
@@ -56,7 +57,7 @@ def test_cutoff_stats_and_figure(tmp_path):
     for i in range(2):
         fa, fb = sig + noise(0.85), sig + noise(0.85)
         nu.adaptive_filter_cv(0.5 * (fa + fb), fa, fb, APIX, APIX, 4.0, info=infos[i])
-    mask = torch.ones(N, N, N, device="cuda")
+    mask = torch.ones(N, N, N, device=gpu.default())
     st = nu.cutoff_stats(infos, mask, 4.0)
     assert 20 < st["at_global_pct"] < 80 and 20 < st["coarse_pct"] < 80                 # left 3 A, right 8 A
     assert st["halves_r"] > 0.5 and abs(sum(st["share_pct"]) - 100) < 1

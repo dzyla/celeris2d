@@ -237,6 +237,7 @@ def mask_report(mask: torch.Tensor, apix: float, vmap: torch.Tensor | None = Non
 # ------------------------------------------------------------------------------------------------ MaskCreate job
 from dataclasses import dataclass  # noqa: E402
 
+from . import gpu
 from .project import has_classes  # noqa: E402
 
 
@@ -313,7 +314,7 @@ def run_mask(project, job, log=print) -> dict:
     s = settings_of(job, MaskCreateSettings)
     src = project.job(job.params["map"])
     t0 = _t.time()
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = gpu.default()
     avg, h1, h2, apix, res = _source_maps(project, src, s.cls)
     avg = avg.to(dev)
     halves = None if h1 is None else (h1.to(dev), h2.to(dev))

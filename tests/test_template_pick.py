@@ -3,6 +3,7 @@ the blob picker's peaks are unchanged by the refactor, and map projections cover
 import numpy as np
 import torch
 
+from celeris2d import gpu
 from celeris2d import picking as pk
 
 
@@ -34,7 +35,7 @@ def test_template_pick_finds_projections():
             pos.append((x * apix, y * apix))
     pos = np.array(pos)
     mic = -mic / mic.std() + rng.normal(0, 3.0, mic.shape).astype(np.float32)        # dark protein, SNR ~ 0.1
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = gpu.default()
     m = torch.as_tensor(mic, device=dev)
     c = pk.template_candidates(m, apix, 60.0, tmpl, ta, dark=True)
     keep = pk.select(c, max_std=99, max_mean=99)

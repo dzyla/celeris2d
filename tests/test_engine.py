@@ -15,10 +15,11 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from celeris2d import gpu
 from celeris2d.engine import rot_grid
 from celeris2d.session import Session
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+pytestmark = pytest.mark.skipif(not gpu.count(), reason="needs a GPU (or CELERIS2D_DEVICE=cpu)")
 
 BOX, APIX, N_PER, NOISE = 64, 4.0, 1000, 1.2
 

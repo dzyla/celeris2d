@@ -8,7 +8,11 @@ averages out. Multi-GPU, streams particles while it classifies, and keeps a pers
 loop for good/bad decisions (CLI, Python session, or MCP server).
 
 ## Install
-Needs an NVIDIA GPU and a CUDA build of PyTorch ≥ 2.4 (RTX 50xx / Blackwell: CUDA 12.8+ wheels).
+Needs a GPU and a matching build of PyTorch ≥ 2.4. NVIDIA (CUDA; RTX 50xx / Blackwell: CUDA 12.8+ wheels) is what
+Celeris is developed and tested on. The code also runs on PyTorch's AMD (ROCm, Linux) and Intel (XPU) builds, which
+are not tested yet: install the ROCm or XPU wheel of torch instead of the CUDA one. `CELERIS2D_DEVICE=cpu` runs
+everything on the CPU (slow; for checks). DirectML (WSL / Windows on any GPU) cannot hold complex numbers and does not
+work.
 ```bash
 git clone https://github.com/dzyla/celeris2d.git
 cd celeris2d

@@ -24,6 +24,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
+from . import gpu
 from .clock import since
 from . import picking as pk
 from . import preprocess as pp
@@ -201,7 +202,7 @@ def run_polish(project: Project, job, log=print) -> dict:
     p = job.params
     s = PolishSettings(**{k: v for k, v in p.items() if k in PolishSettings.__dataclass_fields__})
     rj, mc = project.job(p["refine"]), project.job(p["micrographs"])
-    dev = torch.device("cuda")
+    dev = torch.device(gpu.default())
     t_start = time.time()
     P = _particles(project, job)
     movies = np.unique(P["movie"])

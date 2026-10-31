@@ -16,11 +16,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from celeris2d import gpu
 from celeris2d import abinitio as ab
 from celeris2d.engine import rot_grid, upsample2
 from celeris2d.session import Session
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+pytestmark = pytest.mark.skipif(not gpu.count(), reason="needs a GPU (or CELERIS2D_DEVICE=cpu)")
 
 BOX, APIX, N, NOISE = 64, 4.0, 4000, 1.5
 _r = np.random.default_rng(7)
@@ -47,7 +48,7 @@ def _c3(blobs):
 
 
 def _simulate(tmp_path_factory, blobs):
-    dev = "cuda"
+    dev = gpu.default()
     g = torch.Generator().manual_seed(4)
     V = ab.Volume(BOX, dev)
     V.set_real(_volume(blobs).to(dev))
@@ -129,7 +130,7 @@ def test_relax_from_user_symmetry(tmp_path, tmp_path_factory):
 
 def test_projector_conventions():
     """A 2D in-plane rotation of a projection equals rotz composed on the 3D orientation; Euler round trip."""
-    dev = "cuda"
+    dev = gpu.default()
     V = ab.Volume(BOX, dev)
     V.set_real(_volume(BLOBS).to(dev))
     A = ab.euler_to_matrix(torch.tensor([30.0]), torch.tensor([70.0]), torch.tensor([10.0]))
@@ -146,7 +147,7 @@ def test_projector_conventions():
 
 def test_working_box_fits_memory(monkeypatch):
     class Fake:
-        dev, bmax, box_a = torch.device("cuda"), 256, 400.0
+        dev, bmax, box_a = torch.device(gpu.default()), 256, 400.0
     monkeypatch.setattr(ab, "_free", lambda dev: 6e9)
     b = ab.working_box(Fake(), n_acc=2, n_ft=2, log=lambda *a: None)
     assert b < 256 and (2 * 160 + 2 * 64 + 320) * b ** 3 + 1.5e9 <= 0.85 * 6e9
@@ -155,7 +156,7 @@ def test_working_box_fits_memory(monkeypatch):
 def test_volume_padding_and_gridding():
     """set_real / real round trip in every mode; gridding correction brings pad 2 projections closer to a pad 4
     reference, and pad 1 (the big-box fallback) stays within its known error."""
-    dev = "cuda"
+    dev = gpu.default()
     vol = _volume(BLOBS).to(dev)
     for pad in (1, 2):
         for gc in (False, True):
@@ -179,7 +180,7 @@ def test_optics_fit_recovers_magnification():
     back to it (gradient through the projection's sampling coordinates)."""
     from celeris2d import optics as op
     from celeris2d.engine import TWO_PI, Optics, freqs
-    dev, b, apix, n = "cuda", BOX, APIX, 1500
+    dev, b, apix, n = gpu.default(), BOX, APIX, 1500
     g = torch.Generator().manual_seed(5)
     vols = []
     for _ in range(2):
@@ -224,7 +225,7 @@ def test_optics_fit_recovers_aberrations():
     anisotropic magnification - 0.20 for 0.30 here)."""
     from celeris2d import optics as op
     from celeris2d.engine import Optics, freqs
-    dev, b, apix, n = "cuda", BOX, APIX, 1500
+    dev, b, apix, n = gpu.default(), BOX, APIX, 1500
     g = torch.Generator().manual_seed(6)
     vols = []
     for _ in range(2):
@@ -278,7 +279,7 @@ def test_symmetrize_accumulators_matches_symmetric_insertion():
     reconstruction as inserting it at every symmetry-related pose. (Pad 1: 17 % apart, the resampled accumulators
     lose a little at low and gain at high frequency, so refine_particles keeps the per-operator insertion there.)"""
     pad = 2
-    dev = "cuda"
+    dev = gpu.default()
     vol = _volume(_c3(BLOBS[:5])).to(dev)
     ops = ab.symmetry_ops("C3").to(dev)
     g = torch.Generator().manual_seed(3)

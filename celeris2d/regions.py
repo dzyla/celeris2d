@@ -90,7 +90,7 @@ class RegionNet(nn.Module):
 _models: dict = {}
 
 
-def load_model(path: str | None = None, device="cuda") -> RegionNet:
+def load_model(path: str | None = None, device=None) -> RegionNet:
     """The shipped network (or another weights file), cached per device, in eval mode."""
     path = path or WEIGHTS
     key = (path, str(device))

@@ -11,14 +11,15 @@ import numpy as np
 import pytest
 import torch
 
+from celeris2d import gpu
 from celeris2d import preprocess as pp
 from celeris2d.engine import Optics, freqs
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+pytestmark = pytest.mark.skipif(not gpu.count(), reason="needs a GPU (or CELERIS2D_DEVICE=cpu)")
 
 
 def test_motion_recovers_shifts():
-    dev, n, b, apix = "cuda", 20, 1024, 1.0
+    dev, n, b, apix = gpu.default(), 20, 1024, 1.0
     g = torch.Generator(device=dev).manual_seed(0)
     img = torch.randn(b, b, generator=g, device=dev)
     ky, kx = pp._grid(b, b, apix, dev)
@@ -45,7 +46,7 @@ def _frc_band(a, b, apix, lo, hi):
 def test_local_motion_recovers_signal():
     """Frames warped by a smooth field that grows with time (4 A at the edges): the patch model must bring the
     even/odd-frame FRC (independent noise, signal only) back to the level without local motion."""
-    dev, b, n, apix = "cuda", 2048, 30, 1.0
+    dev, b, n, apix = gpu.default(), 2048, 30, 1.0
     g = torch.Generator(device=dev).manual_seed(0)
     ky, kx = pp._grid(b, b, apix, dev)
     truth = torch.fft.irfft2(torch.fft.rfft2(torch.randn(b, b, generator=g, device=dev))
@@ -72,7 +73,7 @@ def test_local_motion_recovers_signal():
 
 
 def test_ctf_recovers_defocus():
-    dev, b, apix = "cuda", 2048, 1.3
+    dev, b, apix = gpu.default(), 2048, 1.3
     optics = Optics(300, 2.7, 0.1)
     du, dv, ang = 15400.0, 14900.0, 35.0
     fy, fx = freqs(b, dev)
@@ -124,7 +125,7 @@ def _tiled_micrograph(dev, du, dv, ang, slope_x, slope_y, apix=1.3, region=1024,
 def test_patch_ctf_recovers_ice_tilt():
     """Local defocus: a plane of slope 0.1 A/A (5.7 deg tilt) is recovered and called significant; a flat micrograph
     gives a small, non-significant tilt (MotionSettings.patch_ctf 'auto' would not apply it)."""
-    dev = "cuda"
+    dev = gpu.default()
     du, dv, ang = 15400.0, 14900.0, 35.0
     mic, optics, apix = _tiled_micrograph(dev, du, dv, ang, 0.08, -0.06)
     fit = pp.CTFFit(du, dv, ang, 4.0, 0.0, {})

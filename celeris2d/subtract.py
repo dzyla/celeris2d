@@ -49,6 +49,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
+from . import gpu
 from .jobspec import params_of, settings_of
 from .project import PARTICLE_JOBS, Job, Project, class_table, has_classes, logged
 
@@ -290,8 +291,8 @@ def run_subtract(project: Project, job, log=print) -> dict:
     if S > 1 and copies_in:
         raise ValueError(f"{project.job(job.params['particles']).name} is already symmetry-expanded")
     dev = torch.device(pick_devices(s.gpus, 1)[0] if s.gpus != "auto" else
-                       f"cuda:{max(range(torch.cuda.device_count()), key=lambda i: gpu_free(i))}")
-    torch.cuda.set_device(dev)
+                       gpu.device(max(range(gpu.count()), key=lambda i: gpu_free(gpu.device(i)))))
+    gpu.set_device(dev)
     # the region kept: centre and size in the refinement's frame
     with mrcfile.open(rj.find(("class01_" if rj.type == "HeteroRefine" else "") + "half1_unfil.mrc"), permissive=True) as f:
         n_r, ap_r = f.data.shape[0], float(f.voxel_size.x)
@@ -654,8 +655,8 @@ def run_local_refine(project: Project, job, log=print) -> dict:
     pj, qj, mj = (project.job(job.params[k]) for k in ("particles", "poses", "mask"))
     rj = map_job(project, job.params.get("reference") or qj)
     t_wall = time.time()
-    for d_ in range(torch.cuda.device_count() if torch.cuda.is_initialized() else 0):   # (a fresh process: from 0)
-        torch.cuda.reset_peak_memory_stats(d_)
+    for d_ in range(gpu.count() if gpu.initialized() else 0):   # (a fresh process: from 0)
+        gpu.reset_peak_memory_stats(gpu.device(d_))
     # symmetry-expanded poses (a SymExpand job): one row per copy, the image of each row loaded once (img)
     src, poses, t_start, half, n_dup, dist, img = _posed_particles(project, job, pj, qj, (), log, expand=True)
     max_res = s.max_res_a or 2.0 * src.apix
@@ -784,7 +785,7 @@ def run_local_refine(project: Project, job, log=print) -> dict:
     fsc_figure(job.out("focus_fsc.png"), curves, box_a, apix, tag, heading="Focused region: corrected masked FSC")
     warnings += report.pop("warnings", [])
     import resource
-    gpu_peak = max(torch.cuda.max_memory_allocated(d_) for d_ in range(torch.cuda.device_count()))
+    gpu_peak = max([gpu.max_memory_allocated(gpu.device(d_)) for d_ in range(gpu.count())] + [0])
     summ = dict(particles=int(n), images=int(clf.N), particles_used=int(used.sum()), duplicates_removed=n_dup,
                 duplicate_distance_a=round(dist, 1), sym=s.sym, resolution_a=round(res_loc, 2),
                 resolution_solvent_mask_a=round(res_loc, 2),

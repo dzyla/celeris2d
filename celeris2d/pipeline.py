@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from . import gpu
 from . import curate
 from . import picking as pk
 from . import regions as rg
@@ -357,7 +358,7 @@ def _load_mic(project: Project, mic_job: Job, movie_id: int):
         return _mem[movie_id]
     m = project.micrographs(mic_job).set_index("movie_id").loc[movie_id]
     with mrcfile.open(project.abs(m["path"]), permissive=True) as f:
-        img = torch.as_tensor(np.asarray(f.data, dtype=np.float32), device="cuda")
+        img = torch.as_tensor(np.asarray(f.data, dtype=np.float32), device=gpu.default())
     ctf = pp.CTFFit(m["defocus_u"], m["defocus_v"], m["defocus_angle"], m["ctf_fit_res"], 0.0, {})
     return img, float(m["apix"]), ctf
 
@@ -406,7 +407,7 @@ def _motion(project: Project, job: Job, mv: dict, frames=None, log=print, keep_f
                          centre_a=[0.5 * mic.sum.shape[1] * mic.apix, 0.5 * mic.sum.shape[0] * mic.apix],
                          regions_a=np.round(pz["centres_a"], 1).tolist(), offsets_a=np.round(pz["offsets_a"], 1).tolist(),
                          grid=s.patch_ctf_grid)
-    torch.cuda.synchronize()
+    gpu.synchronize()
     t["motion_ctf"] = time.time() - t0
     return s, fr, mic, fit, t
 

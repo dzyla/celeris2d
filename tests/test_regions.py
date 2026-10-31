@@ -6,6 +6,7 @@ blob reaches about a diameter beyond its boundary, and picks there are dropped -
 import numpy as np
 import torch
 
+from celeris2d import gpu
 from celeris2d import regions as rg
 
 
@@ -38,7 +39,7 @@ def synthetic(apix=1.5, n=2048, seed=0, counts0=80.0):
 
 
 def test_region_map_synthetic():
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = gpu.default()
     mic, pos, blobs = synthetic()
     rm = rg.region_map(torch.as_tensor(mic, device=dev), 1.5, keep_input=True)
     assert rm.prob.shape[0] == len(rg.CLASSES) and abs(rm.apix - 2 * rg.WORK_APIX) < 1.0
@@ -67,7 +68,7 @@ def test_region_map_synthetic():
 
 def test_regions_figure(tmp_path):
     from celeris2d.plots_preprocess import regions_figure
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = gpu.default()
     mic, pos, blobs = synthetic(n=1024)
     rm = rg.region_map(torch.as_tensor(mic, device=dev), 1.5, keep_input=True)
     ok = rm.pickable(pos, margin_a=70)

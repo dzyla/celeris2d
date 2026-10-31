@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
+from . import gpu
 from .preprocess import _grid, _shift_phase, crop_half
 
 NICE = sorted({2 ** a * 3 ** b * 5 ** c for a in range(1, 11) for b in range(3) for c in range(3)
@@ -181,7 +182,7 @@ def templates_from_map(vol, apix: float, n_dirs: int = 40, wa: float | None = No
     and its opposite are mirror images, which in-plane rotation does not produce): (n_dirs, b, b), pixel size.
     Binned to wa (if given) first: picking needs low resolution only."""
     from .abinitio import _rotate_volumes
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = gpu.default()
     v = torch.as_tensor(np.asarray(vol), dtype=torch.float32, device=dev)
     if wa and wa > apix * 1.2:                                       # Fourier-bin the volume
         b = v.shape[0]

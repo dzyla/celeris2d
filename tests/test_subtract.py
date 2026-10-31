@@ -18,10 +18,11 @@ import numpy as np
 import pytest
 import torch
 
+from celeris2d import gpu
 from celeris2d import abinitio as ab
 from celeris2d.engine import TWO_PI, Optics, ctf_2d, freqs
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+pytestmark = pytest.mark.skipif(not gpu.count(), reason="needs a GPU (or CELERIS2D_DEVICE=cpu)")
 
 BOX, APIX, N, NOISE = 64, 3.0, 2000, 1.5
 C_A, C_B, HINGE = np.array([-8.0, 0, 0]), np.array([14.0, 0, 0]), np.array([0.0, 0, 0])   # voxels (x, y, z)
@@ -81,7 +82,7 @@ def sim(tmp_path_factory):
     from celeris2d import pipeline as pl
     from celeris2d import preprocess as pp
     from celeris2d.project import Project
-    dev = "cuda"
+    dev = gpu.default()
     tmp = tmp_path_factory.mktemp("subtract")
     g = torch.Generator().manual_seed(5)
     VA, VB = ab.Volume(BOX, dev), ab.Volume(BOX, dev)

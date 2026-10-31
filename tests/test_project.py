@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 import torch
 
+from celeris2d import gpu
 from celeris2d import picking as pk
 from celeris2d import pipeline as pl
 from celeris2d import preprocess as pp
@@ -21,7 +22,7 @@ from celeris2d.export import export
 from celeris2d.project import Project, parse_key
 from celeris2d.sources import open_source
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+pytestmark = pytest.mark.skipif(not gpu.count(), reason="needs a GPU (or CELERIS2D_DEVICE=cpu)")
 
 APIX, DIAM = 2.0, 120.0
 
@@ -278,7 +279,7 @@ def test_picks_keep_their_distance_and_duplicates_go():
     rng = np.random.default_rng(3)
     img, _ = _micrograph(rng)
     for frac in (0.5, 0.8):
-        c = pk.blob_candidates(torch.as_tensor(img, device="cuda"), APIX, DIAM, min_dist_frac=frac)
+        c = pk.blob_candidates(torch.as_tensor(img, device=gpu.default()), APIX, DIAM, min_dist_frac=frac)
         from scipy.spatial import cKDTree
         d, _ = cKDTree(c.xy_a).query(c.xy_a, k=2)
         assert d[:, 1].min() >= frac * DIAM - 1e-3

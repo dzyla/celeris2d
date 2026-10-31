@@ -9,12 +9,13 @@ import numpy as np
 import pytest
 import torch
 
+from celeris2d import gpu
 from celeris2d import manualpick as mp
 from celeris2d import picking as pk
 from celeris2d.project import Project
 
 APIX, D, NOISE = 2.0, 60.0, 10.0
-cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+needs_gpu = pytest.mark.skipif(not gpu.count(), reason="needs a GPU (or CELERIS2D_DEVICE=cpu)")
 
 
 def _volume(b=40):
@@ -86,7 +87,7 @@ def test_class_averages_align():
     assert best > 0.9, best
 
 
-@cuda
+@needs_gpu
 def test_manualpick_flow(tmp_path):
     from celeris2d import pipeline as pl
     from celeris2d.jobs import new_job
@@ -149,7 +150,7 @@ def test_threshold():
     assert mp.choose_threshold(np.array([-np.inf]), []) is None
 
 
-@cuda
+@needs_gpu
 def test_manualpick_api_and_picks_only(tmp_path):
     """The dashboard endpoints (state, micrograph, picks, train, suggest, templates, run), and a job finished with the
     user's picks only (no templates: the other micrographs get none)."""

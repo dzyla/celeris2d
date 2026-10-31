@@ -4,6 +4,7 @@ import math
 import numpy as np
 import torch
 
+from celeris2d import gpu
 from celeris2d import diagnostics as dg
 from celeris2d.abinitio import euler_to_matrix
 from celeris2d.localres import localres
@@ -92,5 +93,5 @@ def test_auto_mask_and_content_limit():
     # zero the half maps beyond shell 20: no FSC is reported there
     k = np.sqrt(sum(g ** 2 for g in np.meshgrid(*[np.fft.fftfreq(n) * n] * 3, indexing="ij")))
     cut = [np.fft.ifftn(np.fft.fftn(h) * (k <= 20)).real.astype(np.float32) for h in (h1, h2)]
-    out = postprocess(cut[0], cut[1], m, apix, SharpenSettings(), dev="cuda" if torch.cuda.is_available() else "cpu")
+    out = postprocess(cut[0], cut[1], m, apix, SharpenSettings(), dev=gpu.default())
     assert np.isnan(out["fsc"]["masked"][25:]).all() and abs(out["content_to_a"] - n * apix / 20) < 0.01

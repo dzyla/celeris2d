@@ -23,6 +23,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from . import gpu
 from .clock import since
 from .engine import TWO_PI, ctf_2d, freqs, ft_resize, gpu_free, rot_grid, upsample2, release_cache
 
@@ -738,10 +739,10 @@ def _free(dev) -> float:
     """Free memory on dev (bytes) after releasing PyTorch's cached blocks. While on_devices runs shares concurrently
     nothing is released (another thread's kernels may still use blocks its tensors just returned to the cache: unmapped,
     an illegal memory access); the cached blocks count as free instead."""
-    if torch.device(dev).type != "cuda":
+    if not gpu.is_gpu(dev):
         return 8e9
     if _PARALLEL[0]:
-        return float(gpu_free(dev) + torch.cuda.memory_reserved(dev) - torch.cuda.memory_allocated(dev))
+        return float(gpu_free(dev) + gpu.memory_reserved(dev) - gpu.memory_allocated(dev))
     release_cache()
     return float(gpu_free(dev))                 # CELERIS2D_VRAM_GB caps it
 
@@ -767,7 +768,7 @@ def _devices(clf) -> list:
 
 def on_devices(clf, n: int, work, min_share: int = 2000) -> list:
     """Run work(lo, hi, dev) over contiguous shares of range(n), one thread per GPU of clf (clf.devs; one share when
-    there is one GPU or few items). Returns the results in share order. CUDA work from several threads runs
+    there is one GPU or few items). Returns the results in share order. GPU work from several threads runs
     concurrently; each share uses its own device's memory."""
     devs = _devices(clf)
     k = max(1, min(len(devs), n // max(1, min_share)))
@@ -778,9 +779,9 @@ def on_devices(clf, n: int, work, min_share: int = 2000) -> list:
 
     def run(i):
         try:
-            with torch.cuda.device(devs[i]):
+            with gpu.use(devs[i]):
                 out[i] = work(cuts[i], cuts[i + 1], devs[i])
-                torch.cuda.synchronize(devs[i])
+                gpu.synchronize(devs[i])
         except BaseException as e:      # noqa: BLE001 - re-raised in the caller's thread
             errs.append(e)
 
@@ -2069,7 +2070,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
                                                      res_end=prm.class_res_end, n_iter=prm.class_iter, seed=prm.seed,
                                                      n_models=1, log=lg,
                                                      keep_top=1 if prm.sgd_iter > 0 else max(1, prm.check_starts))
-        torch.cuda.synchronize()
+        gpu.synchronize()
         timing["classes"] += time.time() - t0
         vols_cls = vols0
         if clf._n_loaded < clf.N:   # the class stage needs no particles; it ran while they were still streaming in
@@ -2110,7 +2111,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
                                   topk=prm.sgd_topk, log=lg)
             vols0 = [Vs]
             Ak = _class_poses(A0, kp_, psi_, len(Ak))      # class orientations follow the particles (figures)
-        torch.cuda.synchronize()
+        gpu.synchronize()
         timing["sgd"] += time.time() - t0
         t0 = time.time()
         common = dict(sym=sym, n_local=prm.n_local, drop_frac=prm.drop_frac, rebalance=prm.rebalance, log=lg,
@@ -2133,7 +2134,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
             out = refine_particles(clf, idx_, A0, off_, vols0, n_iter=prm.n_iter, res_start=prm.res_start, box=b,
                                    global_res=prm.global_res, global_at=tuple(range(1, prm.global_iters + 1)),
                                    **common)
-        torch.cuda.synchronize()
+        gpu.synchronize()
         timing["particles"] += time.time() - t0
         return vols_cls, Ak, cc, out
 
@@ -2157,7 +2158,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
             drop_frac=prm.drop_frac, rebalance=prm.rebalance, relax_ops=symmetry_ops(relaxed_from),
             relax_iters=prm.relax_iters, solvent_mask=None if prm.solvent_mask == "sphere" else prm.solvent_mask,
             log=log)
-        torch.cuda.synchronize()
+        gpu.synchronize()
         timing["particles"] += time.time() - t0
         Ak = _class_poses(A, kp, psi_p, len(Ak))
     used = refine_particles.last_weights > 0
@@ -2193,7 +2194,7 @@ def run(clf, result, outdir: str, prm: AbinitioParams | None = None, classes=Non
         cmask = sphere_mask(b, diam / 2 / (box_a / b), 3.0, dev)
         fs = torch.stack([masked_fsc(vols[m][0], vols[m][1], cmask) for m in range(M)])
         vols_cls = vols_cls * M
-    torch.cuda.synchronize()
+    gpu.synchronize()
     timing["particles"] += time.time() - t0
     t1, t2 = timing["classes"], timing["sgd"] + timing["particles"]
     apix = box_a / b

@@ -29,6 +29,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from . import gpu
 from .clock import since
 
 TWO_PI = 2.0 * math.pi
@@ -43,27 +44,24 @@ def release_cache():
     """Return PyTorch's cached GPU blocks, after every stream has finished: a background stream (the particle loader)
     may still use blocks the cache holds, and with expandable segments the release unmaps them without waiting (an
     illegal memory access in the loader's kernels: EMPIAR-10291 ab initio while particles streamed in)."""
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-        torch.cuda.empty_cache()
+    if gpu.available():
+        gpu.synchronize()
+        gpu.empty_cache()
 
 
 def cap_memory(dev):
-    """Hard limit for this process on a CUDA device: the card less the headroom gpu_free plans around (and at most
+    """Hard limit for this process on a GPU: the card less the headroom gpu_free plans around (and at most
     CELERIS2D_VRAM_GB). Past it PyTorch frees its cache and retries, then raises out-of-memory: the driver never
     spills GPU memory into system RAM (WSL does, and everything slows down many times)."""
-    dev = torch.device(dev)
-    if dev.type != "cuda":
+    if not gpu.is_gpu(dev):
         return
-    if dev.index is None:
-        dev = torch.device("cuda", torch.cuda.current_device())
-    total = torch.cuda.get_device_properties(dev).total_memory
-    used_by_others = total - torch.cuda.mem_get_info(dev)[0] - torch.cuda.memory_reserved(dev)
+    total = gpu.total_memory(dev)
+    used_by_others = total - gpu.mem_get_info(dev)[0] - gpu.memory_reserved(dev)
     limit = total - max(int(0.1 * total), int(1.5e9)) - max(0, used_by_others)
     cap = os.environ.get("CELERIS2D_VRAM_GB")
     if cap:
         limit = min(limit, int(float(cap) * 1e9))
-    torch.cuda.set_per_process_memory_fraction(max(0.2, limit / total), dev)
+    gpu.set_memory_fraction(max(0.2, limit / total), dev)
 
 
 def gpu_free(dev) -> int:
@@ -71,12 +69,11 @@ def gpu_free(dev) -> int:
     the card (at least 1.5 GB) that is never planned for (the display, other programs, allocations that are not
     sized from free memory: a Refine3D sized from all free memory held 15.6 of 16 GB), and capped by
     CELERIS2D_VRAM_GB (a budget for everything this process holds)."""
-    dev = torch.device(dev)
-    free, total = torch.cuda.mem_get_info(dev)
+    free, total = gpu.mem_get_info(dev)
     free = max(0, free - max(int(0.1 * total), int(1.5e9)))
     cap = os.environ.get("CELERIS2D_VRAM_GB")
     if cap:
-        free = min(free, max(0, int(float(cap) * 1e9) - torch.cuda.memory_reserved(dev)))
+        free = min(free, max(0, int(float(cap) * 1e9) - gpu.memory_reserved(dev)))
     return int(free)
 
 
@@ -314,7 +311,7 @@ class Params:
 
 
 class Classifier2D:
-    def __init__(self, source, prm: Params, devices=("cuda",), log=print):
+    def __init__(self, source, prm: Params, devices=(gpu.default(),), log=print):
         """source: object with N, box, apix, ctf (N x 6), optics, chunks() -> (rows, images)
         and optionally polarity_hint (+1 protein white / -1 protein dark)."""
         self.p, self.optics, self.log = prm, source.optics, log
@@ -409,7 +406,7 @@ class Classifier2D:
         B, bm = self.B_full, self.bmax
         bh = bm // 2 + 1
         c64 = self.N * bm * bh * 8
-        free = gpu_free(self.dev) if self.dev.type == "cuda" else 0
+        free = gpu_free(self.dev) if gpu.is_gpu(self.dev) else 0
         if c64 < 0.35 * free and not (self.p.max_c64_gb and c64 > self.p.max_c64_gb * 1e9):
             self.half, where = False, self.dev
         elif c64 / 2 < 0.6 * free:
@@ -430,7 +427,7 @@ class Classifier2D:
             self._spill_arr = arr
         else:
             self.data = torch.empty(shape, dtype=torch.float16 if self.half else torch.complex64, device=where,
-                                    pin_memory=where.type == "cpu" and self.dev.type == "cuda")
+                                    pin_memory=where.type == "cpu" and gpu.is_gpu(self.dev))
         self.flip = False
         self._loaded = []                 # list of host index arrays, in load order
         self._n_loaded = 0
@@ -438,7 +435,7 @@ class Classifier2D:
         self._load_lock = threading.Lock()
         self._load_err = None
         self._load_t0 = time.time()
-        kind = ("fp16 " if self.half else "") + ("on " + str(where) if where.type == "cuda" else
+        kind = ("fp16 " if self.half else "") + ("on " + str(where) if gpu.is_gpu(where) else
                                                  f"in a disk-backed file in {os.path.dirname(self._spill)} (larger "
                                                  f"than RAM; slower passes)" if self._spill else "in pinned host RAM")
         self.log(f"[load] streaming {self.N} particles, box {B} -> working box {bm} ({self.apix_max:.3f} A/px), "
@@ -461,9 +458,9 @@ class Classifier2D:
             bg = rr > rad_px
             if bg.sum() < 0.05 * B * B:  # mask fills the box: normalise on the outer ring instead
                 bg = rr > 0.8 * (B / 2)
-            stream = torch.cuda.Stream(dev) if dev.type == "cuda" else None
+            stream = gpu.stream(dev)
             next_log = 0
-            with torch.cuda.device(dev), torch.cuda.stream(stream):
+            with gpu.use(dev), gpu.on_stream(stream):
                 for rows, imgs in source.chunks(shuffle_seed=self.p.seed):
                     rows_t = torch.as_tensor(rows, device=self.data.device)
                     for i in range(0, len(rows), 2048):
@@ -526,7 +523,7 @@ class Classifier2D:
     def _fetch(self, idx: torch.Tensor, dev, b: int) -> torch.Tensor:
         """Particle spectra (complex64) for host indices idx, on device dev, cropped to box b."""
         d = self.data
-        if d.device.type == "cuda":
+        if gpu.is_gpu(d.device):
             x = d[idx.to(d.device)]
         elif len(idx) > 1 and int(idx[-1]) - int(idx[0]) == len(idx) - 1 and bool((idx[1:] > idx[:-1]).all()):
             x = d[int(idx[0]):int(idx[-1]) + 1]      # a run of particles (refinements go in order): a view of the
@@ -1012,7 +1009,7 @@ class Classifier2D:
             queue = iter([g[i:i + bn] for i in range(0, len(g), bn)])
 
             def worker(dev):
-                with torch.cuda.device(dev):
+                with gpu.use(dev):
                     if dev not in c_dev:
                         c_dev[dev] = {k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in ctx.items()}
                     c = c_dev[dev]
@@ -1064,10 +1061,10 @@ class Classifier2D:
         per = 3 * 4 * M * T1 * T1 + 40 * (2 * b) * (b + 1) * 8     # posterior + copies, spectra / ramps / CTFs
         free = []
         for d in self.devs:
-            if d.type != "cuda":
+            if not gpu.is_gpu(d):
                 return int(np.clip(0.4e9 / (M * T1 * T1 * 4), 4, 1024))
             release_cache()  # cached blocks of the previous (smaller-box) iteration
-            with torch.cuda.device(d):
+            with gpu.use(d):
                 release_cache()
             free.append(gpu_free(d))
         avail = 0.75 * min(free) - fixed
@@ -1564,7 +1561,7 @@ class Classifier2D:
         self.stopped = bool(self.stop_requested)
         p.n_iter, p.n_full_iter = n_iter0, n_full0
         for d in self.devs:
-            torch.cuda.synchronize(d)
+            gpu.synchronize(d)
         self._elapsed = getattr(self, "_elapsed", 0.0) + time.time() - t0
         self.total_time = self._elapsed
         if self.stopped:

@@ -19,13 +19,14 @@ import numpy as np
 import pytest
 import torch
 
+from celeris2d import gpu
 from celeris2d import abinitio as ab
 from celeris2d.engine import TWO_PI, Optics, ctf_2d, freqs
 
 sys.path.insert(0, os.path.dirname(__file__))
 from test_subtract import _rand_rot, _rel_err, _volume  # noqa: E402
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+pytestmark = pytest.mark.skipif(not gpu.count(), reason="needs a GPU (or CELERIS2D_DEVICE=cpu)")
 
 BOX, APIX, N, NOISE = 64, 3.0, 1600, 1.5
 C_U, HINGE = np.array([14.0, 0, 0]), np.array([4.0, 0, 0])              # subunit 0 centre, its hinge (voxels x y z)
@@ -51,7 +52,7 @@ def sim(tmp_path_factory):
     from celeris2d import pipeline as pl
     from celeris2d import preprocess as pp
     from celeris2d.project import Project
-    dev = "cuda"
+    dev = gpu.default()
     tmp = tmp_path_factory.mktemp("symexpand")
     g = torch.Generator().manual_seed(9)
     core = CORE + _rot_blobs(CORE, S1)                                   # C2-symmetric core

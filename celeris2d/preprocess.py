@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
+from . import gpu
 from .engine import Optics, ctf_2d, freqs
 
 
@@ -50,7 +51,7 @@ def orient_gain(gain: np.ndarray, frames: np.ndarray, log=print, return_name: bo
     """The orientation of the gain reference (of 8 flips / rotations with the frame's shape) that makes the frame
     sum flattest: a mis-oriented gain imprints its fixed pattern (pixel-to-pixel roughness) instead of removing it.
     EMPIAR-10025 (K2 super-resolution TIFF + norm-amibox05-0.mrc): "as is"."""
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = gpu.default()
     s = torch.as_tensor(np.asarray(frames.sum(0), dtype=np.float32), device=dev)
     best = None
     for name, f in GAIN_ORIENT.items():
@@ -290,7 +291,7 @@ def motion_correct(frames: np.ndarray, gain: np.ndarray | None, apix: float, dos
     J104's 10k particles at its refined poses, D7): whole-frame 3.47 A, patches=5 3.27 A, cryoSPARC's patch-motion
     micrographs 3.43 A (ours with each micrograph's particle positions registered to cryoSPARC's by a smooth field:
     the two local-motion models place particles ~1 A apart)."""
-    dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    dev = device or gpu.default()
     if frames.ndim == 2:
         frames = frames[None]
     n, NY, NX = frames.shape

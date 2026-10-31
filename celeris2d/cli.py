@@ -6,7 +6,7 @@ import json
 import os
 import time
 
-os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")  # cuda:i == nvidia-smi index i
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")  # cuda:i == nvidia-smi index i (NVIDIA)
 
 import mrcfile
 import numpy as np
@@ -180,20 +180,20 @@ def _write_cs_classes(outdir, clf, imgs, apix_out):
 def pick_devices(spec: str, n_particles: int, box: int = 64, apix: float = 0.0, max_res: float = 0.0) -> list[str]:
     """auto: one GPU for small jobs, all GPUs once the work is worth splitting. Work ~ particles x working
     box^2 (the box after binning to max_res), so 72k particles at 320 px count like ~370k at 64 px."""
-    import torch
-    n = torch.cuda.device_count()
+    from . import gpu
+    n = gpu.count()
     if n == 0:
-        raise SystemExit("no CUDA GPU visible")
-    mem = {i: torch.cuda.get_device_properties(i).total_memory for i in range(n)}
+        raise SystemExit("no GPU visible (NVIDIA CUDA, AMD ROCm or Intel XPU build of PyTorch)")
+    mem = {i: gpu.total_memory(gpu.device(i)) for i in range(n)}
     if spec == "auto":
         ids = sorted(range(n), key=lambda i: -mem[i])
         wbox = min(box, 2 * box * apix / max_res) if apix > 0 and max_res > 0 else min(box, 64)
         ids = ids[:1] if n_particles * (wbox / 64.0) ** 2 < 100_000 else ids
     else:
         ids = sorted((int(x) for x in spec.split(",")), key=lambda i: -mem[i])
-    names = ", ".join(f"{i}:{torch.cuda.get_device_name(i)}" for i in ids)
-    print(f"[gpu] using {names} (master = first)")
-    return [f"cuda:{i}" for i in ids]
+    names = ", ".join(f"{i}:{gpu.name(i)}" for i in ids)
+    print(f"[gpu] using {names} (master = first){'' if gpu.vendor().startswith('NVIDIA') else ', ' + gpu.vendor()}")
+    return [gpu.device(i) for i in ids]
 
 
 def flag_duplicates(a, clf, src, st=None):

@@ -20,11 +20,12 @@ import numpy as np
 import pytest
 import torch
 
+from celeris2d import gpu
 from celeris2d import abinitio as ab
 from celeris2d import modes as md
 from celeris2d.engine import Optics, ctf_2d, freqs, ft_resize
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+pytestmark = pytest.mark.skipif(not gpu.count(), reason="needs a GPU (or CELERIS2D_DEVICE=cpu)")
 
 BOX, APIX, N, NOISE = 64, 4.0, 3000, 1.5
 _r = np.random.default_rng(7)
@@ -46,7 +47,7 @@ def _volume(blobs, b=BOX):
 def _simulate(u: torch.Tensor, seed: int = 4):
     """Particle spectra (n, b, bh) on the GPU and a stand-in for the 2D engine (clf) that serves them, with the true
     poses: the domain translated by u x MOVE (as a phase ramp on its projection: an in-plane shift by A @ s)."""
-    dev, n = "cuda", len(u)
+    dev, n = gpu.default(), len(u)
     g = torch.Generator().manual_seed(seed)
     Vb, Vd = ab.Volume(BOX, dev), ab.Volume(BOX, dev)
     Vb.set_real(_volume(BASE).to(dev))

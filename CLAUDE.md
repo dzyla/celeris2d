@@ -9,7 +9,7 @@ README.md documents user-facing options, outputs and measured results.
 
 ## Setup and running
 
-Needs an NVIDIA GPU and a CUDA build of PyTorch ≥ 2.4 (Blackwell / RTX 50xx: CUDA 12.8+ wheels).
+Needs a GPU and a CUDA build of PyTorch ≥ 2.4 (Blackwell / RTX 50xx: CUDA 12.8+ wheels); AMD ROCm / Intel XPU builds go through `gpu.py` (untested on hardware).
 ```bash
 conda create -n celeris2d python=3.12 -y && conda activate celeris2d
 pip install torch --index-url https://download.pytorch.org/whl/cu128
@@ -21,7 +21,7 @@ pip install -e .        # installs entry points celeris2d, celeris2d-web, celeri
 - MCP server: `celeris2d-mcp` (stdio).
 
 `pytest -q tests` runs synthetic end-to-end checks (2D: known classes and angles, stop/continue, dashboard API;
-3D: ab initio orientations, symmetry detection, projector conventions; needs a CUDA GPU, ~2 min). If the
+3D: ab initio orientations, symmetry detection, projector conventions; needs a GPU, ~2 min; `CELERIS2D_DEVICE=cpu` runs them on the CPU). If the
 `celeris2d` env is an editable install of another checkout, prefix `PYTHONPATH=.`. There is no linter config or
 CI. Algorithm changes are validated on real datasets with the scripts in
 `scripts/` (run as `python scripts/<name>.py ...`, usage in each docstring): `validate.py` (ψ consistency
@@ -104,6 +104,11 @@ Layers, bottom to top:
 
 ### Cross-cutting conventions
 
+- **GPU backend** (`gpu.py`): nothing else names CUDA. `gpu.default()` / `gpu.device(i)` / `gpu.is_gpu(dev)`, memory
+  (`gpu.mem_get_info`, `total_memory`, `memory_reserved`, `set_memory_fraction`), `gpu.use(dev)`, `gpu.stream` /
+  `on_stream`, `gpu.synchronize`, `gpu.OutOfMemoryError`. NVIDIA and AMD ROCm are "cuda" (ROCm's PyTorch answers to
+  torch.cuda), Intel is "xpu" (torch.xpu); `CELERIS2D_DEVICE=cpu` runs on the CPU (tests too: `gpu.count()` is then
+  1). Only NVIDIA has been run on real hardware.
 - **GPU memory**: size batches / boxes from `engine.gpu_free` (free memory less 10 % of the card, >= 1.5 GB, and
   under `CELERIS2D_VRAM_GB`), never from `torch.cuda.mem_get_info` directly; `engine.cap_memory` hard-limits the
   process there, so an overrun is an out-of-memory error instead of WSL spilling GPU memory into system RAM (many

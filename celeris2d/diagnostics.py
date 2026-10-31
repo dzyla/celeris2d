@@ -22,6 +22,8 @@ from xml.sax.saxutils import escape
 import numpy as np
 import torch
 
+from . import gpu
+
 
 def _fibonacci(n: int) -> np.ndarray:
     i = np.arange(n) + 0.5
@@ -40,7 +42,7 @@ def scf(directions: torch.Tensor, ops: torch.Tensor | None = None, n_k: int = 20
         d = d[torch.randperm(len(d), generator=torch.Generator().manual_seed(seed))[:n_max]]
     if ops is not None and len(ops) > 1:
         d = (d[:, None, None, :] @ torch.as_tensor(ops, dtype=torch.float32)[None]).reshape(-1, 3)
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = gpu.default()
     d = d.to(dev)
     k = torch.as_tensor(_fibonacci(n_k), dtype=torch.float32, device=dev)
     eps = math.sin(math.radians(width_deg))

@@ -18,6 +18,8 @@ import math
 
 import numpy as np
 import torch
+
+from . import gpu
 import torch.nn.functional as F
 
 
@@ -36,7 +38,7 @@ def default_window(res_global: float, apix: float, box: int) -> int:
 def localres(h1: np.ndarray | torch.Tensor, h2: np.ndarray | torch.Tensor, mask: np.ndarray | torch.Tensor | None,
              apix: float, res_global: float, window_px: int = 0, stride: int = 0, thr: float = 0.143,
              filtered: bool = True, dev=None, batch: int = 2048) -> dict:
-    dev = dev or ("cuda" if torch.cuda.is_available() else "cpu")
+    dev = dev or gpu.default()
     h1 = torch.as_tensor(np.asarray(h1), dtype=torch.float32, device=dev)
     h2 = torch.as_tensor(np.asarray(h2), dtype=torch.float32, device=dev)
     b = h1.shape[0]

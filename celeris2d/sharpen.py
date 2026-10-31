@@ -28,6 +28,7 @@ from typing import ClassVar
 import numpy as np
 import torch
 
+from . import gpu
 from .clock import since
 from .plotstyle import GRAY, STATUS, T, grid_y, image_axes, plt, themed, title, top, warnings_text
 from .jobspec import params_of, settings_of
@@ -160,7 +161,7 @@ def postprocess(h1: np.ndarray, h2: np.ndarray, mask: np.ndarray, apix: float, s
     """The sharpening of two half maps (n^3, same box) with a soft mask; returns maps, curves and numbers. mtf_path:
     the detector MTF file (resolved s.mtf), the map divided by it before the fit and the sharpening."""
     from .abinitio import corrected_masked_fsc
-    dev = dev or ("cuda" if torch.cuda.is_available() else "cpu")
+    dev = dev or gpu.default()
     t1, t2, m = (torch.as_tensor(x, device=dev) for x in (h1, h2, mask))
     n = t1.shape[0]
     box_a = n * apix
@@ -357,7 +358,7 @@ def local_resolution(job, h1, h2, r: dict, apix: float, s: SharpenSettings, titl
     (the B-sharpened map low-passed at every voxel to its local resolution), localres.png, localres.json."""
     from . import plots3d
     from .localres import localres
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = gpu.default()
     t0 = time.time()
     m = r["mask"]
     window = int(round(s.local_window_a / apix)) if s.local_window_a else 0

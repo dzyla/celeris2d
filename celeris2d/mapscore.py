@@ -33,6 +33,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
+from . import gpu
 from .clock import since
 from .engine import ctf_2d, gpu_free
 from .preprocess import crop_half
@@ -82,7 +83,7 @@ class Scorer:
     """Projections of one map, prepared once; score(images, ctf) for batches of particles."""
 
     def __init__(self, vol: np.ndarray, vol_apix: float, box: int, apix: float, optics, diameter_a: float,
-                 res_a: float = 20.0, n_dirs: int = 150, psi_step: float = 10.0, shift_a: float = 10.0, dev="cuda"):
+                 res_a: float = 20.0, n_dirs: int = 150, psi_step: float = 10.0, shift_a: float = 10.0, dev=None):
         from .picking import _resample, _rotate2d, templates_from_map
         self.dev, self.optics, self.box, self.apix = dev, optics, box, apix
         wa = max(apix, res_a / 2.2)                                   # working pixel: Nyquist a little past res_a
@@ -164,7 +165,7 @@ def run_mapscore(project: Project, job, log=print) -> dict:
         uid = uid[keep]
     vol, vapix, _ = _reference_map(map_job(project, mj))              # a Subtract job: its refinement's map
     diam = s.diameter_a or getattr(src, "mask_diameter_a", 0.0) / 1.25 or 0.6 * src.box * src.apix
-    dev = f"cuda:{int(s.gpus)}" if s.gpus not in ("auto", "") else "cuda"
+    dev = gpu.device(int(s.gpus)) if s.gpus not in ("auto", "") else gpu.default()
     sc = Scorer(vol, vapix, src.box, src.apix, src.optics, diam, s.res_a, s.n_dirs, s.psi_step, s.shift_a, dev)
     log(f"[mapscore] {len(uid):,} particles of {pj.name} vs {mj.name}: {len(sc.Ft):,} projections, working box "
         f"{sc.bw} ({sc.wa:.1f} A/px), {s.res_a:g} A, circle {diam:.0f} A")

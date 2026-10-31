@@ -18,11 +18,12 @@ import numpy as np
 import pytest
 import torch
 
+from celeris2d import gpu
 from celeris2d import abinitio as ab
 from celeris2d import class3d as c3
 from celeris2d.session import Session
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+pytestmark = pytest.mark.skipif(not gpu.count(), reason="needs a GPU (or CELERIS2D_DEVICE=cpu)")
 
 BOX, APIX, N, NOISE, SHARE = 64, 4.0, 3000, 3.0, 0.3
 _r = np.random.default_rng(7)
@@ -48,7 +49,7 @@ def _c2(blobs):
 def _simulate(path, vols, labels, seed=4):
     """Projections of vols[labels[i]] at random orientations, one noise level for all (an absent domain is absent
     signal), written as an .mrcs stack. Returns the orientations."""
-    dev = "cuda"
+    dev = gpu.default()
     g = torch.Generator().manual_seed(seed)
     n = len(labels)
     rot, psi = torch.rand(n, generator=g) * 360 - 180, torch.rand(n, generator=g) * 360 - 180

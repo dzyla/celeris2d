@@ -14,13 +14,15 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from . import gpu
+
 
 def auto_mask(h1, h2, apix: float, lowpass_a: float = 15.0, sigma_level: float = 5.0, min_frac: float = 0.05,
               keep_frac: float = 0.05, dilate_a: float = 3.0, soft_a: float = 0.0, dev=None) -> tuple[np.ndarray, dict]:
     """soft_a 0: max(8 A, 6 px). The same mask as the refinements' dynamic one (masking.auto_mask, which builds it on
     a coarse grid and also takes user regions / segments), with these defaults."""
     from .masking import auto_mask as _auto
-    dev = dev or ("cuda" if torch.cuda.is_available() else "cpu")
+    dev = dev or gpu.default()
     t1 = torch.as_tensor(np.asarray(h1), dtype=torch.float32, device=dev)
     t2 = torch.as_tensor(np.asarray(h2), dtype=torch.float32, device=dev)
     soft_a = soft_a or max(8.0, 6 * apix)

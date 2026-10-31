@@ -6,6 +6,7 @@ import math
 import numpy as np
 import torch
 
+from celeris2d import gpu
 from celeris2d import abinitio as ab
 from celeris2d.symalign import apply_frame, sym_frame
 
@@ -29,7 +30,7 @@ def _d2_points():
 
 def test_sym_frame_recovers_d2_axes():
     b = 48
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = gpu.default()
     v0 = _blob(b, _d2_points())
     Rt = ab.euler_to_matrix(torch.tensor([23.0]), torch.tensor([37.0]), torch.tensor([71.0]))[0]
     v = ab._rotate_volumes(v0.to(dev), Rt[None].to(dev))[0].cpu()          # the object in an arbitrary frame
@@ -45,7 +46,7 @@ def test_sym_frame_recovers_d2_axes():
 
 def test_apply_frame_keeps_projections():
     b = 40
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = gpu.default()
     rng = np.random.default_rng(0)
     v = _blob(b, [tuple(rng.uniform(-10, 10, 3)) for _ in range(6)])
     A = ab.euler_to_matrix(torch.rand(5) * 360, torch.rand(5) * 180, torch.rand(5) * 360).float()
