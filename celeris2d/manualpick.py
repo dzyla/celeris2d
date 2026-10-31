@@ -13,8 +13,10 @@ user reviewed keep exactly their picks. The output is a Pick job's: a "picks" ta
 
 Interactive state (dashboard process): jobs/NNN/data/jNNN_manualpick.json - per micrograph (movie id) the user's
 picks [x_a, y_a, src] (src 0: clicked, 1: an accepted suggestion), the rejected suggestions [x_a, y_a], and its state
-("suggested": suggestions not yet checked, "reviewed": picks final); the threshold; the templates' version and
-training numbers. Templates: maps/jNNN_templates.mrcs (white protein at the picker's working pixel size, diameter/20).
+("suggested": suggestions not yet checked, "reviewed": picks final); the score range (threshold, threshold_hi: an
+upper limit - dark contamination scores high against dark templates); templates switched off ("off": their candidates
+are never picked); the templates' version and training numbers. Every pick trains (clicked and accepted, on any
+micrograph), whatever the micrograph's state. Templates: maps/jNNN_templates.mrcs (white protein at the picker's working pixel size, diameter/20).
 Suggestions: data/NNN/Suggest/<stem>.npz (all candidates of a micrograph: xy_a, score, ok, template version).
 """
 from __future__ import annotations
@@ -92,7 +94,7 @@ def _state_path(job: Job) -> str:
 
 def load_state(job: Job) -> dict:
     p = _state_path(job)
-    st = dict(mics={}, threshold=None, version=0, train=None, t_edit=0.0)
+    st = dict(mics={}, threshold=None, threshold_hi=None, off=[], version=0, train=None, t_edit=0.0)
     if os.path.exists(p):
         with open(p) as fh:
             st.update(json.load(fh))
@@ -152,14 +154,68 @@ def set_picks(project: Project, job, stem: str, picks=None, rejected=None, state
     return m
 
 
-def set_threshold(project: Project, job, threshold) -> float | None:
+_KEEP = object()
+
+
+def set_threshold(project: Project, job, threshold=_KEEP, upper=_KEEP) -> tuple:
+    """The score range of the template picks: lower (threshold) and upper (threshold_hi; None: no upper limit)."""
     job = project.job(job)
     with lock(job):
         st = load_state(job)
-        st["threshold"] = None if threshold is None else float(threshold)
+        if threshold is not _KEEP:
+            st["threshold"] = None if threshold is None else float(threshold)
+        if upper is not _KEEP:
+            st["threshold_hi"] = None if upper is None else float(upper)
         st["t_edit"] = time.time()
         save_state(job, st)
-    return st["threshold"]
+    return st["threshold"], st["threshold_hi"]
+
+
+def set_off(project: Project, job, off) -> list:
+    """Templates switched off (0-based): candidates they found best are not picked (e.g. one that averaged ice)."""
+    job = project.job(job)
+    with lock(job):
+        st = load_state(job)
+        st["off"] = sorted({int(k) for k in off})
+        st["t_edit"] = time.time()
+        save_state(job, st)
+    return st["off"]
+
+
+def has_templates(job: Job) -> bool:
+    return job.find("templates.mrcs") is not None
+
+
+def set_settings(project: Project, job, diameter_a=None, templates=None) -> ManualPickSettings:
+    """The particle size and the number of templates, at any time but while Pick all runs. A new size drops the
+    templates (they are made at the particle's size: train again) and the score range; the picks stay."""
+    job = project.job(job)
+    _editable(job)
+    old = settings(job)
+    kw = {}
+    if templates is not None:
+        kw["templates"] = int(np.clip(int(templates), 1, 50))
+    if diameter_a is not None:
+        d = float(diameter_a)
+        if not 10 <= d <= 5000:
+            raise ValueError(f"particle diameter {d:g} A: between 10 and 5000 A")
+        kw["diameter_a"] = round(d, 1)
+    if not kw:
+        return old
+    project.update_params(job, **kw)
+    if "diameter_a" in kw and kw["diameter_a"] != old.diameter_a:
+        with lock(job):
+            for nm in ("templates.mrcs", "templates.png"):
+                p = job.find(nm)
+                if p:
+                    os.remove(p)
+            st = load_state(job)
+            st.update(train=None, threshold=None, threshold_hi=None, off=[], t_edit=time.time())
+            save_state(job, st)
+        job = project.job(job.id)
+        if job.label == manualpick_label(old) and job.status != "running":
+            job = project.rename(job, manualpick_label(settings(job)))
+    return settings(project.job(job.id))
 
 
 # ------------------------------------------------------------------------------------------------ micrographs
@@ -431,9 +487,11 @@ def train(project: Project, job, log=print) -> dict:
     with lock(job):
         st = load_state(job)
     mi = micrographs(project, job).set_index("movie_id", drop=False)
+    # every pick trains: clicked or accepted, on reviewed micrographs and on ones with suggestions still to check
     rev = {int(k): v for k, v in sorted(st["mics"].items(), key=lambda kv: int(kv[0]))
-           if v.get("state") == "reviewed" and v.get("picks") and int(k) in mi.index}
+           if v.get("picks") and int(k) in mi.index}
     n_picks = sum(len(v["picks"]) for v in rev.values())
+    n_accepted = sum(sum(1 for p in v["picks"] if len(p) > 2 and p[2]) for v in rev.values())
     if n_picks < 5:
         raise ValueError(f"{n_picks} picks so far: pick at least 5 particles (better 20-50) on a micrograph first")
     wa_target = _work_apix(s)
@@ -487,16 +545,20 @@ def train(project: Project, job, log=print) -> dict:
     with lock(job):
         st = load_state(job)
         st["version"] = int(st.get("version", 0)) + 1
+        st["off"] = []                                                # new templates, new numbering
         if th is not None:
             st["threshold"] = th
+            if st.get("threshold_hi") is not None and st["threshold_hi"] <= th:
+                st["threshold_hi"] = None
         info = dict(version=st["version"], n=len(tm), counts=counts.tolist(), apix=round(wa, 4), box=int(tm.shape[-1]),
-                    picks=int(sum(u.sum() for u in use.values())), micrographs=len(xy), half_sets=split,
+                    picks=int(sum(u.sum() for u in use.values())), accepted=n_accepted, micrographs=len(xy),
+                    half_sets=split,
                     rejected=int(np.isfinite(neg).sum()), missing=int((~np.isfinite(pos)).sum()),
                     pos=np.round(pos[np.isfinite(pos)], 4).tolist(), neg=np.round(neg[np.isfinite(neg)], 4).tolist(),
                     threshold=th, seconds=round(time.time() - t0, 2), t=time.time())
         st["train"] = info
         save_state(job, st)
-    log(f"[{job.name}] {len(tm)} templates from {info['picks']} picks on {len(xy)} micrographs "
+    log(f"[{job.name}] {len(tm)} templates from {info['picks']} picks ({n_accepted} accepted) on {len(xy)} micrographs "
         f"({counts.tolist()}), threshold {th if th is None else round(th, 3)}, {info['seconds']} s")
     return info
 
@@ -511,7 +573,7 @@ def suggest(project: Project, job, stems=None, after: str = "", n: int | None = 
     s = sized(job)
     tm, ta = templates_of(job)
     if tm is None:
-        raise ValueError("no templates yet: Train first")
+        raise ValueError("no templates yet (or the particle size changed): Train first")
     mc = project.job(job.params["micrographs"])
     optics = optics_of(project, mc)
     mi = micrographs(project, job)
@@ -583,7 +645,18 @@ def suggestions(project: Project, job: Job, row) -> dict | None:
         return None
     with np.load(p) as z:
         return dict(xy=np.round(z["xy_a"], 1).tolist(), score=np.round(z["score"], 4).tolist(),
-                    ok=z["ok"].astype(int).tolist(), version=int(z["version"]))
+                    ok=z["ok"].astype(int).tolist(), version=int(z["version"]),
+                    template=z["template"].astype(int).tolist() if "template" in z else None)
+
+
+def auto_keep(c, ok, lo: float, hi, off) -> np.ndarray:
+    """Template candidates picked: past the contamination filters, within the score range, not of a template off."""
+    keep = ok & (c.score >= lo)
+    if hi is not None:
+        keep &= c.score <= hi
+    if off:
+        keep &= ~np.isin(c.template, np.asarray(off, int))
+    return keep
 
 
 # ---------------------------------------------------------------------------------------- the job: Pick all
@@ -620,7 +693,12 @@ def run_manualpick(project: Project, job, log=print) -> dict:
     st = load_state(job)
     tm, ta = templates_of(job)
     th = st.get("threshold")
+    th_hi, off = st.get("threshold_hi"), st.get("off") or []
     rev = {int(k): v for k, v in st["mics"].items() if v.get("state") == "reviewed"}
+    # micrographs not reviewed with some picks or removals of the user's (suggestions not checked, or a Pick all
+    # since): those, plus the template picks around them
+    part = {int(k): v for k, v in st["mics"].items() if v.get("state") != "reviewed" and (v.get("picks") or
+                                                                                         v.get("rejected"))}
     if tm is None and not rev:
         raise ValueError("no picks and no templates: pick particles on some micrographs (and Train) first")
     if tm is not None and th is None:
@@ -630,7 +708,8 @@ def run_manualpick(project: Project, job, log=print) -> dict:
     mi = micrographs(project, job)
     dev = _device()
     log(f"{len(mi)} micrographs: {len(rev)} reviewed (kept as picked), "
-        + (f"the others with {len(tm)} templates at threshold {th:.3f}" if tm is not None else "the others left empty"))
+        + (f"the others with {len(tm) - len(off)} of {len(tm)} templates at scores {th:.3f} - "
+           + ("" if th_hi is None else f"{th_hi:.3f}") if tm is not None else "the others left empty"))
     t0, n_manual, n_auto = time.time(), 0, 0
     rows = list(mi.itertuples())
     need = rows if tm is not None else []                         # without templates no micrograph is read
@@ -642,7 +721,7 @@ def run_manualpick(project: Project, job, log=print) -> dict:
         k = 0
         for i, r in enumerate(rows):
             mid = int(r.movie_id)
-            m = rev.get(mid)
+            m = rev.get(mid) or (part.get(mid) if tm is None else None)
             if tm is not None:
                 img, apix, ctf = fut.result()
                 k += 1
@@ -673,10 +752,29 @@ def run_manualpick(project: Project, job, log=print) -> dict:
                 n_manual += len(xy)
                 thr = np.nan if tm is None else th
             else:
-                keep = (c.score >= th) & ok
+                keep = auto_keep(c, ok, th, th_hi, off)
+                manual = np.zeros(len(c.score))
                 cols = dict(xy_a=c.xy_a, score=c.score, local_std=c.local_std, local_mean=c.local_mean,
-                            inside=inside, template=c.template, manual=np.zeros(len(c.score)))
-                n_auto += int(keep.sum())
+                            inside=inside, template=c.template, manual=manual)
+                pm = part.get(mid)
+                if pm is not None:                            # as the picker shows it: removed ones out, picks in
+                    if len(c.xy_a):
+                        from scipy.spatial import cKDTree
+                        tree = cKDTree(c.xy_a)
+                        for q in pm.get("rejected") or []:
+                            for jj in tree.query_ball_point(q[:2], MATCH * s.diameter_a):
+                                keep[jj] = False
+                        for q in pm.get("picks") or []:
+                            for jj in tree.query_ball_point(q[:2], s.min_dist_frac * s.diameter_a):
+                                keep[jj] = False
+                    xy = np.asarray([q[:2] for q in pm.get("picks") or []], np.float64).reshape(-1, 2)
+                    if len(xy):
+                        n1 = len(xy)
+                        cols = {k: np.concatenate([np.asarray(v), add]) for (k, v), add in zip(cols.items(), (
+                            xy, np.full(n1, th), np.ones(n1), np.zeros(n1), np.ones(n1), np.full(n1, -1), np.ones(n1)))}
+                        keep = np.concatenate([keep, np.ones(n1, bool)])
+                        n_manual += n1
+                n_auto += int(keep.sum()) - (len(pm.get("picks") or []) if pm is not None else 0)
                 thr = th
             project.add_picks(job, mid, cols, keep, thr)
             if (i + 1) % 25 == 0 or i + 1 == len(rows):
@@ -696,7 +794,9 @@ def run_manualpick(project: Project, job, log=print) -> dict:
     summ = dict(micrographs=len(t), picks=int(t["n_kept"].sum()), candidates=int(t["n_candidates"].sum()),
                 picks_per_micrograph=round(float(t["n_kept"].mean()), 1) if len(t) else 0, reviewed=len(rev),
                 manual_picks=n_manual, template_picks=n_auto, templates=0 if tm is None else len(tm),
-                threshold=None if tm is None else round(float(th), 4), seconds=round(time.time() - t0, 1),
+                threshold=None if tm is None else round(float(th), 4),
+                threshold_hi=None if tm is None or th_hi is None else round(float(th_hi), 4),
+                templates_off=len(off), seconds=round(time.time() - t0, 1),
                 t_run=time.time())
     try:                                                              # a figure never fails a job
         from .plots_preprocess import overview_figure

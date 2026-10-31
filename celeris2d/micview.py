@@ -111,8 +111,16 @@ def mic_rows(project: Project, job) -> list[dict]:
 
 
 def _micrograph(project: Project, mc, stem: str):
-    with open(_stats_path(project, mc, stem)) as fh:
-        s = json.load(fh)
+    st = _stats_path(project, mc, stem)
+    if os.path.exists(st):
+        with open(st) as fh:
+            s = json.load(fh)
+    else:                                             # no stats file (micrographs registered directly): the catalog
+        mi = project.micrographs(mc)
+        r = mi[mi["stem"] == stem]
+        if not len(r):
+            raise FileNotFoundError(f"no micrograph {stem} in {mc.name}")
+        s = dict(micrograph=r["path"].iloc[0], apix=float(r["apix"].iloc[0]))
     import mrcfile
     with mrcfile.open(project.abs(s["micrograph"]), permissive=True) as f:
         img = np.asarray(f.data, np.float32)
@@ -215,7 +223,7 @@ def _cached(project: Project, mc, stem: str, kind: str, make):
     read when it is there and newer than the micrograph's stats, else made and written now."""
     p = _preview(project, mc, stem, kind)
     st = _stats_path(project, mc, stem)
-    if os.path.exists(p) and os.path.getmtime(p) >= os.path.getmtime(st):
+    if os.path.exists(p) and os.path.getmtime(p) >= (os.path.getmtime(st) if os.path.exists(st) else 0):
         with open(p, "rb") as fh:
             data = fh.read()
         return json.loads(data) if kind.endswith(".json") else data
