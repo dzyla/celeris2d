@@ -80,7 +80,7 @@ function renderQueue() {
   document.querySelectorAll('#queue [data-s]').forEach(b => b.onclick = async () => {
     if (!confirm(`Stop ${b.dataset.s}? Its process ends now; Restart runs it again.`)) return;
     try { await api('/api/project/stop', {job: b.dataset.s}); } catch (e) { alert(e.message); }
-    load();
+    load(); setTimeout(load, 3000);
   });
 }
 // job types: a category (colour) and a glyph (shape) each, so a job reads at a glance in every view of the rail
@@ -257,7 +257,7 @@ async function showJob(name, scroll = true) {
   on('nextj', () => jobForm(nt.type, {[nin.name]: j.id}));
   on('stop', async () => {
     if (!confirm(`Stop ${j.name}? Its process ends now; what it wrote so far stays, and Restart runs it again.`)) return;
-    try { await api('/api/project/stop', {job: j.name}); await load(); showJob(j.name, false); } catch (e) { alert(e.message); }
+    try { await api('/api/project/stop', {job: j.name}); await load(); showJob(j.name, false); setTimeout(load, 3000); } catch (e) { alert(e.message); }
   });
   on('cancel', async () => { try { await api('/api/project/cancel', {job: j.name}); await load(); showJob(j.name, false); } catch (e) { alert(e.message); } });
   on('final', async () => {

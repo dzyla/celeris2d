@@ -1220,23 +1220,25 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
     job = project.job(job)
     s = settings_of(job, HeteroRefineSettings)
     pj, qj = project.job(job.params["particles"]), project.job(job.params["poses"])
-    src, poses, t_start, half, n_dup, dist = _posed_particles(project, job, pj, qj, (), log)
+    # symmetry-expanded poses (a SymExpand job, or a refinement of one): one row per copy, each image loaded once
+    src, poses, t_start, half, n_dup, dist, img = _posed_particles(project, job, pj, qj, (), log,
+                                                                   expand=qj.type not in CLASS_JOBS)
     max_res = s.max_res_a or 2.0 * src.apix
     t0 = time.time()
     ses, info = _session(project, job, src, s.diameter_a, max_res, s.gpus, log, nyquist_margin=1.0, max_c64_gb=1.5,
                          image_mask_a=-1.0)      # reconstruct from unmasked images (alignment masks them)
     clf = ses.clf
     clf._wait_loaded(clf.N)
-    dev, box_a, n = clf.dev, clf.box_a, clf.N
+    dev, box_a, n = clf.dev, clf.box_a, len(img)
     K = len(s.references)
     b = ab.working_box(clf, n_acc=2 * K, n_ft=2 * K, log=log)
     apix = box_a / b
     A0 = ab.euler_to_matrix(torch.as_tensor(poses["rot"]), torch.as_tensor(poses["tilt"]),
                             torch.as_tensor(poses["psi"])).float()
     t = torch.as_tensor(t_start).float()
-    idx = torch.arange(n)
-    if half is None:
-        half = (torch.randperm(n, generator=torch.Generator().manual_seed(1)) % 2).numpy()
+    idx = torch.as_tensor(img)
+    if half is None:                                  # per image: the copies of a particle in the same half
+        half = (torch.randperm(clf.N, generator=torch.Generator().manual_seed(1)) % 2).numpy()[img]
     half_t = torch.as_tensor(half).long()
     # references: same box and pixel size; the first map scaled to the particles at their poses, the others to its
     # Fourier amplitudes at low resolution (they may be in other frames, so poses cannot scale them); decoys are
@@ -1301,12 +1303,13 @@ def run_hetero_refine(project: Project, job, log=print) -> dict:
     A_start = A_init[torch.arange(n), z.cpu()]
     z = z.cpu().numpy()
     rot, tilt, psi = ab.matrix_to_euler(A.cpu())
-    _write_results(project, job, src, np.arange(n), dict(
+    _write_results(project, job, src, img, dict(
         rot=rot.numpy().astype(np.float32), tilt=tilt.numpy().astype(np.float32), psi=psi.numpy().astype(np.float32),
         shift_x_a=t[:, 0].cpu().numpy().astype(np.float32), shift_y_a=t[:, 1].cpu().numpy().astype(np.float32),
         cls=z.astype(np.int16), fit=fit, half=np.asarray(half).astype(np.uint8), used=used,
         **{f"prob_{k + 1}": post[:, k].astype(np.float32) for k in range(K)},
-        **(iteration_columns(job, box_a) if s.save_iterations else {})))
+        **(iteration_columns(job, box_a) if s.save_iterations else {}),
+        **({"copy": poses["copy"].astype(np.int16)} if "copy" in poses and "celCopy" not in src.parts else {})))
     table, fsc, masks, res_cls = [], {}, [], []
     for k in range(K):
         nk = int((z == k).sum())
