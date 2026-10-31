@@ -56,6 +56,15 @@ def test_import_relion(tmp_path):
     assert mc.type == "MotionCtf" and mc.params["imported"] and len(prj.micrographs(mc)) == 3
 
 
+def test_import_twice(tmp_path):
+    """A second set on micrographs the project already has (e.g. a curated subset of the same data) imports too."""
+    star = _relion_set(str(tmp_path / "relion"))
+    prj = Project(str(tmp_path / "prj"))
+    import_particles(prj, star, particle_a=60, log=lambda *a: None)
+    ex = prj.job(import_particles(prj, star, particle_a=60, label="again", log=lambda *a: None))
+    assert ex.status == "finished" and len(prj.particles(ex)) == 60
+
+
 def test_import_job_from_queue(tmp_path):
     """The registered ImportParticles job (dashboard form, MCP new_job) runs from the queue and names its Extract job."""
     from celeris2d.scheduler import queue_job, run_job

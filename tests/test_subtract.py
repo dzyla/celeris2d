@@ -325,6 +325,36 @@ def test_refine_saves_iterations(sim):
     assert not Refine3DSettings().save_iterations
 
 
+def test_refine_marginalized(sim):
+    """marginalize=5: each particle inserted at its 5 best local poses with posterior weights; the refinement runs and
+    reaches the resolution of the same refinement at the best pose only (within two shells), logging the weights."""
+    from celeris2d import jobs
+    prj, cons = sim["prj"], sim["cons"]
+    ex, st = cons.params["particles"], cons.params["reference"]
+    lines = []
+    mj = jobs.refine3d_job(prj, ex, st, st, jobs.Refine3DSettings(n_iter=4, res_start_a=12.0, drop_frac=0.0, marginalize=5),
+                           label="marg")
+    jobs.run_refine3d(prj, mj, log=lines.append)
+    r0, r1 = prj.summary_of(cons)["resolution_a"], prj.summary_of(mj)["resolution_a"]
+    assert r1 <= r0 * 1.15, (r0, r1)
+    assert any("marginalisation: weight of the best" in str(x) for x in lines)
+
+
+def test_refine_rescue(sim):
+    """rescue_frac: the worst-fitting particles searched again over all orientations and +-rescue_shift_a; the
+    refinement runs, logs how many took a new pose, and keeps the consensus resolution (within 15 %)."""
+    from celeris2d import jobs
+    prj, cons = sim["prj"], sim["cons"]
+    ex, st = cons.params["particles"], cons.params["reference"]
+    lines = []
+    rj = jobs.refine3d_job(prj, ex, st, st, jobs.Refine3DSettings(n_iter=4, res_start_a=12.0, drop_frac=0.0, rescue_frac=0.2,
+                                                                  rescue_iters=(2,), rescue_shift_a=9.0), label="rescue")
+    jobs.run_refine3d(prj, rj, log=lines.append)
+    r0, r1 = prj.summary_of(cons)["resolution_a"], prj.summary_of(rj)["resolution_a"]
+    assert r1 <= r0 * 1.15, (r0, r1)
+    assert any("rescue: the worst-fitting 20%" in str(x) for x in lines)
+
+
 def test_refine_from_map_alone(sim):
     """Refine3D without a poses job: from the map alone, low-passed to 30 A, every particle searches all orientations
     and shifts, then the usual local refinement. The orientations must come out as those of a refinement started at

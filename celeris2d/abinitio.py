@@ -738,13 +738,16 @@ def working_box(clf, n_acc: int, n_ft: int, log=print) -> int:
 
 def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs, half: torch.Tensor, res_a: float,
                   step_deg: float, sigma2: torch.Tensor | None = None, box: int | None = None, log=print,
-                  topk: int = 1, shifts: torch.Tensor | None = None):
+                  topk: int = 1, shifts: torch.Tensor | None = None, scaled: bool = False):
     """Exhaustive orientation search (whole sphere x all in-plane angles, shift kept) of particles against the
     half-set references refs = [ref_half0, ref_half1], as two GEMMs per chunk of orientations:
     ll = Re<ctf conj(x) e_t, P> / sigma2 - 0.5 <ctf^2 / sigma2, |P|^2>. Returns (best A (n, 3, 3), best ll (n,),
     ll at the current pose (n,)); with topk > 1 the best topk orientations (n, topk, 3, 3) and their ll (n, topk).
     shifts: (S, 2) offsets (A) added to each particle's shift, searched with every orientation (projections computed
-    once, one GEMM per offset): a fourth value, the best shifts (n, 2). Not with topk."""
+    once, one GEMM per offset): a fourth value, the best shifts (n, 2). Not with topk.
+    scaled: each hypothesis with its best contrast scale a >= 0 (cryoSPARC's per-particle scale): max_a a c - a^2 p / 2 =
+    c^2 / 2p for c = Re<ctf conj(x) e_t, P> / sigma2 > 0, p = <ctf^2 / sigma2, |P|^2>; without it a faint particle
+    scores views with weak projections higher (the -p / 2 term), whatever its true view."""
     if shifts is not None and topk > 1:
         raise ValueError("global_search: shifts and topk > 1 together are not supported")
     dev = clf.dev
@@ -795,7 +798,8 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
             C2 = (ctf * ctf)[:, band] * isig
             del x, e_t, ctf
             P = refs[h].project(A[sel], band)
-            cur_ll[sel] = (X * P).real.sum(1) - 0.5 * (C2 * P.abs() ** 2).sum(1)
+            c_, p_ = (X * P).real.sum(1), (C2 * P.abs() ** 2).sum(1)
+            cur_ll[sel] = c_.clamp_min(0) ** 2 / (2 * p_.clamp_min(1e-30)) if scaled else c_ - 0.5 * p_
             Xs = [X] if shifts is None else [X * e for e in Es]      # the spectra moved by each offset
             Xr = [x_.real.contiguous() for x_ in Xs]
             Xi = [x_.imag.contiguous() for x_ in Xs]
@@ -805,13 +809,15 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
                 Pr, Pi, pw = P.real.T.contiguous(), P.imag.T.contiguous(), 0.5 * (C2 @ (P.abs() ** 2).T)
                 if S > 1:
                     for si in range(S):
-                        v, k = (Xr[si] @ Pr - Xi[si] @ Pi - pw).max(1)
+                        c_ = Xr[si] @ Pr - Xi[si] @ Pi
+                        v, k = (c_.clamp_min(0) ** 2 / (4 * pw.clamp_min(1e-30)) if scaled else c_ - pw).max(1)
                         upd = v > best_ll[sel]
                         best_ll[sel[upd]] = v[upd]
                         best_h[sel[upd]] = k[upd] + c
                         best_s[sel[upd]] = si
                     continue
-                ll = Xr[0] @ Pr - Xi[0] @ Pi - pw                                  # (n_chunk, Hc)
+                ll = Xr[0] @ Pr - Xi[0] @ Pi                                       # (n_chunk, Hc)
+                ll = ll.clamp_min(0) ** 2 / (4 * pw.clamp_min(1e-30)) if scaled else ll - pw
                 if topk > 1:
                     v, k = torch.topk(torch.cat([top_ll[sel], ll], 1), topk, dim=1)
                     hh = torch.cat([top_h[sel], torch.arange(c, c + ll.shape[1], device=dev).expand(len(sel), -1)], 1)
@@ -826,6 +832,50 @@ def global_search(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs
     if shifts is not None:
         return Ah[best_h], best_ll, cur_ll, t + sh[best_s]
     return Ah[best_h], best_ll, cur_ll
+
+
+def score_poses(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, refs, half: torch.Tensor, res_a: float,
+                sigma2: torch.Tensor | None = None, box: int | None = None, shifts: torch.Tensor | None = None):
+    """Log-likelihood of given candidate orientations per particle (same objective as global_search), each with the
+    best of a grid of shift offsets. A: (n, J, 3, 3); t: (n, 2) shifts (A); shifts: (S, 2) offsets (A) added to t
+    (None: t only). Returns ll (n, J) and the best shift (n, J, 2) (A)."""
+    dev = clf.dev
+    box_a, b = clf.box_a, box or clf.bmax
+    n, J = A.shape[:2]
+    fy, fx = freqs(b, dev)
+    kr = torch.sqrt(fy[:, None] ** 2 + fx[None, :] ** 2)
+    band = (kr >= 1) & (kr <= box_a / res_a)
+    ph = TWO_PI / box_a
+    isig = torch.ones(int(band.sum()), device=dev) if sigma2 is None else 1.0 / sigma2[torch.round(kr[band]).long()]
+    sh = torch.zeros(1, 2, device=dev) if shifts is None else shifts.to(dev).float()
+    Es = torch.exp(-1j * ph * (sh[:, 0, None] * fx[None, :].expand_as(kr)[band][None]
+                               + sh[:, 1, None] * fy[:, None].expand_as(kr)[band][None]))        # (S, F)
+    Fb = int(band.sum())
+    npc = int(max(1, min(n, 0.15 * _free(dev) / (J * Fb * 8 * 3 + b * (b // 2 + 1) * 40))))
+    ll = torch.full((n, J), -float("inf"), device=dev)
+    bs = torch.zeros((n, J), dtype=torch.long, device=dev)
+    A, t = A.to(dev), t.to(dev)
+    for h in (0, 1):
+        sel_h = torch.nonzero(half.to(dev) == h).squeeze(1)
+        for p0 in range(0, len(sel_h), npc):
+            sel = sel_h[p0:p0 + npc]
+            j = idx[sel.cpu()]
+            x = clf._fetch(j, dev, b)
+            ctf = ctf_2d(clf.ctf_p[j].to(dev), clf.optics, fy, fx, box_a)
+            tt = t[sel]
+            e_t = torch.exp(-1j * ph * (fx[None, None, :] * tt[:, 0, None, None] + fy[None, :, None] * tt[:, 1, None, None]))
+            X = (x.conj() * e_t * ctf)[:, band] * isig                        # (m, F)
+            C2 = (ctf * ctf)[:, band] * isig
+            del x, e_t, ctf
+            P = refs[h].project(A[sel].reshape(-1, 3, 3), band).reshape(len(sel), J, -1)    # (m, J, F)
+            pw = 0.5 * torch.einsum("mf,mjf->mj", C2, P.real ** 2 + P.imag ** 2)
+            for s in range(len(sh)):
+                v = torch.einsum("mf,mjf->mj", X * Es[s], P).real - pw
+                upd = v > ll[sel]
+                ll[sel] = torch.where(upd, v, ll[sel])
+                bs[sel] = torch.where(upd, s, bs[sel])
+            del P, X, C2
+    return ll, t[:, None, :] + sh[bs]
 
 
 def global_step(res_a: float, diameter_a: float, max_hyp: float = 2.0e5) -> float:
@@ -1016,7 +1066,10 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                      max_angle: float | None = None, max_shift: float | None = None,
                      limit_A: torch.Tensor | None = None, limit_t: torch.Tensor | None = None,
                      shift_per_deg: float | None = None, iter_stats: bool = False, subpixel: bool = False,
-                     nu_weighted: bool = False, log=print):
+                     nu_weighted: bool = False, nu_awf: float = 0.0, nu_order: int = 0, marginalize: int = 0,
+                     nu_ratio: float = 0.0, nu_shift: int = 0, noise_model: str = "residual",
+                     rescue_frac: float = 0.0, rescue_at: tuple = (), rescue_shift: float = 24.0,
+                     rescue_res: float = 15.0, log=print):
     """Local refinement of particle orientations A and shifts t (A, model shift) against CTF-modulated projections,
     gold-standard halves (half: (n,) 0/1 per particle, e.g. the split of the refinement the poses come from - a
     particle must stay in the half it was aligned or polished against; default a random split, seed 1). inits:
@@ -1050,6 +1103,9 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     history's "nu"), refine_particles.last_nu_map the last cutoff map (A, mean of the halves). nu_strict (default): the cutoffs of each
     half chosen by cross-validation between two folds of that half's own particles (each reconstructed on a small
     pad-1 box sized to the resolution), so no information crosses between the halves (gold standard).
+    marginalize (one model, hard poses): each particle is inserted at its this many best poses of the local search,
+    weighted by their posterior (cryoSPARC's pose marginalisation), instead of only at the best one; 0: off.
+    nu_awf / nu_order: the non-uniform filter's window per candidate and Butterworth candidates (nufilter).
     nu_weighted: the non-uniform filter's candidates are the global FSC weighting stretched per region (nufilter
     shape=), not hard low-passes.
     subpixel: shifts between the grid points: along x and y, where the best of the 3 x 3 shift hypotheses (at the best
@@ -1123,6 +1179,9 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
     pscale = torch.ones(n, device=dev)    # per-particle contrast scale (particle_scale)
     pscale_new = torch.ones(n, device=dev)
     score = torch.zeros(n, device=dev)    # normalised fit of the best pose (for dropping particles)
+    # marginalisation: the K best local hypotheses as a rotation / shift relative to the best pose, and their weights
+    marg = marginalize if (marginalize > 1 and M == 1 and not soft) else 0
+    marg_D = marg_dt = marg_w = None
     dfz = clf.ctf_p[idx, :2].mean(1)      # defocus, to compare fits within defocus groups
     dgrp = torch.bucketize(dfz, torch.quantile(dfz, torch.linspace(0, 1, 9)[1:-1])).to(dev)
     sigma2 = None
@@ -1163,11 +1222,25 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                     xs = x * torch.exp(1j * ph * (fx[None, None, :] * tt[:, 0, None, None] + fy[None, :, None] * tt[:, 1, None, None]))
                 for h in (0, 1):
                     sel = (hh == h) & (wp > 0) & ((pp[:, m] > 1e-3) if soft else (zz == m))
-                    if sel.any():
-                        w3 = (wp[sel] * (pp[sel, m] if soft else 1.0))[:, None, None]
-                        vols[m][h].insert((xs * ctf)[sel] * (w3 * ps[sel]), (ctf * ctf)[sel] * (w3 * ps[sel] ** 2), AA[sel],
-                                          kmax=kmax,
-                                          ops=None if sym_after else ops)
+                    if not sel.any():
+                        continue
+                    if marg_w is not None:     # every particle at its K best poses, weighted by their posterior
+                        for k in range(marg):
+                            wk = marg_w[sl, k]
+                            sk = sel & (wk > 1e-3)
+                            if not sk.any():
+                                continue
+                            Ak = marg_D[sl, k] @ AA
+                            tk = tt + marg_dt[sl, k]
+                            xk = x * torch.exp(1j * ph * (fx[None, None, :] * tk[:, 0, None, None] + fy[None, :, None] * tk[:, 1, None, None]))
+                            w3 = (wp[sk] * wk[sk])[:, None, None]
+                            vols[m][h].insert((xk * ctf)[sk] * (w3 * ps[sk]), (ctf * ctf)[sk] * (w3 * ps[sk] ** 2), Ak[sk],
+                                              kmax=kmax, ops=None if sym_after else ops)
+                        continue
+                    w3 = (wp[sel] * (pp[sel, m] if soft else 1.0))[:, None, None]
+                    vols[m][h].insert((xs * ctf)[sel] * (w3 * ps[sel]), (ctf * ctf)[sel] * (w3 * ps[sel] ** 2), AA[sel],
+                                      kmax=kmax,
+                                      ops=None if sym_after else ops)
             if subvols is not None:                  # the folds, on their small box
                 bs_ = subvols[0][0].b
                 fys, fxs = subvols[0][0].fy, subvols[0][0].fx
@@ -1277,10 +1350,12 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                     from .nufilter import adaptive_filter_cv
                     f_ = adaptive_filter_cv(hr_[h], sub_maps[h][0], sub_maps[h][1], box_a / b,
                                             box_a / sub_maps[h][0].shape[0], res[0], mask=cur_masks[0], info=infos[h],
-                                            shape=nu_shape)
+                                            shape=nu_shape, awf=nu_awf, order=nu_order,
+                                            snr=(fscs[0] / (1 - fscs[0]).clamp_min(1e-3)).nan_to_num(0) if nu_ratio else None,
+                                            ratio=nu_ratio, shift=nu_shift)
                 else:
                     f_ = adaptive_filter(hr_[h], hr_[1 - h], box_a / b, res[0], mask=cur_masks[0], info=infos[h],
-                                         shape=nu_shape)
+                                         shape=nu_shape, awf=nu_awf, order=nu_order)
                 r = Volume(b, dev, pad=pad, grid_correct=gc)
                 r.set_real(f_ * (mask if cur_masks[0] is None else cur_masks[0]))
                 del f_
@@ -1327,6 +1402,42 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                     f"particles improved, {float(big.float().sum()) / n * 100:.1f}% moved to a different view "
                     f"({time.time() - tg:.1f}s)")
             step = max(step, g_step / 2)                                 # resume local search around the new poses
+        # ---- rescue: the worst-fitting particles searched again over all orientations AND a wide shift range
+        if M == 1 and rescue_frac > 0 and (it + 1) in rescue_at and it > 0:
+            tr_ = time.time()
+            rel_ = torch.empty_like(score)
+            for g_ in range(int(dgrp.max()) + 1):
+                sg_ = dgrp == g_
+                if sg_.any():
+                    rel_[sg_] = score[sg_] / score[sg_].median().clamp_min(1e-6)
+            w_ = torch.nonzero(rel_ <= torch.quantile(rel_, rescue_frac)).squeeze(1).cpu()
+            r_res = max(rescue_res, al_res)
+            gg_ = torch.arange(-rescue_shift, rescue_shift + 0.01, 3.0)
+            wide_ = torch.stack(torch.meshgrid(gg_, gg_, indexing="xy"), -1).reshape(-1, 2)
+            Ag, _, _, tg = global_search(clf, idx[w_], A[w_, 0], t[w_, 0], refs[0], half[w_], r_res,
+                                         max(6.0, global_step(r_res, diam)), sigma2, box=b, log=log, shifts=wide_)
+            # both the current pose and the found one polished at a finer resolution (1.5 deg, +-3 A), the found one
+            # adopted only if clearly better there
+            p_res = max(al_res, 8.0)
+            Rp_ = (rotz(torch.arange(-2, 3, dtype=torch.float32) * 1.5)[:, None] @ local_rotations(1.5, 2)[None]).reshape(-1, 3, 3)
+            gp_ = torch.arange(-3.0, 3.01, 1.5)
+            fine_ = torch.stack(torch.meshgrid(gp_, gp_, indexing="xy"), -1).reshape(-1, 2)
+            pol = []
+            for Ac_, tc_ in ((A[w_, 0].cpu(), t[w_, 0].cpu()), (Ag.cpu(), tg.cpu())):
+                nb_ = Rp_[None] @ Ac_[:, None]
+                ll_, tb_ = score_poses(clf, idx[w_], nb_, tc_, refs[0], half[w_], p_res, sigma2=sigma2, box=b, shifts=fine_)
+                k_ = ll_.argmax(1).cpu()
+                ar_ = torch.arange(len(w_))
+                pol.append((ll_.max(1).values.cpu(), nb_[ar_, k_], tb_.cpu()[ar_, k_]))
+            take = pol[1][0] > pol[0][0] + 3.0
+            if take.any():
+                wt = w_[take]
+                A[wt, 0] = pol[1][1][take].to(A.dtype).to(A.device)
+                t[wt, 0] = pol[1][2][take].to(t.dtype).to(t.device)
+            log(f"[3d] rescue: the worst-fitting {rescue_frac * 100:.0f}% ({len(w_)}) searched at {r_res:.0f} A with shifts "
+                f"+-{rescue_shift:.0f} A: {int(take.sum())} ({float(take.float().mean()) * 100:.1f}%) took a new pose "
+                f"({time.time() - tr_:.1f}s)")
+            step = max(step, 1.5)
         # ---- local search
         band = (kr >= 1) & (kr <= k_al)
         if step_scale is not None:
@@ -1362,6 +1473,10 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
         Fb = int(band.sum())
         bt = int(max(8, min(batch, _free(dev) / 4 / (M * J * Fb * 8 * 4 + M * J * Sh * 8))))
         llm_all = torch.zeros((n, M), device=dev)
+        if marg:
+            marg_D = torch.eye(3, device=dev).repeat(n, marg, 1, 1)
+            marg_dt = torch.zeros((n, marg, 2), device=dev)
+            marg_w = torch.zeros((n, marg), device=dev)
         for i in range(0, n, bt):
             j = idx[i:i + bt]
             nb = len(j)
@@ -1407,6 +1522,13 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             llm_all[i:i + bt] = llm
             ar = torch.arange(nb, device=dev)
             arm = torch.arange(M, device=dev)
+            if marg:                      # the K best hypotheses (the first is the best), relative to the best
+                lk, ik = ll[:, 0].topk(marg, dim=1)
+                Ak_ = Ac[ar[:, None], 0, ik // Sh]                                                     # (nb, K, 3, 3)
+                tk_ = tt[:, 0, None] + sg[ik % Sh]                                                     # (nb, K, 2)
+                marg_D[i:i + bt] = Ak_ @ Ak_[:, :1].transpose(-1, -2)
+                marg_dt[i:i + bt] = tk_ - tk_[:, :1]
+                marg_w[i:i + bt] = torch.softmax(lk, dim=1)
             A[i:i + bt] = Ac[ar[:, None], arm[None], bj]
             t[i:i + bt] = tt + sg[bs]
             if subpixel and Sh == 9:       # parabola through the 3 shift log-likelihoods along x and along y
@@ -1434,6 +1556,10 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
             res_cnt.index_add_(0, shb, torch.full_like(shb, nb, dtype=torch.float32))
         # the last batch's arrays (sized from free memory: gigabytes) are not needed through the back-projection
         P = CP = Z = cross = pw = ll = e_t = mdl = r2 = x = ctf = Ac = None
+        if marg:
+            q_ = torch.quantile(marg_w[torch.randperm(n, device=dev)[:100000], 0], torch.tensor([0.1, 0.5, 0.9], device=dev))
+            log(f"[3d] marginalisation: weight of the best of {marg} poses 10 / 50 / 90 % {float(q_[0]):.2f} / "
+                f"{float(q_[1]):.2f} / {float(q_[2]):.2f}")
         if M > 1:
             lm = llm_all.clone()
             lm[:, [m for m in range(M) if not alive[m]]] = -float("inf")
@@ -1445,7 +1571,8 @@ def refine_particles(clf, idx: torch.Tensor, A: torch.Tensor, t: torch.Tensor, i
                 post = torch.softmax(lm / T0 ** (1 - f_), dim=1)
             else:
                 post = F.one_hot(z, M).float()
-        sigma2 = torch.where(res_cnt > 0, res_pow / res_cnt.clamp_min(1), sigma2)
+        if noise_model == "residual":       # "white": sigma2 stays 1 (diagnostic)
+            sigma2 = torch.where(res_cnt > 0, res_pow / res_cnt.clamp_min(1), sigma2)
         if particle_scale:
             a_ = pscale_new.nan_to_num(1.0)
             pscale = (a_ / a_.median().clamp_min(1e-6)).clamp(0.2, 5.0)

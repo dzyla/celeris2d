@@ -103,6 +103,8 @@ def relion_particle_blocks(project, job) -> dict:
         "rlnMicrographName": p["mic_path"], "rlnOpticsGroup": 1,
         "rlnDefocusU": p["defocus_u"], "rlnDefocusV": p["defocus_v"], "rlnDefocusAngle": p["defocus_angle"],
         "rlnCtfMaxResolution": p["ctf_fit_res"], "rlnAutopickFigureOfMerit": p["score"]})
+    if pd.to_numeric(part["rlnCtfMaxResolution"], errors="coerce").isna().all():   # imported particles: no CTF fit
+        part = part.drop(columns="rlnCtfMaxResolution")
     part["celUid"] = p["uid"].to_numpy()
     part["celMovie"] = p["movie_id"].to_numpy()
     if "copy" in p:                                  # symmetry-expanded copies (Subtract): (uid, copy) is the key

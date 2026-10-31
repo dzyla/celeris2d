@@ -142,7 +142,8 @@ def import_particles(project: Project, path: str, particle_a: float = 0.0, parti
     mic_paths = list(dict.fromkeys(m["mic"]))
     root = os.path.commonpath([os.path.dirname(p) for p in mic_paths]) if mic_paths else "/"
     imp = project.import_movies(mic_paths, root=root, params=dict(particles_from=path), label=f"{name}_micrographs")
-    mv = project.movies(imp).set_index("path")
+    mv = project.movies().set_index("path")         # every movie: micrographs this project already had stay in
+                                                    # their first Import job (paths are unique in a project)
     o = src.optics
     mc = project.new_job("MotionCtf", dict(imported=True, source=path, kv=o.voltage_kv, cs_mm=o.cs_mm,
                                            amp_contrast=o.q0, apix=float(m["mic_apix"].iloc[0]), bin=1.0,

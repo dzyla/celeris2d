@@ -643,6 +643,27 @@ class Refine3DSettings:
     nu_strict: bool = True          # ... the cutoffs of each half from two folds of its own particles (gold standard)
     nu_weighted: bool = False       # ... each region's filter the global FSC weighting stretched (not a hard cut-off,
                                     # which keeps only shells with SNR > 1: local FSC ~0.5, not 0.143)
+    nu_awf: float = 0.0             # ... local error window scaled with each candidate's resolution (sigma = awf / 2 x
+                                    # its resolution; cryoSPARC's adaptive window factor, 3 there); 0: one window, 2 x res
+    marginalize: int = 0            # each particle inserted at its this many best local poses, weighted by their posterior
+                                    # (cryoSPARC's pose marginalisation); 0: only the best pose
+    noise_model: str = "residual"   # likelihood weights per shell: "residual" (noise from the residual at the best pose),
+                                    # "white" (unweighted; diagnostic)
+    nu_ratio: float = 0.0           # ... strict: a cutoff chosen from the folds (1 / ratio of the half's particles; 2) is
+                                    # applied where the half map's SNR equals the folds' (finer); 0: as chosen
+    nu_order: int = 0               # ... Butterworth filters of this order (cryoSPARC: 8; with nu_weighted times the global
+                                    # FSC weighting); 0: raised-cosine low-passes
+    nu_shift: int = 0               # ... strict: each region's cross-validated cutoff moved this many candidates finer (the
+                                    # folds hold half a half's particles, so their choice is conservative). dz_2025_10 with
+                                    # min_step_deg 1.3, RELION-scored: 5.12 -> 4.97 A, 8 A FSC 0.755 -> 0.812
+    rescue_frac: float = 0.0        # share of the worst-fitting particles searched again over all orientations and a wide
+                                    # shift range (rescue_shift_a) at iterations rescue_iters, at rescue_res_a; the pose
+                                    # found is kept if it fits clearly better after local polishing. dz_2025_10: 11.6 %
+                                    # of good particles sat > 20 deg from cryoSPARC's pose, centred a median 16 A off;
+                                    # +-24 A at 15 A put 29 % of them back (0.5 % of correct ones moved, staying correct)
+    rescue_iters: tuple = (2, 4)    # ... the iterations (1-based) that rescue
+    rescue_shift_a: float = 24.0    # ... shift range searched (+- A, 3 A grid)
+    rescue_res_a: float = 15.0      # ... resolution of that global search (A; at least the current one)
     particle_scale: bool = False    # a contrast scale per particle (cryoSPARC's per-particle scale), fitted every
                                     # iteration, used in the search and the reconstruction
     wiener: float = 0.0             # > 0: half maps regularised by the FSC (Wiener / MAP, RELION's tau2 term with this
@@ -994,7 +1015,11 @@ def run_refine3d(project: Project, job, log=print) -> dict:
                                                          pad=s.pad or None, nu=s.nu, nu_strict=s.nu_strict,
                                                          particle_scale=s.particle_scale, wiener=s.wiener,
                                                          iter_stats=s.save_iterations, subpixel=s.subpixel,
-                                                         nu_weighted=s.nu_weighted, log=log)
+                                                         nu_weighted=s.nu_weighted, nu_awf=s.nu_awf,
+                                                         nu_order=s.nu_order, marginalize=s.marginalize,
+                                                         nu_ratio=s.nu_ratio, nu_shift=s.nu_shift, noise_model=s.noise_model,
+                                                         rescue_frac=s.rescue_frac, rescue_at=tuple(s.rescue_iters),
+                                                         rescue_shift=s.rescue_shift_a, rescue_res=s.rescue_res_a, log=log)
     seconds = time.time() - t0
     apix = box_a / b
     h1, h2 = vols[0][0].real(), vols[0][1].real()

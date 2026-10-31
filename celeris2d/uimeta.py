@@ -472,6 +472,30 @@ TYPES["Refine3D"] = dict(
         "nu_weighted": F("FSC-weighted local filter", "Non-uniform refinement: each region's filter is the FSC "
                                                       "weighting stretched to its resolution, instead of a hard "
                                                       "cutoff.", section="Non-uniform refinement"),
+        "nu_awf": F("Adaptive window factor", "Non-uniform refinement: the local error window scaled with each "
+                                              "candidate resolution (cryoSPARC uses 3). 0: one window.",
+                    section="Non-uniform refinement"),
+        "nu_order": F("Butterworth order", "Non-uniform refinement: Butterworth filters of this order (cryoSPARC "
+                                           "uses 8). 0: raised-cosine low-passes.", section="Non-uniform refinement"),
+        "nu_ratio": F("Fold-to-half SNR ratio", "Non-uniform refinement, strict: apply each cutoff where the half map "
+                                                "reaches the folds' SNR (2 = folds hold half the particles). 0: as "
+                                                "chosen.", section="Non-uniform refinement"),
+        "nu_shift": F("Finer cutoffs (steps)", "Non-uniform refinement, strict: move each region's cutoff this many "
+                                               "candidates finer (the folds' choice is conservative).",
+                      section="Non-uniform refinement"),
+        "marginalize": F("Pose marginalisation", "Insert each particle at its this many best local poses, weighted "
+                                                 "by their probability (cryoSPARC's marginalisation). 0: best pose "
+                                                 "only.", section="Reconstruction"),
+        "noise_model": F("Noise model", "Weights of the frequencies in the alignment.", section="Alignment",
+                         choices=[["residual", "From the residuals (default)"], ["white", "White (diagnostic)"]]),
+        "rescue_frac": F("Rescue worst-fitting share", "The worst-fitting share of particles searched again over all "
+                                                       "orientations and a wide shift range; a new pose is kept when "
+                                                       "it fits clearly better. Helps particles stuck off-centre in a "
+                                                       "wrong view. 0: off.", section="Alignment"),
+        "rescue_iters": F("Rescue iterations", "The iterations (1-based) that rescue.", section="Alignment"),
+        "rescue_shift_a": F("Rescue shift range (A)", "Shift range (plus or minus) of the rescue search.",
+                            section="Alignment"),
+        "rescue_res_a": F("Rescue resolution (A)", "Resolution of the rescue's global search.", section="Alignment"),
         "wiener": F("FSC regularisation (T)", "More than 0: half maps regularised by their FSC, as RELION does (this "
                                               "is RELION's T; 1 = RELION's default). 0: a fixed small regulariser.",
                     section="Reconstruction"),

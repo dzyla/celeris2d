@@ -46,6 +46,12 @@ def write_star(path: str, blocks: dict[str, pd.DataFrame]) -> None:
                 fh.write(f"_{c} #{i + 1} \n")
             out = df.copy()
             for c in out.columns:
+                if out[c].dtype == object and out[c].isna().any():     # numbers with gaps (None): an empty field
+                    num = pd.to_numeric(out[c], errors="coerce")       # would shift every later column
+                    if num.notna().sum() == out[c].notna().sum():
+                        out[c] = num.astype(float)
+                    else:
+                        out[c] = out[c].fillna("None")
                 if pd.api.types.is_float_dtype(out[c]):
                     out[c] = out[c].map("{:.6f}".format) if len(out) < 1000 else np.char.mod("%.6f", out[c].to_numpy())
             out.to_csv(fh, sep=" ", header=False, index=False)
