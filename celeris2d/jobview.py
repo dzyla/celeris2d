@@ -182,3 +182,55 @@ def particle_gallery(project: Project, job, n: int = 60, seed: int = 0, lowpass_
                                   defocus_a=round(0.5 * (float(r.defocus_u) + float(r.defocus_v)))))
     return _clean(dict(job=j.name, tiles=tiles, box=int(pick["box"].iloc[0]), apix=float(pick["apix"].iloc[0]),
                        total=int(len(df))))
+
+
+def pick_crops(project: Project, job, threshold: float | None = None, n: int = 16, seed: int = 0) -> dict:
+    """The candidates of a Pick job nearest the threshold (the job's own when None: per micrograph), cut out of a few
+    micrographs (2 x the diameter, low-passed to 20 A) - the hardest calls, to judge the threshold by eye."""
+    from PIL import Image
+    from scipy import ndimage
+    from .micview import _mc_job
+    j = project.job(job)
+    mc = _mc_job(project, j)
+    mics = project.micrographs(mc)
+    tab = project.pick_table(j)
+    if not len(tab):
+        return dict(job=j.name, tiles=[])
+    g = np.random.default_rng(seed)
+    rows = tab.iloc[g.permutation(len(tab))[:6]]
+    diam = float(j.params.get("diameter_a", 150))
+    cand = []
+    for r in rows.itertuples():
+        p = project.picks(j, int(r.movie_id))
+        th = float(threshold) if threshold is not None else float(p["threshold"])
+        if not np.isfinite(th) or not len(p["score"]):
+            continue
+        d = np.abs(np.asarray(p["score"]) - th)
+        for i in np.argsort(d)[:max(3, n // 3)]:
+            cand.append((float(d[i]), r.stem, p["xy_a"][i], float(p["score"][i]), float(p["score"][i]) >= th))
+    cand.sort(key=lambda c: c[0])
+    tiles, cache = [], {}
+    for _, stem, xy, sc, keep in cand[:n]:
+        if stem not in cache:
+            import mrcfile
+            m = mics[mics["stem"] == stem].iloc[0]
+            with mrcfile.open(project.abs(m["path"]), permissive=True) as fh:
+                img, apix = np.asarray(fh.data, np.float32), float(m["apix"])
+            f = max(1, int(round(diam / 40 / apix)))          # ~40 px across the particle
+            h, w = (img.shape[0] // f) * f, (img.shape[1] // f) * f
+            small = img[:h, :w].reshape(h // f, f, w // f, f).mean((1, 3))
+            cache[stem] = (ndimage.gaussian_filter(small, 0.1874 * 20 / (apix * f)), apix * f)
+        small, px = cache[stem]
+        r_ = int(1.0 * diam / px)
+        cx, cy = int(xy[0] / px), int(xy[1] / px)
+        a = small[max(cy - r_, 0):cy + r_, max(cx - r_, 0):cx + r_]
+        if a.size == 0:
+            continue
+        lo, hi = np.percentile(a, [1, 99])
+        im = Image.fromarray((np.clip((a - lo) / max(hi - lo, 1e-9), 0, 1) * 255).astype(np.uint8)).resize((96, 96))
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        tiles.append(dict(src="data:image/png;base64," + base64.b64encode(buf.getvalue()).decode(), stem=stem,
+                          score=round(sc, 4), kept=bool(keep)))
+    tiles.sort(key=lambda t: t["score"])
+    return _clean(dict(job=j.name, tiles=tiles))

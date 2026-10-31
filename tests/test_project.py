@@ -85,6 +85,8 @@ def test_jobs_picking_extraction_exports(tmp_path):
     assert len(ps["rows"]) == 2 and ps["kept"] == sum(r["picks"] for r in ps["rows"]) and ps["method"] == "blob"
     es = jobview.extract_stats(prj, ex)
     assert es["particles"] == sum(r["particles"] for r in es["rows"]) > 0 and es["box"] == ex.params["box"]
+    pc = jobview.pick_crops(prj, pj, n=4)
+    assert 1 <= len(pc["tiles"]) <= 4 and all(t["src"].startswith("data:image/png") for t in pc["tiles"])
     g = jobview.particle_gallery(prj, ex, n=5, lowpass_a=10)
     assert len(g["tiles"]) == 5 and g["tiles"][0]["src"].startswith("data:image/png")
 

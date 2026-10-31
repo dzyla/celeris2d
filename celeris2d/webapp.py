@@ -1291,6 +1291,13 @@ def create(workdir, project_dir=None):
         nj = rethreshold(prj, j, None if th is None else float(th))
         return dict(job=nj.name)
 
+    @app.get("/api/project/pickcrops")
+    def project_pickcrops(job: str, threshold: float | None = None, n: int = 16):
+        """Candidates of a Pick job nearest a threshold, cut out of a few micrographs."""
+        from .jobview import pick_crops
+        prj = _prj()
+        return pick_crops(prj, prj.job(job), threshold, max(4, min(int(n), 40)))
+
     @app.get("/api/project/ptcls")
     def project_ptcls(job: str, n: int = 60, seed: int = 0, lowpass: float = 0.0):
         """A random handful of an Extract job's particles as small images."""

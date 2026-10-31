@@ -314,8 +314,9 @@ function stageLive(st, j) {
         <div class="bar"><div style="width:${pct.toFixed(1)}%;background:${done ? 'var(--good)' : 'var(--you)'}"></div></div></div>`;
     }).join('');
     const h = (hist || []).filter(x => x.stage === cur && x.t);
-    if (h.length > 2 && nIt > it) {
-      const dt = (h[h.length - 1].t - h[0].t) / Math.max(h[h.length - 1].it - h[0].it, 1), left = (nIt - it) * dt;
+    const el = t0 ? Math.max(0, Date.now() / 1000 - skew - t0) : 0;
+    if ((h.length > 2 || (!hist && el && it > 1)) && nIt > it) {
+      const dt = h.length > 2 ? (h[h.length - 1].t - h[0].t) / Math.max(h[h.length - 1].it - h[0].it, 1) : el / it, left = (nIt - it) * dt;
       $('#reta').textContent = (left >= 90 ? '~' + Math.round(left / 60) + ' min' : '~' + Math.round(left) + ' s') + ' left' + (ci < stages.length - 1 ? ' in this stage' : '');
     }
   };
@@ -426,7 +427,7 @@ function stageMicPanel(st, j) {
         <div id="mpdet"></div>
       </div>
     </div>
-    ${pickMode ? '<div class="mplim card pad" id="pkth"></div><div class="mpplots" id="pkplots"><div id="pkscore" class="w2"></div><div id="pkper"></div><div id="pkdef"></div></div>'
+    ${pickMode ? '<div class="mplim card pad" id="pkth"></div><div class="card pad" id="pkcrops"></div><div class="mpplots" id="pkplots"><div id="pkscore" class="w2"></div><div id="pkper"></div><div id="pkdef"></div></div>'
       : '<div class="mpplots"><div id="mpmot"></div><div id="mploc"></div><div id="mpctf"></div><div id="mppz"></div></div>'}
     ${pickMode ? '' : '<div class="mplim card pad" id="mplim"></div>'}
     <div class="mpcharts" id="mpcharts"></div></div>`;
@@ -624,6 +625,16 @@ function stageMicPanel(st, j) {
     if (!box._wired) { box._wired = true; box.on('plotly_click', e => { const p = e.points.find(q => q.customdata); if (p) show(p.customdata, true); }); }
   };
   let pk = null, thPrev = null;                      // a Pick job's own numbers (jobview.pick_stats); a threshold to try
+  let cropsAt = '';
+  const crops = async () => {                        // the hardest calls: candidates nearest the threshold
+    const box = $('#pkcrops'); if (!box) return;
+    const key = String(thPrev); if (key === cropsAt) return; cropsAt = key;
+    box.innerHTML = '<b>Picks around the threshold</b> <span class="muted">reading micrographs…</span>';
+    let d; try { d = await api(`/api/project/pickcrops?job=${encodeURIComponent(name)}${thPrev != null ? '&threshold=' + thPrev : ''}`); } catch (e) { box.innerHTML = ''; return; }
+    if (!$('#pkcrops') || cropsAt !== key) return;
+    box.innerHTML = `<div class="hh"><b>Picks around the threshold</b><span class="muted">the hardest calls, from a few micrographs: blue kept, grey left out. If the grey ones look like particles, lower the threshold.</span></div>
+      <div class="pkc">${d.tiles.map(t => `<figure class="${t.kept ? 'on' : ''}" title="${esc(t.stem)}"><img src="${t.src}" alt=""><figcaption>${t.score.toFixed(3)}</figcaption></figure>`).join('')}</div>`;
+  };
   const thBar = () => {
     const b = $('#pkth'); if (!b || !pk || !pk.score || !pk.score.length) return;
     const lo = Math.min(...pk.score), hi = Math.max(...pk.score), ths = (pk.rows || []).map(r => r.threshold).filter(x => x != null);
@@ -632,6 +643,7 @@ function stageMicPanel(st, j) {
     b.innerHTML = `<b>Threshold</b><input type="range" id="pkr" min="${lo}" max="${hi}" step="${((hi - lo) / 400).toPrecision(2)}" value="${t0}" style="flex:1;min-width:200px;accent-color:var(--you)">
       <b id="pkv">${thPrev == null && auto ? 'automatic' : t0.toFixed(3)}</b><span class="muted" id="pke">keeps ${Math.round(kept * pk.candidates).toLocaleString()} of ${pk.candidates.toLocaleString()} (${(100 * kept).toFixed(0)}%)${auto ? ` · now per micrograph, median ${med(ths).toFixed(3)}` : ''}</span>
       <button class="you" id="pkapply" title="a new Pick job with this threshold on the same candidates: no picking again, takes seconds">Apply to all micrographs</button>`;
+    $('#pkr').onchange = () => crops();
     $('#pkr').oninput = e => {
       thPrev = +e.target.value; $('#pkv').textContent = thPrev.toFixed(3);
       const f = pk.score.filter(x => x >= thPrev).length / pk.score.length;
@@ -704,7 +716,7 @@ function stageMicPanel(st, j) {
       $('#mpn').textContent = d.total ? `· ${rows.length} of ${d.total} micrographs` : `· ${rows.length} micrographs`;
       if (rows.length !== lastN) {
         if (pickMode) { try { pk = await api('/api/project/jobview?job=' + encodeURIComponent(name)); } catch (e) {} }
-        lastN = rows.length; lastTotal = d.total; kpis(d); pickPlots(); limitsBar(); thBar();
+        lastN = rows.length; lastTotal = d.total; kpis(d); pickPlots(); limitsBar(); thBar(); if (pickMode && !running) crops();
         if (!sel || ($('#mpf') && $('#mpf').checked)) show(rows.length); else charts();
       }
       if (running) {
